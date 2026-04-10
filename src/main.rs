@@ -51,6 +51,18 @@ enum Cmd {
         /// Override with a raw user ID (e.g. U0123456789) — opens/resolves DM
         #[arg(long)] user_id: Option<String>,
     },
+    /// Dump recent messages from all joined channels (markdown format)
+    Dump {
+        /// Number of days to look back
+        #[arg(short, long, default_value = "7")]
+        days: u64,
+        /// Max messages per channel
+        #[arg(short, long, default_value = "200")]
+        limit: usize,
+        /// Only include channels matching this substring (case-insensitive)
+        #[arg(short, long)]
+        filter: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -173,12 +185,86 @@ async fn main() -> Result<()> {
             let resp = slack::search(&token, &query).await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
+        Cmd::Dump { days, limit, filter } => {
+            let cutoff = chrono::Utc::now().timestamp() - (days as i64 * 86400);
+            let resp = slack::list_conversations(&token).await?;
+            let channels = resp["channels"].as_array().cloned().unwrap_or_default();
+            let mut member_channels: Vec<_> = channels.into_iter()
+                .filter(|c| c["is_member"].as_bool() == Some(true))
+                .filter(|c| {
+                    c["is_im"].as_bool() != Some(true) && c["is_mpim"].as_bool() != Some(true)
+                })
+                .filter(|c| {
+                    if let Some(ref f) = filter {
+                        c["name"].as_str().unwrap_or("").to_lowercase().contains(&f.to_lowercase())
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+            member_channels.sort_by(|a, b| {
+                let ta = a["updated"].as_f64().unwrap_or(0.0);
+                let tb = b["updated"].as_f64().unwrap_or(0.0);
+                tb.partial_cmp(&ta).unwrap()
+            });
+
+            let mut user_cache: HashMap<String, String> = HashMap::new();
+            let mut total_msgs = 0usize;
+            let mut active_channels = 0usize;
+
+            for ch in &member_channels {
+                let id = ch["id"].as_str().unwrap_or("");
+                let name = ch["name"].as_str().unwrap_or(id);
+
+                let hist = match slack::history(&token, id, limit as i64).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("  SKIP #{name}: {e}");
+                        continue;
+                    }
+                };
+                let messages: Vec<_> = hist["messages"].as_array()
+                    .cloned().unwrap_or_default()
+                    .into_iter()
+                    .filter(|m| m["subtype"].is_null())
+                    .filter(|m| {
+                        let ts = m["ts"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                        ts as i64 >= cutoff
+                    })
+                    .collect();
+                if messages.is_empty() { continue; }
+
+                active_channels += 1;
+                total_msgs += messages.len();
+                println!("## #{name} ({} msgs)\n", messages.len());
+
+                for m in messages.iter().rev() {
+                    let ts = m["ts"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+                    let dt = chrono::DateTime::from_timestamp(ts as i64, 0).unwrap_or_default();
+                    let time = dt.format("%Y-%m-%d %H:%M").to_string();
+                    let display = if let Some(uid) = m["user"].as_str() {
+                        if !user_cache.contains_key(uid) {
+                            let uname = slack::user_name(&token, uid).await;
+                            user_cache.insert(uid.to_string(), uname);
+                        }
+                        user_cache[uid].clone()
+                    } else {
+                        m["username"].as_str().unwrap_or("bot").to_string()
+                    };
+                    let raw_text = m["text"].as_str().unwrap_or("");
+                    let text = slack::resolve_mentions(&token, raw_text, &mut user_cache).await;
+                    let text = slack::resolve_date_markup(&text);
+                    let oneline: String = text.lines().collect::<Vec<_>>().join(" ↵ ");
+                    println!("[{time}] {display}: {oneline}");
+                }
+                println!();
+            }
+            eprintln!("Dumped {total_msgs} messages across {active_channels} channels (cutoff: {days}d)");
+        }
         Cmd::Send { target, message, thread, confirm, channel_id, user_id } => {
-            // Resolve target to channel ID
             let resolved_id = if let Some(cid) = channel_id {
                 cid
             } else if let Some(uid) = user_id {
-                // Open a DM with the user
                 let resp = slack::open_dm(&token, &uid).await?;
                 resp
             } else if target.starts_with('#') || target.starts_with('@') {
@@ -188,7 +274,7 @@ async fn main() -> Result<()> {
                 eprintln!("Use --channel-id=<ID> or --user-id=<ID> to send by raw ID.");
                 std::process::exit(1);
             };
-            let channel = target; // keep for display
+            let channel = target;
             let channel_id = resolved_id;
             let ctx = slack::history(&token, &channel_id, 5).await?;
             // Hash only stable fields (ts + text) — Slack randomizes block_id on each API call
