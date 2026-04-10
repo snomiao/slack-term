@@ -37,11 +37,19 @@ enum Cmd {
     /// Search messages across workspace
     Search { query: String },
     /// Send a message to a channel or DM (requires --confirm hash)
+    ///
+    /// Target must be #channel-name or @username (human-readable).
+    /// Use --channel-id or --user-id only when disambiguation is needed.
     Send {
-        channel: String,
+        /// Target: #channel-name or @username
+        target: String,
         message: String,
         #[arg(long)] thread: Option<String>,
         #[arg(long)] confirm: Option<String>,
+        /// Override with a raw channel ID (e.g. C0123456789)
+        #[arg(long)] channel_id: Option<String>,
+        /// Override with a raw user ID (e.g. U0123456789) — opens/resolves DM
+        #[arg(long)] user_id: Option<String>,
     },
 }
 
@@ -165,8 +173,23 @@ async fn main() -> Result<()> {
             let resp = slack::search(&token, &query).await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
-        Cmd::Send { channel, message, thread, confirm } => {
-            let channel_id = slack::resolve_channel(&token, &channel).await?;
+        Cmd::Send { target, message, thread, confirm, channel_id, user_id } => {
+            // Resolve target to channel ID
+            let resolved_id = if let Some(cid) = channel_id {
+                cid
+            } else if let Some(uid) = user_id {
+                // Open a DM with the user
+                let resp = slack::open_dm(&token, &uid).await?;
+                resp
+            } else if target.starts_with('#') || target.starts_with('@') {
+                slack::resolve_channel(&token, &target).await?
+            } else {
+                eprintln!("Error: target must be #channel-name or @username (got: {target})");
+                eprintln!("Use --channel-id=<ID> or --user-id=<ID> to send by raw ID.");
+                std::process::exit(1);
+            };
+            let channel = target; // keep for display
+            let channel_id = resolved_id;
             let ctx = slack::history(&token, &channel_id, 5).await?;
             // Hash only stable fields (ts + text) — Slack randomizes block_id on each API call
             let ctx_stable: String = ctx["messages"].as_array()
@@ -185,23 +208,22 @@ async fn main() -> Result<()> {
             };
             match confirm.as_deref() {
                 None => {
-                    if !is_interactive() {
-                        eprintln!("Error: --confirm is required when not running interactively.");
-                        eprintln!("Run in a terminal first to see the preview and get the confirm hash.");
-                        std::process::exit(2);
-                    }
-                    println!("─── Recent context ──────────────────────────");
+                    // Show preview (context + message) regardless of interactive mode
                     let messages = ctx["messages"].as_array().cloned().unwrap_or_default();
-                    for m in messages.iter().filter(|m| m["subtype"].is_null()).take(5) {
-                        let user = m["user"].as_str().unwrap_or("?");
-                        let text = m["text"].as_str().unwrap_or("").lines().next().unwrap_or("");
-                        println!("  {user}: {text}");
+                    if is_interactive() {
+                        println!("─── Recent context ──────────────────────────");
+                        for m in messages.iter().filter(|m| m["subtype"].is_null()).take(5) {
+                            let user = m["user"].as_str().unwrap_or("?");
+                            let text = m["text"].as_str().unwrap_or("").lines().next().unwrap_or("");
+                            println!("  {user}: {text}");
+                        }
+                        println!("─── Message preview ─────────────────────────");
+                        println!("  To:      {channel}{}", thread.as_deref().map(|t| format!(" (thread {t})")).unwrap_or_default());
+                        println!("  Message: {message}");
+                        println!("─────────────────────────────────────────────");
                     }
-                    println!("─── Message preview ─────────────────────────");
-                    println!("  To:      {channel}{}", thread.as_deref().map(|t| format!(" (thread {t})")).unwrap_or_default());
-                    println!("  Message: {message}");
-                    println!("─────────────────────────────────────────────");
-                    eprintln!("\nRerun with --confirm={hash}");
+                    // Always print the hash so scripts can capture and rerun
+                    eprintln!("Rerun with --confirm={hash}");
                     std::process::exit(1);
                 }
                 Some(c) if c != hash => {

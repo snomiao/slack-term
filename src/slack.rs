@@ -77,37 +77,52 @@ pub async fn list_conversations(token: &str) -> Result<Value> {
     ]).await
 }
 
-/// Resolve @user or #channel name to a channel/DM ID; passes through if already an ID
+/// Open a DM channel with a user by user ID
+pub async fn open_dm(token: &str, user_id: &str) -> anyhow::Result<String> {
+    let resp = post(token, "conversations.open", serde_json::json!({ "users": user_id })).await?;
+    resp["channel"]["id"].as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("Failed to open DM with user {user_id}"))
+}
+
+/// Resolve @user or #channel name to a channel/DM ID
 pub async fn resolve_channel(token: &str, ref_str: &str) -> anyhow::Result<String> {
     if !ref_str.starts_with('@') && !ref_str.starts_with('#') {
-        return Ok(ref_str.to_string());
+        anyhow::bail!("Target must start with # or @, got: {ref_str}");
     }
     let is_im = ref_str.starts_with('@');
     let name = ref_str[1..].to_lowercase();
     let types = if is_im { "im,mpim" } else { "public_channel,private_channel" };
-    let resp = get(token, "conversations.list", &[
-        ("limit", "200"),
-        ("types", types),
-    ]).await?;
-    let channels = resp["channels"].as_array().cloned().unwrap_or_default();
-    // For DMs, Slack gives a `user` field with the other user's ID; match via users.info
-    for ch in &channels {
-        if is_im {
-            if let Some(uid) = ch["user"].as_str() {
-                let info = get(token, "users.info", &[("user", uid)]).await.unwrap_or_default();
-                let display = info["user"]["profile"]["display_name"].as_str().unwrap_or("")
-                    .to_lowercase();
-                let uname = info["user"]["name"].as_str().unwrap_or("").to_lowercase();
-                if display == name || uname == name {
+
+    // Paginate through all conversations to find the target
+    let mut cursor = String::new();
+    loop {
+        let mut params = vec![("limit", "200"), ("types", types), ("exclude_archived", "true")];
+        if !cursor.is_empty() { params.push(("cursor", &cursor)); }
+        let resp = get(token, "conversations.list", &params).await?;
+        let channels = resp["channels"].as_array().cloned().unwrap_or_default();
+        for ch in &channels {
+            if is_im {
+                if let Some(uid) = ch["user"].as_str() {
+                    let info = get(token, "users.info", &[("user", uid)]).await.unwrap_or_default();
+                    let display = info["user"]["profile"]["display_name"].as_str().unwrap_or("")
+                        .to_lowercase();
+                    let uname = info["user"]["name"].as_str().unwrap_or("").to_lowercase();
+                    if display == name || uname == name {
+                        return Ok(ch["id"].as_str().unwrap_or("").to_string());
+                    }
+                }
+            } else {
+                let ch_name = ch["name"].as_str().unwrap_or("").to_lowercase();
+                if ch_name == name {
                     return Ok(ch["id"].as_str().unwrap_or("").to_string());
                 }
             }
-        } else {
-            let ch_name = ch["name"].as_str().unwrap_or("").to_lowercase();
-            if ch_name == name {
-                return Ok(ch["id"].as_str().unwrap_or("").to_string());
-            }
         }
+        // Check for next page
+        let next = resp["response_metadata"]["next_cursor"].as_str().unwrap_or("");
+        if next.is_empty() { break; }
+        cursor = next.to_string();
     }
     anyhow::bail!("{} not found: {ref_str}", if is_im { "DM" } else { "channel" })
 }
