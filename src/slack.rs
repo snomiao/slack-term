@@ -50,9 +50,47 @@ pub async fn history(token: &str, channel_id: &str, limit: i64) -> Result<Value>
     ]).await
 }
 
-/// Search messages across workspace
+/// Search messages across workspace (single page, up to `count` results, 1-100)
 pub async fn search(token: &str, query: &str) -> Result<Value> {
-    get(token, "search.messages", &[("query", query), ("sort", "timestamp"), ("sort_dir", "desc")]).await
+    search_page(token, query, 100, 1).await
+}
+
+/// Search messages — single page with explicit count (1-100) and page (1-based)
+pub async fn search_page(token: &str, query: &str, count: i64, page: i64) -> Result<Value> {
+    let count_s = count.clamp(1, 100).to_string();
+    let page_s = page.max(1).to_string();
+    get(token, "search.messages", &[
+        ("query", query),
+        ("sort", "timestamp"),
+        ("sort_dir", "desc"),
+        ("count", &count_s),
+        ("page", &page_s),
+    ]).await
+}
+
+/// Search messages — paginates until `max` results are collected or no more pages.
+/// Returns merged matches array under `messages.matches`.
+pub async fn search_all(token: &str, query: &str, max: i64) -> Result<Value> {
+    let per_page: i64 = 100;
+    let mut page: i64 = 1;
+    let mut all_matches: Vec<Value> = Vec::new();
+    let mut last_resp: Value = serde_json::json!({"ok": true, "messages": {}});
+    loop {
+        let resp = search_page(token, query, per_page, page).await?;
+        let matches = resp["messages"]["matches"].as_array().cloned().unwrap_or_default();
+        let got = matches.len() as i64;
+        all_matches.extend(matches);
+        let pages = resp["messages"]["paging"]["pages"].as_i64().unwrap_or(1);
+        last_resp = resp;
+        if got == 0 || page >= pages || (all_matches.len() as i64) >= max {
+            break;
+        }
+        page += 1;
+    }
+    all_matches.truncate(max as usize);
+    let mut out = last_resp;
+    out["messages"]["matches"] = Value::Array(all_matches);
+    Ok(out)
 }
 
 /// Send a message to a channel or DM, rendered as a markdown block

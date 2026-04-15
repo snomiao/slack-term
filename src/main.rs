@@ -35,7 +35,12 @@ enum Cmd {
         limit: usize,
     },
     /// Search messages across workspace
-    Search { query: String },
+    Search {
+        query: String,
+        /// Max total results to return (paginates through pages of 100)
+        #[arg(short = 'n', long, default_value = "100")]
+        count: i64,
+    },
     /// Send a message to a channel or DM (requires --confirm hash)
     ///
     /// Target must be #channel-name or @username (human-readable).
@@ -181,8 +186,8 @@ async fn main() -> Result<()> {
                 println!("     {display}: {first_line}");
             }
         }
-        Cmd::Search { query } => {
-            let resp = slack::search(&token, &query).await?;
+        Cmd::Search { query, count } => {
+            let resp = slack::search_all(&token, &query, count).await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
         Cmd::Dump { days, limit, filter } => {
