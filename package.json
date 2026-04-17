@@ -1,27 +1,46 @@
 {
-  "name": "@snomiao/slack-cli",
+  "name": "@snomiao/slack",
+  "version": "0.2.0",
+  "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
+  "type": "module",
+  "bin": {
+    "slack": "./dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "bun run ts/cli.ts",
+    "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
+    "typecheck": "tsc --noEmit",
+    "test:parity": "bash tests/parity.sh",
+    "prepublishOnly": "bun run typecheck && bun run build"
+  },
   "publishConfig": {
     "access": "public"
   },
-  "version": "0.1.0",
-  "main": "index.js",
-  "types": "index.d.ts",
-  "scripts": {
-    "build": "napi build --release",
-    "build:debug": "napi build"
+  "engines": {
+    "node": ">=18"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/snomiao/slack-cli.git"
+  },
+  "homepage": "https://github.com/snomiao/slack-cli",
+  "license": "MIT",
+  "keywords": [
+    "slack",
+    "cli",
+    "messaging",
+    "agent",
+    "terminal"
+  ],
   "devDependencies": {
-    "@napi-rs/cli": "^3"
-  },
-  "napi": {
-    "binaryName": "slack-cli",
-    "targets": [
-      "aarch64-apple-darwin",
-      "x86_64-apple-darwin",
-      "x86_64-unknown-linux-gnu",
-      "aarch64-unknown-linux-gnu",
-      "x86_64-pc-windows-msvc",
-      "aarch64-pc-windows-msvc"
-    ]
+    "@types/bun": "latest",
+    "@types/node": "^22",
+    "typescript": "^5.6"
   }
 }

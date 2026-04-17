@@ -5,7 +5,11 @@ description: "Terminal Slack CLI — read news/mentions/DMs/channel history, ful
 
 # Slack CLI Skill
 
-A lightweight Slack CLI (Rust, also distributed as a Node N-API binary) for quick workspace interaction from the terminal.
+A lightweight Slack CLI for quick workspace interaction from the terminal.
+Two implementations share one command surface (parity-tested):
+
+- **TypeScript** (bun-first), published as `@snomiao/slack` on npm.
+- **Rust** native binary, installable via `cargo install`.
 
 Binary name: `slack` (also aliased as `sl` / invoked via `sc sl ...` in some setups).
 
@@ -18,17 +22,17 @@ Binary name: `slack` (also aliased as `sl` / invoked via `sc sl ...` in some set
 
 ## Installation
 
-Recommended (Rust):
+TypeScript (recommended — any platform with Node 18+):
+
+```sh
+npm install -g @snomiao/slack
+# or: bun add -g @snomiao/slack / pnpm add -g @snomiao/slack
+```
+
+Rust (native binary):
 
 ```sh
 cargo install --path .
-```
-
-Also works via npm (prebuilt N-API binaries):
-
-```sh
-npm install @snomiao/slack-cli
-# or: bun add @snomiao/slack-cli / pnpm add @snomiao/slack-cli
 ```
 
 ## Commands

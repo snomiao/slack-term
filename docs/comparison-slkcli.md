@@ -10,21 +10,21 @@ but make very different choices about auth, platform reach, and command surface.
 
 ## TL;DR
 
-| Dimension | `@snomiao/slack-cli` (this repo) | `slkcli` |
-| --- | --- | --- |
-| Language / runtime | Rust (napi bindings for Node) | Pure Node.js (zero deps) |
-| Platform | macOS / Linux / Windows | **macOS only** |
-| Auth model | `xoxp-` user token via env/`.env` | **Auto-extract `xoxc-` from Slack desktop app** (Keychain + LevelDB) |
-| Setup friction | Create Slack App → scopes → install → copy token | `npx slkcli auth` (one keychain prompt) |
-| Send safety | **Two-step confirm hash** (`--confirm=<hash>`) | Direct send |
-| Target syntax | `#channel` / `@user` required; raw IDs rejected | Name **or** ID accepted |
-| Command style | Few verbs (`news`, `msgs`, `search`, `read`, `send`, `dump`) | Broad (`auth`, `channels`, `dms`, `users`, `read`, `send`, `search`, `thread`, `react`, `activity`, `unread`, `starred`, `saved`, `pins`, `draft*`) |
-| Drafts | — | First-class `draft` / `drafts` / `draft drop` |
-| Threads | Flattened into history output | Dedicated `slk thread` + `--threads` auto-expand |
-| Reactions | — | `slk react` |
-| Mute awareness | — | `activity` / `unread` respect mute |
-| Date filtering | — | `--from` / `--to YYYY-MM-DD` |
-| Output polish | Day grouping (Today/Yesterday/weekday), `<@UID>` and `<!date^...>` resolution | Emoji rendering, `--no-emoji`, `--ts` for raw timestamps |
+| Dimension          | `@snomiao/slack-cli` (this repo)                                              | `slkcli`                                                                                                                                            |
+| ------------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Language / runtime | Rust (napi bindings for Node)                                                 | Pure Node.js (zero deps)                                                                                                                            |
+| Platform           | macOS / Linux / Windows                                                       | **macOS only**                                                                                                                                      |
+| Auth model         | `xoxp-` user token via env/`.env`                                             | **Auto-extract `xoxc-` from Slack desktop app** (Keychain + LevelDB)                                                                                |
+| Setup friction     | Create Slack App → scopes → install → copy token                              | `npx slkcli auth` (one keychain prompt)                                                                                                             |
+| Send safety        | **Two-step confirm hash** (`--confirm=<hash>`)                                | Direct send                                                                                                                                         |
+| Target syntax      | `#channel` / `@user` required; raw IDs rejected                               | Name **or** ID accepted                                                                                                                             |
+| Command style      | Few verbs (`news`, `msgs`, `search`, `read`, `send`, `dump`)                  | Broad (`auth`, `channels`, `dms`, `users`, `read`, `send`, `search`, `thread`, `react`, `activity`, `unread`, `starred`, `saved`, `pins`, `draft*`) |
+| Drafts             | —                                                                             | First-class `draft` / `drafts` / `draft drop`                                                                                                       |
+| Threads            | Flattened into history output                                                 | Dedicated `slk thread` + `--threads` auto-expand                                                                                                    |
+| Reactions          | —                                                                             | `slk react`                                                                                                                                         |
+| Mute awareness     | —                                                                             | `activity` / `unread` respect mute                                                                                                                  |
+| Date filtering     | —                                                                             | `--from` / `--to YYYY-MM-DD`                                                                                                                        |
+| Output polish      | Day grouping (Today/Yesterday/weekday), `<@UID>` and `<!date^...>` resolution | Emoji rendering, `--no-emoji`, `--ts` for raw timestamps                                                                                            |
 
 ## Where we win
 
