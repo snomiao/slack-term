@@ -39,8 +39,13 @@
     "terminal"
   ],
   "devDependencies": {
+    "@semantic-release/commit-analyzer": "^13",
+    "@semantic-release/github": "^11",
+    "@semantic-release/npm": "^12",
+    "@semantic-release/release-notes-generator": "^14",
     "@types/bun": "latest",
     "@types/node": "^22",
+    "semantic-release": "^24",
     "typescript": "^5.6"
   }
 }
