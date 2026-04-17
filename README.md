@@ -27,8 +27,8 @@ cargo install --path .
 Also works via npm (uses prebuilt N-API binaries):
 
 ```sh
-npm install slack-cli
-# or: bun add slack-cli / pnpm add slack-cli
+npm install @snomiao/slack-cli
+# or: bun add @snomiao/slack-cli / pnpm add @snomiao/slack-cli
 ```
 
 ## Usage

@@ -1,5 +1,8 @@
 {
-  "name": "slack-cli",
+  "name": "@snomiao/slack-cli",
+  "publishConfig": {
+    "access": "public"
+  },
   "version": "0.1.0",
   "main": "index.js",
   "types": "index.d.ts",
