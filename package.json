@@ -38,6 +38,10 @@
     "agent",
     "terminal"
   ],
+  "overrides": {
+    "@semantic-release/npm": "^13",
+    "@semantic-release/github": "^12"
+  },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13",
     "@semantic-release/github": "^12",
