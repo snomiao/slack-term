@@ -27,7 +27,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/snomiao/slack-cli.git"
+    "url": "https://github.com/snomiao/slack-cli.git"
   },
   "homepage": "https://github.com/snomiao/slack-cli",
   "license": "MIT",
