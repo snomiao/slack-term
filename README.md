@@ -75,6 +75,15 @@ Built with:
 - [chrono](https://crates.io/crates/chrono) — date/time formatting
 - [ring](https://crates.io/crates/ring) — SHA-256 for confirm hashes
 
+## Related / prior art
+
+- [`slkcli`](https://www.npmjs.com/package/slkcli) by
+  [@therohitdas](https://github.com/therohitdas) — a macOS-only Node CLI that
+  auto-extracts `xoxc-` session tokens from the Slack desktop app. Different
+  tradeoffs (zero-config on macOS vs. our cross-platform explicit-token
+  approach). See [docs/comparison-slkcli.md](docs/comparison-slkcli.md) for a
+  full UX side-by-side.
+
 ## License
 
 MIT
