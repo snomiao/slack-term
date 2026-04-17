@@ -2,3 +2,6 @@ target/
 node_modules/
 *.node
 bun.lockb
+.env
+.env.*
+!.env.example

@@ -18,8 +18,17 @@ A lightweight Slack CLI built in Rust for quick workspace interaction from the t
 
 ## Installation
 
+Recommended (Rust):
+
 ```sh
 cargo install --path .
+```
+
+Also works via npm (uses prebuilt N-API binaries):
+
+```sh
+npm install slack-cli
+# or: bun add slack-cli / pnpm add slack-cli
 ```
 
 ## Usage
