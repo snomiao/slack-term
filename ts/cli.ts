@@ -7,6 +7,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import { addProfile, listProfiles, removeProfile, resolveToken, useProfile } from "./profiles.ts";
+import { authTest } from "./slack.ts";
+
 import {
   history,
   listConversations,
@@ -40,13 +43,10 @@ function loadDotenv(path: string): void {
   }
 }
 
-function loadEnv(): string {
+function loadDotenvFiles(): void {
   loadDotenv(join(homedir(), ".config/slack-cli/.env.local"));
   loadDotenv(join(process.cwd(), ".env.local"));
   loadDotenv(join(process.cwd(), ".env"));
-  const token = process.env.SLACK_MCP_XOXP_TOKEN;
-  if (!token) throw new Error("Missing SLACK_MCP_XOXP_TOKEN env var");
-  return token;
 }
 
 function sha256Hex(input: string): string {
@@ -330,7 +330,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 function usage(): never {
   console.error(
     [
-      "Usage: slack <command> [args]",
+      "Usage: slack [--workspace=<name>] <command> [args]",
       "Commands:",
       "  msgs [<#channel|@user|url>] [-n|--limit N]",
       "  thread <#channel|@user|url> <ts> [-n|--limit N]",
@@ -338,14 +338,88 @@ function usage(): never {
       "  search <query> [-n|--count N]",
       "  send <target> <message> [--thread TS] [--confirm HASH] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
+      "  workspace list",
+      "  workspace add <name> <token>",
+      "  workspace use <name>",
+      "  workspace remove <name>",
+      "  workspace current",
     ].join("\n"),
   );
   process.exit(2);
 }
 
+async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
+  switch (sub) {
+    case "list": {
+      const profiles = listProfiles();
+      if (profiles.length === 0) {
+        console.log("No workspaces configured. Run: slack workspace add <name> <token>");
+        return;
+      }
+      for (const { name, profile, current } of profiles) {
+        console.log(`${current ? "* " : "  "}${name}  ${profile.team}  (${profile.user})`);
+      }
+      return;
+    }
+    case "add": {
+      const [name, token] = args;
+      if (!name || !token) {
+        console.error("Usage: slack workspace add <name> <token>");
+        process.exit(2);
+      }
+      console.error(`Verifying token against Slack...`);
+      const info = await authTest(token);
+      addProfile(name, { token, ...info });
+      console.log(`Added workspace "${name}": ${info.team} (${info.user})`);
+      return;
+    }
+    case "use": {
+      const [name] = args;
+      if (!name) { console.error("Usage: slack workspace use <name>"); process.exit(2); }
+      useProfile(name);
+      console.log(`Switched to workspace "${name}"`);
+      return;
+    }
+    case "remove": {
+      const [name] = args;
+      if (!name) { console.error("Usage: slack workspace remove <name>"); process.exit(2); }
+      removeProfile(name);
+      console.log(`Removed workspace "${name}"`);
+      return;
+    }
+    case "current": {
+      const profiles = listProfiles();
+      const cur = profiles.find((p) => p.current);
+      if (!cur) { console.log("No workspace selected"); return; }
+      console.log(`${cur.name}  ${cur.profile.team}  (${cur.profile.user})`);
+      return;
+    }
+    default:
+      usage();
+  }
+}
+
 async function main(): Promise<void> {
-  const token = loadEnv();
-  const [, , cmd, ...rest] = process.argv;
+  loadDotenvFiles();
+
+  // Strip global --workspace=<name> flag before subcommand dispatch.
+  const rawArgs = process.argv.slice(2);
+  let workspaceFlag: string | undefined;
+  const filteredArgs: string[] = [];
+  for (const arg of rawArgs) {
+    const m = arg.match(/^--workspace=(.+)$/);
+    if (m) { workspaceFlag = m[1]; }
+    else filteredArgs.push(arg);
+  }
+  const [cmd, ...rest] = filteredArgs;
+  // workspace subcommand needs no token
+  if (cmd === "workspace") {
+    await cmdWorkspace(rest[0] ?? "", rest.slice(1));
+    return;
+  }
+
+  const token = resolveToken(workspaceFlag);
+
   switch (cmd) {
     case "msgs": {
       const { values, positionals } = parseArgs({

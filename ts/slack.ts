@@ -40,6 +40,18 @@ function post(token: string, method: string, body: Record<string, Json>): Promis
   });
 }
 
+export async function authTest(token: string): Promise<{ team: string; teamId: string; url: string; user: string }> {
+  const resp = (await get(token, "auth.test", {})) as {
+    team?: string; team_id?: string; url?: string; user?: string;
+  };
+  return {
+    team: resp.team ?? "",
+    teamId: resp.team_id ?? "",
+    url: resp.url ?? "",
+    user: resp.user ?? "",
+  };
+}
+
 export async function history(token: string, channel: string, limit = 20): Promise<Json> {
   return get(token, "conversations.history", { channel, limit: String(limit) });
 }

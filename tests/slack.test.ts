@@ -7,7 +7,7 @@ import * as slack from "../ts/slack.ts";
 let mock: MockHandle;
 
 const fixtures = {
-  "auth.test": { ok: true, user_id: "U00000001", team_id: "T00000001" },
+  "auth.test": { ok: true, user_id: "U00000001", user: "alice", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
 
   "conversations.history__channel=C00000001&limit=20": {
     ok: true,
@@ -103,6 +103,13 @@ afterAll(async () => {
 
 describe("slack.ts", () => {
   const token = "xoxp-fake";
+
+  test("authTest returns team info", async () => {
+    const info = await slack.authTest(token);
+    expect(info.teamId).toBe("T00000001");
+    expect(info.team).toBe("Acme");
+    expect(info.user).toBe("alice");
+  });
 
   test("history returns messages", async () => {
     const resp = (await slack.history(token, "C00000001", 20)) as {
