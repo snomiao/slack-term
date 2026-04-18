@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { addProfile, listProfiles, removeProfile, resolveToken, useProfile } from "./profiles.ts";
+import { extractSessions } from "./slack-app.ts";
 import { authTest } from "./slack.ts";
 
 import {
@@ -338,7 +339,8 @@ function usage(): never {
       "  search <query> [-n|--count N]",
       "  send <target> <message> [--thread TS] [--confirm HASH] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
-      "  workspace list",
+      "  workspace ls|list",
+      "  workspace import          (auto-import from Slack desktop app)",
       "  workspace add <name> <token>",
       "  workspace use <name>",
       "  workspace remove <name>",
@@ -350,15 +352,42 @@ function usage(): never {
 
 async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
   switch (sub) {
-    case "list": {
+    case "list":
+    case "ls": {
       const profiles = listProfiles();
       if (profiles.length === 0) {
-        console.log("No workspaces configured. Run: slack workspace add <name> <token>");
+        console.log("No workspaces configured.");
+        console.log("Import from the Slack desktop app:  slack workspace import");
+        console.log("Or add manually:                    slack workspace add <name> <token>");
         return;
       }
       for (const { name, profile, current } of profiles) {
-        console.log(`${current ? "* " : "  "}${name}  ${profile.team}  (${profile.user})`);
+        console.log(`${current ? "* " : "  "}${name}  ${profile.team}  (${profile.user})  ${profile.url ?? ""}`);
       }
+      return;
+    }
+    case "import": {
+      console.error("Scanning Slack desktop app...");
+      const sessions = await extractSessions();
+      if (sessions.length === 0) {
+        console.error("No sessions found. Make sure Slack is installed and you have logged in.");
+        return;
+      }
+      for (const s of sessions) {
+        console.error(`  Found: ${s.teamId} ${s.teamName ?? ""} ${s.url ?? ""}`);
+        // Verify token and get full team info
+        let info: Awaited<ReturnType<typeof authTest>>;
+        try {
+          info = await authTest(s.token);
+        } catch {
+          console.error(`  Skipping ${s.teamId}: token verification failed`);
+          continue;
+        }
+        const name = info.team.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        addProfile(name, { token: s.token, ...info });
+        console.log(`Added workspace "${name}": ${info.team} (${info.user})`);
+      }
+      console.log(`\nDone. Run: slack workspace ls`);
       return;
     }
     case "add": {
