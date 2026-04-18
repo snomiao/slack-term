@@ -32,7 +32,7 @@ npm install -g @snomiao/slack
 Rust (native binary):
 
 ```sh
-cargo install --path .
+cargo install --path rs
 ```
 
 ## Commands

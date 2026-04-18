@@ -15,8 +15,8 @@ OUT_DIR="$(mktemp -d)"
 trap 'rm -rf "$OUT_DIR"' EXIT
 
 echo "Building Rust CLI..."
-cargo build --release --bin slack --quiet
-RUST="$ROOT/target/release/slack"
+cargo build --release --manifest-path rs/Cargo.toml --bin slack --quiet
+RUST="$ROOT/rs/target/release/slack"
 TS="bun run $ROOT/ts/cli.ts"
 
 run_pair() {

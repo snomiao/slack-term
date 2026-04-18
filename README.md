@@ -34,7 +34,7 @@ npm install -g @snomiao/slack
 ### Rust (cargo)
 
 ```sh
-cargo install --path .
+cargo install --path rs
 ```
 
 Both expose the same `slack` command.
@@ -92,7 +92,7 @@ bun run typecheck
 bun run build                      # produces dist/cli.js
 
 # Rust
-cargo run --release --bin slack -- news --limit 3
+cargo run --manifest-path rs/Cargo.toml --release --bin slack -- news --limit 3
 
 # Parity test (requires a token — compares Rust and TS stdout)
 bun run test:parity

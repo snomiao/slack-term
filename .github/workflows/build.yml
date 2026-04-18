@@ -39,20 +39,20 @@ jobs:
           sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
           echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-      - run: cargo build --release --bin slack --target ${{ matrix.target }}
+      - run: cargo build --release --manifest-path rs/Cargo.toml --bin slack --target ${{ matrix.target }}
       - name: Upload (unix)
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: slack-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/slack
+          path: rs/target/${{ matrix.target }}/release/slack
           if-no-files-found: error
       - name: Upload (windows)
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: slack-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/slack.exe
+          path: rs/target/${{ matrix.target }}/release/slack.exe
           if-no-files-found: error
 
   ts:
