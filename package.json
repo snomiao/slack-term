@@ -16,7 +16,12 @@
     "dev": "bun run ts/cli.ts",
     "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:parity": "bash tests/parity.sh",
+    "record": "bun run tests/record.ts",
+    "anonymize": "bun run tests/anonymize.ts",
     "prepublishOnly": "bun run typecheck && bun run build"
   },
   "publishConfig": {
@@ -49,7 +54,9 @@
     "@semantic-release/release-notes-generator": "^14",
     "@types/bun": "latest",
     "@types/node": "^22",
+    "@vitest/coverage-v8": "^4.1.4",
     "semantic-release": "^24",
-    "typescript": "^5.6"
+    "typescript": "^5.6",
+    "vitest": "^4.1.4"
   }
 }

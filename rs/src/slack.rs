@@ -12,9 +12,16 @@ fn client() -> Client {
     Client::new()
 }
 
+fn base() -> String {
+    std::env::var("SLACK_API_BASE")
+        .unwrap_or_else(|_| "https://slack.com/api".to_string())
+        .trim_end_matches('/')
+        .to_string()
+}
+
 async fn get(token: &str, method: &str, params: &[(&str, &str)]) -> Result<Value> {
     let resp = client()
-        .get(format!("https://slack.com/api/{method}"))
+        .get(format!("{}/{method}", base()))
         .bearer_auth(token)
         .query(params)
         .send()
@@ -29,7 +36,7 @@ async fn get(token: &str, method: &str, params: &[(&str, &str)]) -> Result<Value
 
 async fn post(token: &str, method: &str, body: Value) -> Result<Value> {
     let resp = client()
-        .post(format!("https://slack.com/api/{method}"))
+        .post(format!("{}/{method}", base()))
         .bearer_auth(token)
         .json(&body)
         .send()
