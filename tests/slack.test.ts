@@ -74,6 +74,21 @@ const fixtures = {
     ok: true,
     user: { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } },
   },
+
+  "users.list__limit=200": {
+    ok: true,
+    members: [
+      { id: "U00000001", name: "alice", real_name: "Alice", profile: { display_name: "Alice A" } },
+      { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } },
+    ],
+    response_metadata: { next_cursor: "" },
+  },
+
+  "conversations.list__limit=200&types=im": {
+    ok: true,
+    channels: [{ id: "D00000001", user: "U00000002", is_im: true }],
+    response_metadata: { next_cursor: "" },
+  },
 };
 
 beforeAll(async () => {
@@ -145,6 +160,24 @@ describe("slack.ts", () => {
     expect(await slack.userName(token, "U99999999")).toBe("U99999999");
   });
 
+  test("userInfoPair returns [display, handle]", async () => {
+    const [display, handle] = await slack.userInfoPair(token, "U00000001");
+    expect(display).toBe("Alice A");
+    expect(handle).toBe("alice");
+  });
+
+  test("userInfoPair falls back to real_name when display_name empty", async () => {
+    const [display, handle] = await slack.userInfoPair(token, "U00000002");
+    expect(display).toBe("Bob");
+    expect(handle).toBe("bob");
+  });
+
+  test("userInfoPair returns [uid, uid] on API error", async () => {
+    const [d, h] = await slack.userInfoPair(token, "U99999999");
+    expect(d).toBe("U99999999");
+    expect(h).toBe("U99999999");
+  });
+
   test("resolveChannel finds public channel by name", async () => {
     const id = await slack.resolveChannel(token, "#channel-01");
     expect(id).toBe("C00000001");
@@ -155,8 +188,21 @@ describe("slack.ts", () => {
     expect(id).toBe("D00000001");
   });
 
-  test("resolveChannel rejects non-prefixed refs", async () => {
-    await expect(slack.resolveChannel(token, "channel-01")).rejects.toThrow(/must start with/);
+  test("resolveChannel rejects non-prefixed non-ID refs", async () => {
+    await expect(slack.resolveChannel(token, "short")).rejects.toThrow(/must start with/);
+  });
+
+  test("resolveChannel accepts raw channel IDs", async () => {
+    const id = await slack.resolveChannel(token, "C09QQ65QKG9");
+    expect(id).toBe("C09QQ65QKG9");
+  });
+
+  test("resolveChannel parses Slack permalink", async () => {
+    const id = await slack.resolveChannel(
+      token,
+      "https://app.slack.com/client/T00000001/C09QQ65QKG9",
+    );
+    expect(id).toBe("C09QQ65QKG9");
   });
 
   test("resolveChannel throws for missing channel", async () => {
