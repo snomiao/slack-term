@@ -8,3 +8,4 @@ bun.lockb
 .env.*
 !.env.example
 tests/fixtures/raw/
+coverage/
