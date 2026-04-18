@@ -4,9 +4,10 @@
   "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
   "type": "module",
   "bin": {
-    "slack": "./dist/cli.js"
+    "slack": "./ts/cli.ts"
   },
   "files": [
+    "ts/",
     "dist/",
     "README.md",
     "SKILL.md",

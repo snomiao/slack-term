@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 // Slack CLI entry — mirrors the Rust impl in src/main.rs.
 
 import { parseArgs } from "node:util";
