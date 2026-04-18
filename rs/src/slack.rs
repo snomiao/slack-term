@@ -131,12 +131,12 @@ pub async fn open_dm(token: &str, user_id: &str) -> anyhow::Result<String> {
 }
 
 /// Normalize a name for loose matching: lowercase + strip hyphens/underscores/whitespace.
-/// So `@example-bot` matches a Slack handle `examplebot` or real_name `ExamplePR-Bot`.
+/// Lets `@deploy-bot` match a Slack handle like `deploybot` or display name `Deploy-Bot`.
 fn norm_name(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| !matches!(c, '-' | '_' | ' ' | '\t')).collect()
 }
 
-/// Extract channel ID from a Slack permalink (e.g. `https://app.slack.com/client/T.../C09QQ65QKG9`)
+/// Extract channel ID from a Slack permalink (e.g. `https://app.slack.com/client/TXXXXXXX/CXXXXXXXX`)
 fn parse_slack_url(s: &str) -> Option<String> {
     let re_prefix = "app.slack.com/client/T";
     let pos = s.find(re_prefix)?;

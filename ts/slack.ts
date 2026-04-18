@@ -126,13 +126,13 @@ export async function openDm(token: string, userId: string): Promise<string> {
 }
 
 /** Normalize for loose matching: lowercase + strip hyphens/underscores/whitespace.
- *  `@example-bot` matches a Slack handle `examplebot` or real_name `ExamplePR-Bot`. */
+ *  Lets `@deploy-bot` match handles like `deploybot` or display names like `Deploy-Bot`. */
 function normName(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
 }
 
 /** Extract channel ID from a Slack permalink
- *  (e.g. `https://app.slack.com/client/T.../C09QQ65QKG9`) */
+ *  (e.g. `https://app.slack.com/client/TXXXXXXX/CXXXXXXXX`) */
 function parseSlackUrl(s: string): string | undefined {
   const m = s.match(/app\.slack\.com\/client\/T[A-Za-z0-9]+\/([A-Za-z0-9]+)/);
   return m?.[1];

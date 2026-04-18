@@ -193,16 +193,16 @@ describe("slack.ts", () => {
   });
 
   test("resolveChannel accepts raw channel IDs", async () => {
-    const id = await slack.resolveChannel(token, "C09QQ65QKG9");
-    expect(id).toBe("C09QQ65QKG9");
+    const id = await slack.resolveChannel(token, "C12345678");
+    expect(id).toBe("C12345678");
   });
 
   test("resolveChannel parses Slack permalink", async () => {
     const id = await slack.resolveChannel(
       token,
-      "https://app.slack.com/client/T00000001/C09QQ65QKG9",
+      "https://app.slack.com/client/T00000001/C12345678",
     );
-    expect(id).toBe("C09QQ65QKG9");
+    expect(id).toBe("C12345678");
   });
 
   test("resolveChannel throws for missing channel", async () => {

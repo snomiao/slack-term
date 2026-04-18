@@ -39,7 +39,7 @@ but make very different choices about auth, platform reach, and command surface.
    is a real guard against agents auto-sending the wrong message to the wrong
    channel. `slkcli` sends directly — fine for humans, risky for agents.
 4. **Strict target syntax.** Rejecting raw channel IDs forces readable command
-   history (`slack send "#general" ...` rather than `slk send C08A8AQ2AFP ...`),
+   history (`slack send "#general" ...` rather than `slk send CXXXXXXXX ...`),
    which matters when reviewing agent logs or shell history.
 5. **Day-grouped output.** `news` / `msgs` group by Today / Yesterday / weekday,
    which reads better than raw timestamp lists.
@@ -63,7 +63,7 @@ but make very different choices about auth, platform reach, and command surface.
    into the main history.
 6. **Mute-aware activity.** `activity` and `unread` filter out muted channels,
    which is exactly what you want when triaging.
-7. **Name-or-ID flexibility.** Accepting `general` **or** `C08A8AQ2AFP` lowers
+7. **Name-or-ID flexibility.** Accepting `general` **or** `CXXXXXXXX` lowers
    the barrier for scripts that already have IDs in hand.
 
 ## Ideas worth stealing
