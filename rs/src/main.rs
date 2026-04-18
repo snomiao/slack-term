@@ -122,7 +122,7 @@ enum Cmd {
 async fn main() -> Result<()> {
     // Load env: XDG config first, then local .env
     if let Some(home) = std::env::var_os("HOME") {
-        dotenvy::from_filename(std::path::Path::new(&home).join(".config/slack-cli/.env.local")).ok();
+        dotenvy::from_filename(std::path::Path::new(&home).join(".config/slack-cli/.env")).ok();
     }
     dotenvy::dotenv().ok();
 

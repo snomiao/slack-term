@@ -103,7 +103,7 @@ export SLACK_MCP_XOXP_TOKEN=xoxp-...
 
 # Option B — persistent, user-wide
 mkdir -p ~/.config/slack-cli
-echo 'SLACK_MCP_XOXP_TOKEN=xoxp-...' >> ~/.config/slack-cli/.env.local
+echo 'SLACK_MCP_XOXP_TOKEN=xoxp-...' >> ~/.config/slack-cli/.env
 
 # Option C — project-local
 echo 'SLACK_MCP_XOXP_TOKEN=xoxp-...' >> .env

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { join } from "node:path";
+import type { Profile } from "../ts/profiles.ts";
 
 // Redirect profile storage to a temp dir for isolation.
 let tmpHome: string;
@@ -57,7 +58,7 @@ describe("profiles", () => {
     const { addProfile, listProfiles } = await getProfiles();
     addProfile("acme", fakeProfile);
     addProfile("beta", fakeProfile2);
-    const cur = listProfiles().find((p) => p.current);
+    const cur = listProfiles().find((p: { current: boolean; name: string; profile: Profile }) => p.current);
     expect(cur?.name).toBe("acme");
   });
 
@@ -66,7 +67,7 @@ describe("profiles", () => {
     addProfile("acme", fakeProfile);
     addProfile("beta", fakeProfile2);
     useProfile("beta");
-    const cur = listProfiles().find((p) => p.current);
+    const cur = listProfiles().find((p: { current: boolean; name: string; profile: Profile }) => p.current);
     expect(cur?.name).toBe("beta");
   });
 

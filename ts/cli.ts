@@ -44,7 +44,7 @@ function loadDotenv(path: string): void {
 }
 
 function loadDotenvFiles(): void {
-  loadDotenv(join(homedir(), ".config/slack-cli/.env.local"));
+  loadDotenv(join(homedir(), ".config/slack-cli", ".env"));
   loadDotenv(join(process.cwd(), ".env.local"));
   loadDotenv(join(process.cwd(), ".env"));
 }

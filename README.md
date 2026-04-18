@@ -78,7 +78,7 @@ Set the token via environment variable:
 export SLACK_MCP_XOXP_TOKEN=xoxp-...
 ```
 
-Or place it in `~/.config/slack-cli/.env.local` or a local `.env` file.
+Or place it in `~/.config/slack-cli/.env` or a local `.env` file.
 
 See [`SKILL.md`](SKILL.md) for a full token-acquisition walkthrough.
 
