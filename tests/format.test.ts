@@ -1,5 +1,7 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
+import { startMock, type MockHandle } from "./mock.ts";
+import { resolveMentions } from "../ts/format.ts";
 
 describe("resolveDateMarkup", () => {
   test("replaces <!date^...> with formatted date", () => {
@@ -28,6 +30,60 @@ describe("dayLabel", () => {
   test("returns weekday+date for older dates", () => {
     const epoch = (now.getTime() - 5 * 86400_000) / 1000;
     expect(dayLabel(epoch, now)).toMatch(/^\w+, \w{3} \d{2}$/);
+  });
+});
+
+describe("resolveMentions", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.info__user=U00000001": {
+          ok: true,
+          user: { id: "U00000001", name: "alice", profile: { display_name: "Alice A" } },
+        },
+        "users.info__user=U00000002": {
+          ok: true,
+          user: { id: "U00000002", name: "bob", profile: { display_name: "Bob" } },
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("replaces <@UID> with display name", async () => {
+    const cache = new Map<string, string>();
+    const out = await resolveMentions("xoxp-fake", "hi <@U00000001>", cache);
+    expect(out).toBe("hi @Alice A");
+    expect(cache.get("U00000001")).toBe("Alice A");
+  });
+
+  test("handles multiple mentions and <@UID|label> form", async () => {
+    const cache = new Map<string, string>();
+    const out = await resolveMentions(
+      "xoxp-fake",
+      "hey <@U00000001> and <@U00000002|display>",
+      cache,
+    );
+    expect(out).toBe("hey @Alice A and @Bob");
+  });
+
+  test("reuses cache for subsequent mentions", async () => {
+    const cache = new Map<string, string>([["U00000001", "Cached"]]);
+    const out = await resolveMentions("xoxp-fake", "yo <@U00000001>", cache);
+    expect(out).toBe("yo @Cached");
+  });
+
+  test("leaves text with no mentions untouched", async () => {
+    const cache = new Map<string, string>();
+    const out = await resolveMentions("xoxp-fake", "plain text", cache);
+    expect(out).toBe("plain text");
   });
 });
 

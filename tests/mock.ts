@@ -44,8 +44,15 @@ export type MockHandle = {
   stop: () => Promise<void>;
 };
 
-export async function startMock(port = 0): Promise<MockHandle> {
-  const fixtures = await loadFixtures();
+export type InlineFixtures = Record<string, unknown>;
+
+export async function startMock(
+  opts: { port?: number; inline?: InlineFixtures } = {},
+): Promise<MockHandle> {
+  const { port = 0, inline } = opts;
+  const fixtures: Fixtures = inline
+    ? new Map(Object.entries(inline))
+    : await loadFixtures();
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");

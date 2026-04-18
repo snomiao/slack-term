@@ -11,10 +11,10 @@ export default defineConfig({
       exclude: ["ts/cli.ts", "tests/**", "dist/**"],
       // Low starting thresholds — raise as fixtures and tests grow.
       thresholds: {
-        lines: 20,
-        branches: 5,
-        functions: 20,
-        statements: 20,
+        lines: 90,
+        branches: 65,
+        functions: 90,
+        statements: 90,
       },
     },
   },

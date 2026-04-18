@@ -8,10 +8,12 @@ export type Json =
   | Json[]
   | { [k: string]: Json };
 
-const BASE = (process.env.SLACK_API_BASE ?? "https://slack.com/api").replace(/\/$/, "");
+function base(): string {
+  return (process.env.SLACK_API_BASE ?? "https://slack.com/api").replace(/\/$/, "");
+}
 
 async function call(token: string, method: string, init: RequestInit): Promise<Json> {
-  const res = await fetch(`${BASE}/${method}`, {
+  const res = await fetch(`${base()}/${method}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
