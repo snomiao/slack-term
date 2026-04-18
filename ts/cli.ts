@@ -11,10 +11,12 @@ import {
   history,
   listConversations,
   openDm,
+  replies,
   resolveChannel,
   search,
   searchAll,
   send as slackSend,
+  userInfoPair,
   userName,
   getPath,
   type Json,
@@ -76,7 +78,71 @@ async function displayUser(
   return typeof m.username === "string" ? m.username : "bot";
 }
 
-// --- msgs ---
+function formatYmdHmsUtc(epochSec: number): string {
+  const d = new Date(epochSec * 1000);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const s = String(d.getUTCSeconds()).padStart(2, "0");
+  return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
+}
+
+// Format one message line: `[YYYY-MM-DD HH:MM:SS] <real|@handle> text` (UTC)
+async function formatMsgLine(
+  token: string,
+  m: Record<string, Json>,
+  cache: Map<string, string>,
+): Promise<string> {
+  const ts = tsNum(m);
+  const stamp = formatYmdHmsUtc(ts);
+  let real = "?";
+  let handle = "?";
+  if (typeof m.user === "string") {
+    const uid = m.user;
+    const realKey = uid;
+    const handleKey = "@" + uid;
+    if (!cache.has(realKey) || !cache.has(handleKey)) {
+      const [d, h] = await userInfoPair(token, uid);
+      cache.set(realKey, d);
+      cache.set(handleKey, h);
+    }
+    real = cache.get(realKey) ?? uid;
+    handle = cache.get(handleKey) ?? uid;
+  } else if (typeof m.username === "string") {
+    real = m.username;
+    handle = m.username;
+  }
+  const raw = typeof m.text === "string" ? m.text : "";
+  const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
+  const oneline = resolved.split("\n").join(" ↵ ");
+  return `[${stamp}] <${real}|@${handle}> ${oneline}`;
+}
+
+// --- msgs <target> — channel/DM history with timestamps ---
+async function cmdMsgsTarget(token: string, target: string, limit: number): Promise<void> {
+  const channelId = await resolveChannel(token, target);
+  const hist = (await history(token, channelId, limit)) as Record<string, Json>;
+  const msgs = asArray(hist.messages).map(asRecord);
+  const cache = new Map<string, string>();
+  for (const m of msgs.reverse()) {
+    console.log(await formatMsgLine(token, m, cache));
+  }
+}
+
+// --- thread ---
+async function cmdThread(token: string, target: string, ts: string, limit: number): Promise<void> {
+  const channelId = await resolveChannel(token, target);
+  const resp = (await replies(token, channelId, ts, limit)) as Record<string, Json>;
+  const msgs = asArray(resp.messages).map(asRecord);
+  const cache = new Map<string, string>();
+  for (const m of msgs) {
+    console.log(await formatMsgLine(token, m, cache));
+  }
+}
+
+// --- msgs (no target) ---
 async function cmdMsgs(token: string): Promise<void> {
   const resp = (await listConversations(token)) as Record<string, Json>;
   const channels = asArray(resp.channels)
@@ -266,7 +332,8 @@ function usage(): never {
     [
       "Usage: slack <command> [args]",
       "Commands:",
-      "  msgs",
+      "  msgs [<#channel|@user|url>] [-n|--limit N]",
+      "  thread <#channel|@user|url> <ts> [-n|--limit N]",
       "  news [-l|--limit N]",
       "  search <query> [-n|--count N]",
       "  send <target> <message> [--thread TS] [--confirm HASH] [--channel-id ID] [--user-id ID]",
@@ -281,7 +348,30 @@ async function main(): Promise<void> {
   const [, , cmd, ...rest] = process.argv;
   switch (cmd) {
     case "msgs": {
-      await cmdMsgs(token);
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: { limit: { type: "string", short: "n", default: "20" } },
+        strict: true,
+      });
+      if (positionals[0]) {
+        await cmdMsgsTarget(token, positionals[0], Number(values.limit));
+      } else {
+        await cmdMsgs(token);
+      }
+      return;
+    }
+    case "thread": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: { limit: { type: "string", short: "n", default: "100" } },
+        strict: true,
+      });
+      const target = positionals[0];
+      const ts = positionals[1];
+      if (!target || !ts) usage();
+      await cmdThread(token, target, ts, Number(values.limit));
       return;
     }
     case "news": {

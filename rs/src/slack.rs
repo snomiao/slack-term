@@ -130,16 +130,94 @@ pub async fn open_dm(token: &str, user_id: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("Failed to open DM with user {user_id}"))
 }
 
-/// Resolve @user or #channel name to a channel/DM ID
+/// Normalize a name for loose matching: lowercase + strip hyphens/underscores/whitespace.
+/// So `@example-bot` matches a Slack handle `examplebot` or real_name `ExamplePR-Bot`.
+fn norm_name(s: &str) -> String {
+    s.to_lowercase().chars().filter(|c| !matches!(c, '-' | '_' | ' ' | '\t')).collect()
+}
+
+/// Extract channel ID from a Slack permalink (e.g. `https://app.slack.com/client/T.../C09QQ65QKG9`)
+fn parse_slack_url(s: &str) -> Option<String> {
+    let re_prefix = "app.slack.com/client/T";
+    let pos = s.find(re_prefix)?;
+    let rest = &s[pos + re_prefix.len()..];
+    // Skip over the team ID (alphanumeric)
+    let team_end = rest.find('/')?;
+    let after_team = &rest[team_end + 1..];
+    // Take the channel/user ID (stops at next `/`, `?`, or end)
+    let id_end = after_team
+        .find(|c: char| !c.is_ascii_alphanumeric())
+        .unwrap_or(after_team.len());
+    let id = &after_team[..id_end];
+    if id.is_empty() { None } else { Some(id.to_string()) }
+}
+
+/// Resolve @user or #channel name (or Slack URL) to a channel/DM ID.
+/// For @user, performs normalized matching against name, real_name, and display_name.
 pub async fn resolve_channel(token: &str, ref_str: &str) -> anyhow::Result<String> {
+    // Accept Slack permalinks directly
+    if let Some(id) = parse_slack_url(ref_str) {
+        return Ok(id);
+    }
+    // Accept raw IDs (C..., D..., G...)
     if !ref_str.starts_with('@') && !ref_str.starts_with('#') {
-        anyhow::bail!("Target must start with # or @, got: {ref_str}");
+        if ref_str.chars().all(|c| c.is_ascii_alphanumeric()) && ref_str.len() >= 9 {
+            return Ok(ref_str.to_string());
+        }
+        anyhow::bail!("Target must start with # or @ (or be a Slack URL/ID), got: {ref_str}");
     }
     let is_im = ref_str.starts_with('@');
-    let name = ref_str[1..].to_lowercase();
-    let types = if is_im { "im,mpim" } else { "public_channel,private_channel" };
+    let raw_name = &ref_str[1..];
+    let name_norm = norm_name(raw_name);
 
-    // Paginate through all conversations to find the target
+    if is_im {
+        // First find user ID via users.list (batch), then locate the IM channel.
+        let mut user_id = String::new();
+        let mut user_cursor = String::new();
+        'outer: loop {
+            let mut params = vec![("limit", "200")];
+            if !user_cursor.is_empty() { params.push(("cursor", &user_cursor)); }
+            let resp = get(token, "users.list", &params).await?;
+            let members = resp["members"].as_array().cloned().unwrap_or_default();
+            for u in &members {
+                let n = u["name"].as_str().unwrap_or("");
+                let rn = u["real_name"].as_str().unwrap_or("");
+                let dn = u["profile"]["display_name"].as_str().unwrap_or("");
+                if norm_name(n) == name_norm
+                    || norm_name(rn) == name_norm
+                    || (!dn.is_empty() && norm_name(dn) == name_norm)
+                {
+                    user_id = u["id"].as_str().unwrap_or("").to_string();
+                    break 'outer;
+                }
+            }
+            let next = resp["response_metadata"]["next_cursor"].as_str().unwrap_or("");
+            if next.is_empty() { break; }
+            user_cursor = next.to_string();
+        }
+        if user_id.is_empty() {
+            anyhow::bail!("User not found: {ref_str}");
+        }
+        // Find an existing DM channel with this user (avoids needing im:write scope).
+        let mut dm_cursor = String::new();
+        loop {
+            let mut params = vec![("types", "im"), ("limit", "200")];
+            if !dm_cursor.is_empty() { params.push(("cursor", &dm_cursor)); }
+            let resp = get(token, "conversations.list", &params).await?;
+            for ch in resp["channels"].as_array().cloned().unwrap_or_default() {
+                if ch["user"].as_str() == Some(&user_id) {
+                    return Ok(ch["id"].as_str().unwrap_or("").to_string());
+                }
+            }
+            let next = resp["response_metadata"]["next_cursor"].as_str().unwrap_or("");
+            if next.is_empty() { break; }
+            dm_cursor = next.to_string();
+        }
+        anyhow::bail!("No existing DM with {ref_str} ({user_id}). Open it once in Slack first.");
+    }
+
+    // Channel lookup
+    let types = "public_channel,private_channel";
     let mut cursor = String::new();
     loop {
         let mut params = vec![("limit", "200"), ("types", types), ("exclude_archived", "true")];
@@ -147,21 +225,9 @@ pub async fn resolve_channel(token: &str, ref_str: &str) -> anyhow::Result<Strin
         let resp = get(token, "conversations.list", &params).await?;
         let channels = resp["channels"].as_array().cloned().unwrap_or_default();
         for ch in &channels {
-            if is_im {
-                if let Some(uid) = ch["user"].as_str() {
-                    let info = get(token, "users.info", &[("user", uid)]).await.unwrap_or_default();
-                    let display = info["user"]["profile"]["display_name"].as_str().unwrap_or("")
-                        .to_lowercase();
-                    let uname = info["user"]["name"].as_str().unwrap_or("").to_lowercase();
-                    if display == name || uname == name {
-                        return Ok(ch["id"].as_str().unwrap_or("").to_string());
-                    }
-                }
-            } else {
-                let ch_name = ch["name"].as_str().unwrap_or("").to_lowercase();
-                if ch_name == name {
-                    return Ok(ch["id"].as_str().unwrap_or("").to_string());
-                }
+            let ch_name = ch["name"].as_str().unwrap_or("").to_lowercase();
+            if ch_name == raw_name.to_lowercase() {
+                return Ok(ch["id"].as_str().unwrap_or("").to_string());
             }
         }
         // Check for next page
@@ -230,6 +296,22 @@ pub fn resolve_date_markup(text: &str) -> String {
         result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
     }
     result
+}
+
+/// Look up both the canonical display label and the `@handle` for a user.
+/// Returns `(real_name or display_name, name)` — first is what's shown in Slack,
+/// second is the @-mention handle.
+pub async fn user_info_pair(token: &str, user_id: &str) -> (String, String) {
+    let Ok(resp) = get(token, "users.info", &[("user", user_id)]).await else {
+        return (user_id.to_string(), user_id.to_string());
+    };
+    let display = resp["user"]["profile"]["display_name"].as_str()
+        .filter(|s| !s.is_empty())
+        .or_else(|| resp["user"]["real_name"].as_str())
+        .unwrap_or(user_id)
+        .to_string();
+    let handle = resp["user"]["name"].as_str().unwrap_or(user_id).to_string();
+    (display, handle)
 }
 
 /// Look up a user's display name by ID

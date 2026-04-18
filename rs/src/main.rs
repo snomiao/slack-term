@@ -10,6 +10,37 @@ fn is_interactive() -> bool {
     unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
 }
 
+/// Format a message with timestamp, display_name, and resolved mention text.
+/// Produces: `[YYYY-MM-DD HH:MM:SS] <real_name|@username> text`
+async fn format_message(
+    token: &str,
+    m: &serde_json::Value,
+    user_cache: &mut HashMap<String, String>,
+) -> String {
+    let ts_f = m["ts"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
+    let dt = chrono::DateTime::from_timestamp(ts_f as i64, 0).unwrap_or_default();
+    let time = dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    let (real, uname) = if let Some(uid) = m["user"].as_str() {
+        let key_real = uid.to_string();
+        let key_handle = format!("@{uid}");
+        if !user_cache.contains_key(&key_real) || !user_cache.contains_key(&key_handle) {
+            let (d, h) = slack::user_info_pair(token, uid).await;
+            user_cache.insert(key_real.clone(), d);
+            user_cache.insert(key_handle.clone(), h);
+        }
+        (user_cache[&key_real].clone(), user_cache[&key_handle].clone())
+    } else if let Some(bot) = m["username"].as_str() {
+        (bot.to_string(), bot.to_string())
+    } else {
+        ("?".to_string(), "?".to_string())
+    };
+    let raw_text = m["text"].as_str().unwrap_or("");
+    let text = slack::resolve_mentions(token, raw_text, user_cache).await;
+    let text = slack::resolve_date_markup(&text);
+    let oneline: String = text.lines().collect::<Vec<_>>().join(" ↵ ");
+    format!("[{time}] <{real}|@{uname}> {oneline}")
+}
+
 fn sha256_hex(input: &str) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, input.as_bytes());
     let mut s = String::with_capacity(64);
@@ -26,8 +57,25 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Show recent messages across joined channels
-    Msgs,
+    /// Show recent messages. With no target: top joined channels overview.
+    /// With a target (#channel, @user, Slack URL, or raw ID): channel/DM history with timestamps.
+    Msgs {
+        /// Optional target: #channel-name, @username, Slack permalink, or raw channel/DM ID
+        target: Option<String>,
+        /// Number of messages to fetch when target is given
+        #[arg(short = 'n', long, default_value = "20")]
+        limit: i64,
+    },
+    /// Show replies in a thread
+    Thread {
+        /// Target: #channel-name, @username, Slack permalink, or raw channel ID
+        target: String,
+        /// Thread root timestamp (e.g. 1767850498.239129)
+        ts: String,
+        /// Max replies to fetch
+        #[arg(short = 'n', long, default_value = "100")]
+        limit: i64,
+    },
     /// Show activity feed (mentions, @channel, @here) like Slack's Activity tab
     News {
         /// Max items to show
@@ -82,7 +130,27 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.cmd {
-        Cmd::Msgs => {
+        Cmd::Msgs { target: Some(tgt), limit } => {
+            let channel_id = slack::resolve_channel(&token, &tgt).await?;
+            let mut user_cache: HashMap<String, String> = HashMap::new();
+            let hist = slack::history(&token, &channel_id, limit).await?;
+            let messages = hist["messages"].as_array().cloned().unwrap_or_default();
+            for m in messages.iter().rev() {
+                let line = format_message(&token, m, &mut user_cache).await;
+                println!("{line}");
+            }
+        }
+        Cmd::Thread { target, ts, limit } => {
+            let channel_id = slack::resolve_channel(&token, &target).await?;
+            let mut user_cache: HashMap<String, String> = HashMap::new();
+            let resp = slack::replies(&token, &channel_id, &ts, limit).await?;
+            let messages = resp["messages"].as_array().cloned().unwrap_or_default();
+            for m in &messages {
+                let line = format_message(&token, m, &mut user_cache).await;
+                println!("{line}");
+            }
+        }
+        Cmd::Msgs { target: None, .. } => {
             let resp = slack::list_conversations(&token).await?;
             let mut channels = resp["channels"].as_array().cloned().unwrap_or_default();
             channels.sort_by(|a, b| {

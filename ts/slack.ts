@@ -123,19 +123,83 @@ export async function openDm(token: string, userId: string): Promise<string> {
   return id;
 }
 
+/** Normalize for loose matching: lowercase + strip hyphens/underscores/whitespace.
+ *  `@example-bot` matches a Slack handle `examplebot` or real_name `ExamplePR-Bot`. */
+function normName(s: string): string {
+  return s.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+/** Extract channel ID from a Slack permalink
+ *  (e.g. `https://app.slack.com/client/T.../C09QQ65QKG9`) */
+function parseSlackUrl(s: string): string | undefined {
+  const m = s.match(/app\.slack\.com\/client\/T[A-Za-z0-9]+\/([A-Za-z0-9]+)/);
+  return m?.[1];
+}
+
 export async function resolveChannel(token: string, ref: string): Promise<string> {
+  // Accept Slack permalinks directly
+  const fromUrl = parseSlackUrl(ref);
+  if (fromUrl) return fromUrl;
+  // Accept raw IDs (C..., D..., G...) as-is
   if (!ref.startsWith("@") && !ref.startsWith("#")) {
-    throw new Error(`Target must start with # or @, got: ${ref}`);
+    if (/^[A-Za-z0-9]{9,}$/.test(ref)) return ref;
+    throw new Error(`Target must start with # or @ (or be a Slack URL/ID), got: ${ref}`);
   }
   const isIm = ref.startsWith("@");
-  const name = ref.slice(1).toLowerCase();
-  const types = isIm ? "im,mpim" : "public_channel,private_channel";
+  const rawName = ref.slice(1);
+  const nameNorm = normName(rawName);
 
+  if (isIm) {
+    // Find user ID first via users.list (batch), then locate existing DM.
+    let userId = "";
+    let userCursor = "";
+    while (true) {
+      const params: Record<string, string> = { limit: "200" };
+      if (userCursor) params.cursor = userCursor;
+      const resp = (await get(token, "users.list", params)) as {
+        members?: Array<{ id?: string; name?: string; real_name?: string; profile?: { display_name?: string } }>;
+        response_metadata?: { next_cursor?: string };
+      };
+      for (const u of resp.members ?? []) {
+        const n = normName(u.name ?? "");
+        const rn = normName(u.real_name ?? "");
+        const dn = normName(u.profile?.display_name ?? "");
+        if (n === nameNorm || rn === nameNorm || (dn && dn === nameNorm)) {
+          userId = u.id ?? "";
+          break;
+        }
+      }
+      if (userId) break;
+      userCursor = resp.response_metadata?.next_cursor ?? "";
+      if (!userCursor) break;
+    }
+    if (!userId) throw new Error(`User not found: ${ref}`);
+
+    // Find an existing DM (avoids needing im:write scope)
+    let dmCursor = "";
+    while (true) {
+      const params: Record<string, string> = { types: "im", limit: "200" };
+      if (dmCursor) params.cursor = dmCursor;
+      const resp = (await get(token, "conversations.list", params)) as {
+        channels?: Array<{ id?: string; user?: string }>;
+        response_metadata?: { next_cursor?: string };
+      };
+      for (const ch of resp.channels ?? []) {
+        if (ch.user === userId) return String(ch.id ?? "");
+      }
+      dmCursor = resp.response_metadata?.next_cursor ?? "";
+      if (!dmCursor) break;
+    }
+    throw new Error(`No existing DM with ${ref} (${userId}). Open it once in Slack first.`);
+  }
+
+  // Channel lookup
+  const lcName = rawName.toLowerCase();
   let cursor = "";
   while (true) {
     const params: Record<string, string> = {
       limit: "200",
-      types,
+      types: "public_channel,private_channel",
       exclude_archived: "true",
     };
     if (cursor) params.cursor = cursor;
@@ -144,27 +208,36 @@ export async function resolveChannel(token: string, ref: string): Promise<string
       response_metadata?: { next_cursor?: string };
     };
     for (const ch of resp.channels ?? []) {
-      if (isIm) {
-        const uid = ch.user;
-        if (typeof uid === "string") {
-          const info = (await get(token, "users.info", { user: uid }).catch(() => ({}))) as {
-            user?: { profile?: { display_name?: string }; name?: string };
-          };
-          const display = (info.user?.profile?.display_name ?? "").toLowerCase();
-          const uname = (info.user?.name ?? "").toLowerCase();
-          if (display === name || uname === name) {
-            return String(ch.id ?? "");
-          }
-        }
-      } else if (String(ch.name ?? "").toLowerCase() === name) {
+      if (String(ch.name ?? "").toLowerCase() === lcName) {
         return String(ch.id ?? "");
       }
     }
-    const next = resp.response_metadata?.next_cursor ?? "";
-    if (!next) break;
-    cursor = next;
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
   }
-  throw new Error(`${isIm ? "DM" : "channel"} not found: ${ref}`);
+  throw new Error(`channel not found: ${ref}`);
+}
+
+/** Look up both a display label and the `@handle` for a user.
+ *  Returns `[display_name || real_name || id, name || id]`. */
+export async function userInfoPair(
+  token: string,
+  userId: string,
+): Promise<[string, string]> {
+  try {
+    const resp = (await get(token, "users.info", { user: userId })) as {
+      user?: { profile?: { display_name?: string }; real_name?: string; name?: string };
+    };
+    const display = resp.user?.profile?.display_name;
+    const first =
+      display && display.length > 0
+        ? display
+        : (resp.user?.real_name ?? resp.user?.name ?? userId);
+    const handle = resp.user?.name ?? userId;
+    return [first, handle];
+  } catch {
+    return [userId, userId];
+  }
 }
 
 export async function userName(token: string, userId: string): Promise<string> {
