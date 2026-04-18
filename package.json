@@ -1,51 +1,9 @@
 {
   "name": "@snomiao/slack",
   "version": "0.2.0",
-  "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
-  "type": "module",
-  "bin": {
-    "slack": "./ts/cli.ts"
-  },
-  "files": [
-    "ts/",
-    "dist/",
-    "README.md",
-    "SKILL.md",
-    "LICENSE"
-  ],
-  "scripts": {
-    "dev": "bun run ts/cli.ts",
-    "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --coverage",
-    "test:watch": "vitest",
-    "test:parity": "bash tests/parity.sh",
-    "record": "bun run tests/record.ts",
-    "anonymize": "bun run tests/anonymize.ts",
-    "prepublishOnly": "bun run typecheck && bun run build"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "engines": {
-    "node": ">=18"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/snomiao/slack-cli.git"
-  },
-  "homepage": "https://github.com/snomiao/slack-cli",
-  "license": "MIT",
-  "keywords": [
-    "slack",
-    "cli",
-    "messaging",
-    "agent",
-    "terminal"
-  ],
-  "overrides": {
-    "@semantic-release/npm": "^13",
-    "@semantic-release/github": "^12"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13",
@@ -59,7 +17,46 @@
     "typescript": "^5.6",
     "vitest": "^4.1.4"
   },
-  "dependencies": {
-    "classic-level": "^3.0.0"
-  }
+  "bin": {
+    "slack": "./ts/cli.ts"
+  },
+  "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "ts/",
+    "dist/",
+    "README.md",
+    "SKILL.md",
+    "LICENSE"
+  ],
+  "homepage": "https://github.com/snomiao/slack-cli",
+  "keywords": [
+    "slack",
+    "cli",
+    "messaging",
+    "agent",
+    "terminal"
+  ],
+  "license": "MIT",
+  "overrides": {
+    "@semantic-release/npm": "^13",
+    "@semantic-release/github": "^12"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "dev": "bun run ts/cli.ts",
+    "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "test:parity": "bash tests/parity.sh",
+    "record": "bun run tests/record.ts",
+    "anonymize": "bun run tests/anonymize.ts",
+    "prepublishOnly": "bun run typecheck && bun run build"
+  },
+  "type": "module"
 }
