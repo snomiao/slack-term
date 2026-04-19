@@ -3,7 +3,7 @@
 
 import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -44,8 +44,18 @@ function loadDotenv(path: string): void {
   }
 }
 
+function ensureSlackCliDir(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const gi = join(dir, ".gitignore");
+  if (!existsSync(gi)) writeFileSync(gi, "*\n");
+}
+
 function loadDotenvFiles(): void {
+  // Global home config
+  loadDotenv(join(homedir(), ".slack-cli", ".env.local"));
   loadDotenv(join(homedir(), ".config/slack-cli", ".env"));
+  // Local project overrides (highest priority — loaded last so they win)
+  loadDotenv(join(process.cwd(), ".slack-cli", ".env.local"));
   loadDotenv(join(process.cwd(), ".env.local"));
   loadDotenv(join(process.cwd(), ".env"));
 }
@@ -374,19 +384,20 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
         return;
       }
       for (const s of sessions) {
-        console.error(`  Found: ${s.teamId} ${s.teamName ?? ""} ${s.url ?? ""}`);
-        // Verify token and get full team info
-        let info: Awaited<ReturnType<typeof authTest>>;
-        try {
-          info = await authTest(s.token);
-        } catch {
-          console.error(`  Skipping ${s.teamId}: token verification failed`);
-          continue;
-        }
-        const name = info.team.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        addProfile(name, { token: s.token, ...info });
-        console.log(`Added workspace "${name}": ${info.team} (${info.user})`);
+        const teamLabel = s.teamName ?? s.teamId;
+        console.error(`  Found: ${teamLabel} ${s.url ?? ""}`);
+        const name = teamLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        addProfile(name, {
+          token: s.token,
+          team: s.teamName ?? s.teamId,
+          teamId: s.teamId,
+          url: s.url ?? "",
+          user: "",
+        });
+        console.log(`Added workspace "${name}": ${teamLabel}`);
       }
+      console.log(`\nNote: desktop app tokens (xoxc-) are internal Slack tokens.`);
+      console.log(`If API calls fail, replace the token via: slack workspace add <name> <xoxp-token>`);
       console.log(`\nDone. Run: slack workspace ls`);
       return;
     }
@@ -403,10 +414,18 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
       return;
     }
     case "use": {
-      const [name] = args;
-      if (!name) { console.error("Usage: slack workspace use <name>"); process.exit(2); }
-      useProfile(name);
-      console.log(`Switched to workspace "${name}"`);
+      const globalFlag = args.includes("-g");
+      const name = args.find((a) => a !== "-g");
+      if (!name) {
+        console.error("Usage: slack workspace use [-g] <name>");
+        console.error("  -g   write to ~/.slack-cli/workspace (global)");
+        console.error("       default: write to .slack-cli/workspace (local cwd)");
+        process.exit(2);
+      }
+      if (!globalFlag) ensureSlackCliDir(join(process.cwd(), ".slack-cli"));
+      useProfile(name, globalFlag);
+      const scope = globalFlag ? "globally (~/.slack-cli/workspace)" : "locally (.slack-cli/workspace)";
+      console.log(`Switched to workspace "${name}" ${scope}`);
       return;
     }
     case "remove": {
