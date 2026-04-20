@@ -1,4 +1,4 @@
-// Mock Slack API server. Serves anonymized fixtures from tests/fixtures/anon/.
+// Mock Slack API server. Serves anonymized fixtures from tests/fixtures/mock/.
 //
 // Usage:
 //   import { startMock, stopMock } from "./mock.ts";
@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "node:http";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const ANON = join(HERE, "fixtures", "anon");
+const MOCK = join(HERE, "fixtures", "mock");
 
 type Fixtures = Map<string, unknown>;
 
@@ -30,10 +30,10 @@ function safeName(key: string): string {
 
 async function loadFixtures(): Promise<Fixtures> {
   const map: Fixtures = new Map();
-  const files = await readdir(ANON).catch(() => [] as string[]);
+  const files = await readdir(MOCK).catch(() => [] as string[]);
   for (const f of files) {
     if (!f.endsWith(".json")) continue;
-    const data = JSON.parse(await readFile(join(ANON, f), "utf8"));
+    const data = JSON.parse(await readFile(join(MOCK, f), "utf8"));
     map.set(f.replace(/\.json$/, ""), data);
   }
   return map;

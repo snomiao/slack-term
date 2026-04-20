@@ -15,9 +15,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 const RUST_BIN = join(ROOT, "rs", "target", "release", "slack");
 const TS_ENTRY = join(ROOT, "ts", "cli.ts");
-const ANON_DIR = join(HERE, "fixtures", "anon");
+const MOCK_DIR = join(HERE, "fixtures", "mock");
 
-const hasFixtures = existsSync(ANON_DIR) && readdirSync(ANON_DIR).some((f) => f.endsWith(".json"));
+const hasFixtures = existsSync(MOCK_DIR) && readdirSync(MOCK_DIR).some((f) => f.endsWith(".json"));
 
 let mock: MockHandle | undefined;
 let tmpHome: string;

@@ -4,7 +4,7 @@
 //   SLACK_MCP_XOXP_TOKEN=xoxp-... bun run tests/record.ts
 //
 // Writes raw JSON to tests/fixtures/raw/ (gitignored). Run tests/anonymize.ts
-// afterwards to produce committable fixtures under tests/fixtures/anon/.
+// afterwards to produce committable fixtures under tests/fixtures/mock/.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, dirname } from "node:path";

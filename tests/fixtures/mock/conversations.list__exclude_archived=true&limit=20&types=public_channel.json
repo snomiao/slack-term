@@ -1,0 +1,60 @@
+{
+  "ok": true,
+  "channels": [
+    {
+      "id": "C00000001",
+      "name": "general",
+      "name_normalized": "general",
+      "is_channel": true,
+      "is_group": false,
+      "is_im": false,
+      "is_mpim": false,
+      "is_private": false,
+      "is_archived": false,
+      "is_general": true,
+      "is_member": true,
+      "num_members": 10,
+      "created": 1600000000,
+      "creator": "U00000001",
+      "topic": { "value": "", "creator": "", "last_set": 0 },
+      "purpose": { "value": "General discussion", "creator": "U00000001", "last_set": 1600000000 }
+    },
+    {
+      "id": "C00000002",
+      "name": "random",
+      "name_normalized": "random",
+      "is_channel": true,
+      "is_group": false,
+      "is_im": false,
+      "is_mpim": false,
+      "is_private": false,
+      "is_archived": false,
+      "is_general": false,
+      "is_member": true,
+      "num_members": 8,
+      "created": 1600000001,
+      "creator": "U00000001",
+      "topic": { "value": "", "creator": "", "last_set": 0 },
+      "purpose": { "value": "Random chatter", "creator": "U00000001", "last_set": 1600000001 }
+    },
+    {
+      "id": "C00000003",
+      "name": "dev",
+      "name_normalized": "dev",
+      "is_channel": true,
+      "is_group": false,
+      "is_im": false,
+      "is_mpim": false,
+      "is_private": false,
+      "is_archived": false,
+      "is_general": false,
+      "is_member": true,
+      "num_members": 5,
+      "created": 1600000002,
+      "creator": "U00000002",
+      "topic": { "value": "", "creator": "", "last_set": 0 },
+      "purpose": { "value": "Engineering discussion", "creator": "U00000002", "last_set": 1600000002 }
+    }
+  ],
+  "response_metadata": { "next_cursor": "" }
+}
