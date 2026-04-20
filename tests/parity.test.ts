@@ -5,7 +5,8 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type MockHandle } from "./mock.ts";
@@ -19,13 +20,17 @@ const ANON_DIR = join(HERE, "fixtures", "anon");
 const hasFixtures = existsSync(ANON_DIR) && readdirSync(ANON_DIR).some((f) => f.endsWith(".json"));
 
 let mock: MockHandle | undefined;
+let tmpHome: string;
 
 beforeAll(async () => {
+  // Isolated home so no profiles.json / lockfiles bleed in from the real user env.
+  tmpHome = mkdtempSync(join(tmpdir(), "slack-parity-"));
   if (hasFixtures) mock = await startMock();
 });
 
 afterAll(async () => {
   if (mock) await mock.stop();
+  rmSync(tmpHome, { recursive: true, force: true });
 });
 
 type Case = { name: string; args: string[] };
@@ -35,11 +40,18 @@ const cases: Case[] = [
   { name: "search deploy --count 10", args: ["search", "deploy", "--count", "10"] },
 ];
 
+function cleanEnv(extra: Record<string, string>): Record<string, string> {
+  // Strip real token / real HOME so the subprocess sees only the mock config.
+  const { SLACK_MCP_XOXP_TOKEN: _t, HOME: _h, ...rest } = process.env as Record<string, string>;
+  return { ...rest, HOME: tmpHome, ...extra };
+}
+
 function runTs(args: string[], env: Record<string, string>): string {
   const r = spawnSync("bun", ["run", TS_ENTRY, ...args], {
     cwd: ROOT,
-    env: { ...process.env, ...env },
+    env: cleanEnv(env),
     encoding: "utf8",
+    timeout: 20_000,
   });
   if (r.status !== 0) {
     throw new Error(`ts exited ${r.status}: ${r.stderr}`);
@@ -50,8 +62,9 @@ function runTs(args: string[], env: Record<string, string>): string {
 function runRust(args: string[], env: Record<string, string>): string {
   const r = spawnSync(RUST_BIN, args, {
     cwd: ROOT,
-    env: { ...process.env, ...env },
+    env: cleanEnv(env),
     encoding: "utf8",
+    timeout: 20_000,
   });
   if (r.status !== 0) {
     throw new Error(`rust exited ${r.status}: ${r.stderr}`);
@@ -60,7 +73,7 @@ function runRust(args: string[], env: Record<string, string>): string {
 }
 
 describe.skipIf(!hasFixtures).each(cases)("parity: $name", ({ args }) => {
-  test("TS runs without error", () => {
+  test("TS runs without error", { timeout: 60_000 }, () => {
     if (!mock) throw new Error("mock not started");
     const env = {
       SLACK_API_BASE: `${mock.baseUrl}/api`,
@@ -70,7 +83,7 @@ describe.skipIf(!hasFixtures).each(cases)("parity: $name", ({ args }) => {
     expect(out).toBeTypeOf("string");
   });
 
-  test.skipIf(!existsSync(RUST_BIN))("TS and Rust produce identical output", () => {
+  test.skipIf(!existsSync(RUST_BIN))("TS and Rust produce identical output", { timeout: 60_000 }, () => {
     if (!mock) throw new Error("mock not started");
     const env = {
       SLACK_API_BASE: `${mock.baseUrl}/api`,

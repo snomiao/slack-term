@@ -22,6 +22,7 @@ export type Profile = {
   teamId: string;
   url: string;
   user: string;
+  cookie?: string; // xoxd session cookie for internal APIs (drafts, etc.)
 };
 
 type ProfileStore = {
@@ -81,6 +82,13 @@ export function listProfiles(): { name: string; profile: Profile; current: boole
 export function addProfile(name: string, profile: Profile): void {
   const store = load();
   store.profiles[name] = profile;
+  save(store);
+}
+
+export function setCookie(name: string, cookie: string): void {
+  const store = load();
+  if (!(name in store.profiles)) throw new Error(`Profile not found: ${name}`);
+  store.profiles[name]!.cookie = cookie;
   save(store);
 }
 
@@ -158,4 +166,25 @@ export function resolveToken(workspaceFlag?: string): string {
     `  Select locally:  slack workspace use <name>          (writes .slack-cli/workspace)\n` +
     `  Select globally: slack workspace use -g <name>       (writes ~/.slack-cli/workspace)`,
   );
+}
+
+/** Resolve the xoxd session cookie for the active workspace (best-effort). */
+export function resolveCookie(workspaceFlag?: string): string | undefined {
+  const store = load();
+  const profiles = store.profiles;
+  const envToken = process.env.SLACK_MCP_XOXP_TOKEN;
+
+  // Env-only mode has no stored cookie
+  if (envToken) return process.env.SLACK_MCP_XOXD_COOKIE;
+
+  const selected = workspaceFlag ?? process.env.SLACK_WORKSPACE;
+  if (selected) return profiles[selected]?.cookie;
+
+  const localName = readLockfile(localLockfilePath());
+  if (localName) return profiles[localName]?.cookie;
+
+  const globalName = readLockfile(globalLockfilePath());
+  if (globalName) return profiles[globalName]?.cookie;
+
+  return undefined;
 }

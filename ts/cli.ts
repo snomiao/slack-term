@@ -7,13 +7,19 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { addProfile, listProfiles, removeProfile, resolveToken, useProfile } from "./profiles.ts";
+import { addProfile, listProfiles, removeProfile, resolveCookie, resolveToken, setCookie, useProfile } from "./profiles.ts";
 import { extractSessions } from "./slack-app.ts";
-import { authTest } from "./slack.ts";
 
 import {
+  authTest,
+  authTestSession,
+  conversationInfoSession,
+  createDraft,
+  deleteDraft,
+  updateDraft,
   history,
   listConversations,
+  listDrafts,
   openDm,
   replies,
   resolveChannel,
@@ -280,12 +286,147 @@ async function cmdDump(
   console.error(`Dumped ${total} messages across ${active} channels (cutoff: ${days}d)`);
 }
 
+// Extract plain text from Slack rich-text blocks
+function blocksToText(blocks: Json[]): string {
+  const parts: string[] = [];
+  function walk(node: Json): void {
+    if (typeof node === "string") { parts.push(node); return; }
+    if (Array.isArray(node)) { for (const n of node) walk(n); return; }
+    if (node && typeof node === "object") {
+      const obj = node as Record<string, Json>;
+      if (typeof obj.text === "string") { parts.push(obj.text); return; }
+      if (Array.isArray(obj.elements)) walk(obj.elements);
+      else if (Array.isArray(obj.content)) walk(obj.content);
+    }
+  }
+  for (const b of blocks) walk(b);
+  return parts.join("").trim();
+}
+
+// --- drafts helpers ---
+async function buildChLabelResolver(
+  token: string,
+  cookie: string | undefined,
+  myUserId: string,
+): Promise<(channelId: string) => Promise<string>> {
+  const cache = new Map<string, string>();
+  return async (channelId: string): Promise<string> => {
+    if (!channelId) return "(unknown)";
+    if (cache.has(channelId)) return cache.get(channelId)!;
+    try {
+      const info = (await conversationInfoSession(token, channelId, cookie)) as Record<string, Json>;
+      const ch = asRecord(info.channel);
+      let label: string;
+      if (ch.is_im === true) {
+        const uid = typeof ch.user === "string" ? ch.user : "";
+        if (!uid || uid === myUserId) {
+          label = "@self";
+        } else {
+          const [display] = await userInfoPair(token, uid);
+          label = `@${display}`;
+        }
+      } else {
+        label = `#${typeof ch.name === "string" ? ch.name : channelId}`;
+      }
+      cache.set(channelId, label);
+      return label;
+    } catch {
+      return channelId;
+    }
+  };
+}
+
+function draftChannelId(d: Record<string, Json>): string {
+  const dest = asRecord(asArray(d.destinations)[0]);
+  return String(dest.channel_id ?? d.channel_id ?? d.channel ?? "");
+}
+
+function draftText(d: Record<string, Json>): string {
+  return blocksToText(asArray(d.blocks)) || (typeof d.text === "string" ? d.text : "(no text)");
+}
+
+// --- drafts list ---
+async function cmdDrafts(token: string, cookie?: string, showAll = false): Promise<void> {
+  const resp = (await listDrafts(token, cookie)) as Record<string, Json>;
+  const all = asArray(resp.drafts ?? resp.messages ?? [])
+    .map(asRecord)
+    .filter((d) => d.is_deleted !== true);
+  const drafts = showAll ? all : all.filter((d) => d.is_sent !== true);
+
+  if (drafts.length === 0) {
+    console.log(showAll ? "No drafts." : "No pending drafts. Run with --all to include sent.");
+    return;
+  }
+
+  let myUserId = "";
+  try { ({ userId: myUserId } = await authTestSession(token, cookie)); } catch { /* best-effort */ }
+  const resolveChLabel = await buildChLabelResolver(token, cookie, myUserId);
+  const mentionCache = new Map<string, string>();
+
+  for (const d of drafts) {
+    const channelId = draftChannelId(d);
+    const text = draftText(d);
+    const ts = Number(d.date_created ?? d.date_create ?? 0);
+    const stamp = ts ? formatYmdHmsUtc(ts) : "?";
+    const chLabel = await resolveChLabel(channelId);
+    const id = typeof d.id === "string" ? d.id : "";
+    const sentTag = d.is_sent === true ? "  [SENT]" : "";
+    const resolved = resolveDateMarkup(await resolveMentions(token, text, mentionCache));
+    console.log(`── ${id}  ${chLabel}  [${stamp}]${sentTag}`);
+    for (const line of resolved.split("\n")) console.log(`   ${line}`);
+  }
+}
+
+// --- drafts get ---
+async function cmdDraftGet(token: string, cookie: string | undefined, draftId: string): Promise<void> {
+  const resp = (await listDrafts(token, cookie)) as Record<string, Json>;
+  const d = asArray(resp.drafts).map(asRecord).find((x) => String(x.id) === draftId);
+  if (!d) { console.error(`Draft not found: ${draftId}`); process.exit(1); }
+
+  let myUserId = "";
+  try { ({ userId: myUserId } = await authTestSession(token, cookie)); } catch { /* best-effort */ }
+  const resolveChLabel = await buildChLabelResolver(token, cookie, myUserId);
+
+  const channelId = draftChannelId(d);
+  const text = draftText(d);
+  const ts = Number(d.date_created ?? 0);
+  const updatedTs = String(d.last_updated_ts ?? "?");
+  const chLabel = await resolveChLabel(channelId);
+
+  const cache = new Map<string, string>();
+  const resolved = resolveDateMarkup(await resolveMentions(token, text, cache));
+
+  console.log(`id:      ${d.id}`);
+  console.log(`channel: ${chLabel}  (${channelId})`);
+  console.log(`created: ${ts ? formatYmdHmsUtc(ts) : "?"}`);
+  console.log(`updated: ${formatYmdHmsUtc(Number(updatedTs.split(".")[0]))}`);
+  console.log(`status:  ${d.is_sent === true ? "sent" : "pending"}`);
+  console.log(`---`);
+  console.log(resolved);
+}
+
+/** Compute a 4-char hex safety code from arbitrary context strings. */
+function safetyCode(...parts: string[]): string {
+  return sha256Hex(parts.join("\n")).slice(0, 4);
+}
+
+/** Dry-run gate: print context, print required --code=, exit 1.
+ *  Call this when --code is absent or wrong. */
+function requireCode(provided: string | undefined, expected: string, contextLines: string[]): void {
+  for (const line of contextLines) console.log(line);
+  if (provided !== undefined) {
+    console.error(`Code mismatch (got ${provided}, expected ${expected})`);
+  }
+  console.error(`Rerun with --code=${expected}`);
+  process.exit(1);
+}
+
 // --- send ---
 interface SendArgs {
   target: string;
   message: string;
   thread?: string;
-  confirm?: string;
+  code?: string;
   channelId?: string;
   userId?: string;
 }
@@ -301,37 +442,24 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     process.exit(1);
   }
 
-  const ctx = (await history(token, channelId, 5)) as Record<string, Json>;
-  const ctxMsgs = asArray(ctx.messages)
-    .map(asRecord)
-    .filter((m) => m.subtype === undefined || m.subtype === null)
-    .slice(0, 5);
-  const stable = ctxMsgs
-    .map((m) => `${typeof m.ts === "string" ? m.ts : ""}:${typeof m.text === "string" ? m.text : ""}`)
-    .join("\n");
-  const hash = sha256Hex(stable + args.message).slice(0, 4);
+  // Fetch last 1 message for context hash
+  const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
+  const lastMsg = asArray(ctx.messages).map(asRecord)
+    .filter((m) => m.subtype === undefined || m.subtype === null)[0];
+  const lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+  const lastUser = typeof lastMsg?.user === "string" ? lastMsg.user : "?";
 
-  if (args.confirm === undefined) {
-    if (process.stderr.isTTY) {
-      console.log("─── Recent context ──────────────────────────");
-      for (const m of ctxMsgs) {
-        const user = typeof m.user === "string" ? m.user : "?";
-        const line = (typeof m.text === "string" ? m.text : "").split("\n")[0] ?? "";
-        console.log(`  ${user}: ${line}`);
-      }
-      console.log("─── Message preview ─────────────────────────");
-      console.log(
-        `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
-      );
-      console.log(`  Message: ${args.message}`);
-      console.log("─────────────────────────────────────────────");
-    }
-    console.error(`Rerun with --confirm=${hash}`);
-    process.exit(1);
-  }
-  if (args.confirm !== hash) {
-    console.error(`Confirm hash mismatch. Expected: ${hash}`);
-    process.exit(1);
+  const code = safetyCode(lastText, args.message);
+
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `─── Last message in channel ──────────────────`,
+      `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+      `─── Sending ──────────────────────────────────`,
+      `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
+      `  Message: ${args.message}`,
+      `─────────────────────────────────────────────`,
+    ]);
   }
   const ts = await slackSend(token, channelId, args.message, args.thread);
   console.log(`✓ Sent (ts: ${ts})`);
@@ -347,11 +475,18 @@ function usage(): never {
       "  thread <#channel|@user|url> <ts> [-n|--limit N]",
       "  news [-l|--limit N]",
       "  search <query> [-n|--count N]",
-      "  send <target> <message> [--thread TS] [--confirm HASH] [--channel-id ID] [--user-id ID]",
+      "  drafts [--all]                  list pending drafts (--all includes sent)",
+      "  drafts new <#channel|@user> <text>",
+      "  drafts get <draft-id>",
+      "  drafts edit <draft-id> [--code=XXXX] <new-text>",
+      "  drafts delete <draft-id> [--code=XXXX]",
+      "  send <target> <message> [--thread TS] [--code XXXX] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
       "  workspace ls|list",
       "  workspace import          (auto-import from Slack desktop app)",
       "  workspace add <name> <token>",
+      "  workspace set-token <name> <token>",
+      "  workspace set-cookie <name> <xoxd>  (store xoxd cookie for draft API)",
       "  workspace use <name>",
       "  workspace remove <name>",
       "  workspace current",
@@ -387,17 +522,21 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
         const teamLabel = s.teamName ?? s.teamId;
         console.error(`  Found: ${teamLabel} ${s.url ?? ""}`);
         const name = teamLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        addProfile(name, {
+        const profile: Parameters<typeof addProfile>[1] = {
           token: s.token,
           team: s.teamName ?? s.teamId,
           teamId: s.teamId,
           url: s.url ?? "",
           user: "",
-        });
-        console.log(`Added workspace "${name}": ${teamLabel}`);
+        };
+        if (s.cookie) profile.cookie = s.cookie;
+        addProfile(name, profile);
+        const cookieNote = s.cookie ? " + xoxd cookie" : "";
+        console.log(`Added workspace "${name}": ${teamLabel}${cookieNote}`);
       }
       console.log(`\nNote: desktop app tokens (xoxc-) are internal Slack tokens.`);
-      console.log(`If API calls fail, replace the token via: slack workspace add <name> <xoxp-token>`);
+      console.log(`If API calls fail, replace with an xoxp- token:`);
+      console.log(`  slack workspace set-token <name> <xoxp-token>`);
       console.log(`\nDone. Run: slack workspace ls`);
       return;
     }
@@ -407,10 +546,36 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
         console.error("Usage: slack workspace add <name> <token>");
         process.exit(2);
       }
-      console.error(`Verifying token against Slack...`);
+      console.error(`Verifying token...`);
       const info = await authTest(token);
       addProfile(name, { token, ...info });
       console.log(`Added workspace "${name}": ${info.team} (${info.user})`);
+      return;
+    }
+    case "set-token": {
+      const [name, token] = args;
+      if (!name || !token) {
+        console.error("Usage: slack workspace set-token <name> <token>");
+        console.error("  Updates the token for an existing workspace profile.");
+        process.exit(2);
+      }
+      console.error(`Verifying token...`);
+      const info = await authTest(token);
+      addProfile(name, { token, ...info });
+      console.log(`Updated workspace "${name}": ${info.team} (${info.user})`);
+      return;
+    }
+    case "set-cookie": {
+      const [name, xoxd] = args;
+      if (!name || !xoxd) {
+        console.error("Usage: slack workspace set-cookie <name> <xoxd-value>");
+        console.error("  Stores the xoxd session cookie for draft API access.");
+        console.error("  Get it from: DevTools → Application → Cookies → slack.com → d");
+        process.exit(2);
+      }
+      const cookieVal = xoxd.startsWith("d=") ? xoxd.slice(2) : xoxd;
+      setCookie(name, cookieVal);
+      console.log(`Cookie set for workspace "${name}". Run: slack drafts`);
       return;
     }
     case "use": {
@@ -426,6 +591,7 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
       useProfile(name, globalFlag);
       const scope = globalFlag ? "globally (~/.slack-cli/workspace)" : "locally (.slack-cli/workspace)";
       console.log(`Switched to workspace "${name}" ${scope}`);
+      if (!globalFlag) console.log(`Tip: add .slack-cli/ to your .gitignore`);
       return;
     }
     case "remove": {
@@ -467,6 +633,7 @@ async function main(): Promise<void> {
   }
 
   const token = resolveToken(workspaceFlag);
+  const cookie = resolveCookie(workspaceFlag);
 
   switch (cmd) {
     case "msgs": {
@@ -505,6 +672,76 @@ async function main(): Promise<void> {
       await cmdNews(token, Number(values.limit));
       return;
     }
+    case "drafts": {
+      const sub = rest[0];
+      if (sub === "new" || sub === "save") {
+        // drafts new <#channel|@user> <text...>
+        const args2 = rest.slice(1);
+        const target = args2[0];
+        const text = args2.slice(1).join(" ");
+        if (!target || !text) {
+          console.error("Usage: slack drafts new <#channel|@user> <text>");
+          process.exit(2);
+        }
+        const channelId = await resolveChannel(token, target, cookie);
+        const resp = (await createDraft(token, channelId, text, cookie)) as Record<string, Json>;
+        console.log(`✓ Draft created (id: ${asRecord(resp.draft).id ?? "?"})`);
+      } else if (sub === "get") {
+        const draftId = rest[1];
+        if (!draftId) { console.error("Usage: slack drafts get <draft-id>"); process.exit(2); }
+        await cmdDraftGet(token, cookie, draftId);
+      } else if (sub === "edit" || sub === "update") {
+        // drafts edit <draft-id> [--code=XXXX] <text...>
+        const draftId = rest[1];
+        const codeArg = rest.find((a) => a.startsWith("--code="))?.slice(7);
+        const textParts = rest.slice(2).filter((a) => !a.startsWith("--code="));
+        const text = textParts.join(" ");
+        if (!draftId || !text) {
+          console.error("Usage: slack drafts edit <draft-id> <new-text>");
+          process.exit(2);
+        }
+        const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
+        const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === draftId);
+        if (!d) { console.error(`Draft not found: ${draftId}`); process.exit(1); }
+        const prevText = draftText(d);
+        const code = safetyCode(prevText, text);
+        if (codeArg !== code) {
+          requireCode(codeArg, code, [
+            `─── Current draft content ────────────────────`,
+            ...prevText.split("\n").map((l) => `  ${l}`),
+            `─── Replacing with ───────────────────────────`,
+            ...text.split("\n").map((l) => `  ${l}`),
+            `─────────────────────────────────────────────`,
+          ]);
+        }
+        const channelId = draftChannelId(d);
+        const resp = (await updateDraft(token, draftId, channelId, text, cookie)) as Record<string, Json>;
+        console.log(`✓ Draft updated (id: ${asRecord(resp.draft).id ?? "?"})`);
+      } else if (sub === "delete" || sub === "rm") {
+        const draftId = rest[1];
+        const codeArg = rest.find((a) => a.startsWith("--code="))?.slice(7);
+        if (!draftId) { console.error("Usage: slack drafts delete <draft-id>"); process.exit(2); }
+        const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
+        const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === draftId);
+        if (!d) { console.error(`Draft not found: ${draftId}`); process.exit(1); }
+        const prevText = draftText(d);
+        const code = safetyCode(draftId, prevText);
+        if (codeArg !== code) {
+          requireCode(codeArg, code, [
+            `─── Deleting draft ───────────────────────────`,
+            `  id: ${draftId}`,
+            ...prevText.split("\n").map((l) => `  ${l}`),
+            `─────────────────────────────────────────────`,
+          ]);
+        }
+        await deleteDraft(token, draftId, cookie);
+        console.log(`✓ Draft deleted (id: ${draftId})`);
+      } else {
+        const showAll = rest.includes("--all") || rest.includes("-a");
+        await cmdDrafts(token, cookie, showAll);
+      }
+      return;
+    }
     case "search": {
       const { values, positionals } = parseArgs({
         args: rest,
@@ -523,7 +760,7 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           thread: { type: "string" },
-          confirm: { type: "string" },
+          code: { type: "string" },
           "channel-id": { type: "string" },
           "user-id": { type: "string" },
         },
@@ -534,7 +771,7 @@ async function main(): Promise<void> {
       if (!target || !message) usage();
       const sendArgs: SendArgs = { target, message };
       if (values.thread !== undefined) sendArgs.thread = values.thread;
-      if (values.confirm !== undefined) sendArgs.confirm = values.confirm;
+      if (values.code !== undefined) sendArgs.code = values.code;
       if (values["channel-id"] !== undefined) sendArgs.channelId = values["channel-id"];
       if (values["user-id"] !== undefined) sendArgs.userId = values["user-id"];
       await cmdSend(token, sendArgs);

@@ -12,24 +12,80 @@ function base(): string {
   return (process.env.SLACK_API_BASE ?? "https://slack.com/api").replace(/\/$/, "");
 }
 
-async function call(token: string, method: string, init: RequestInit): Promise<Json> {
+async function call(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  const extraHeaders: Record<string, string> = {};
+  if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/${method}`, {
     ...init,
     headers: {
       ...(init.headers ?? {}),
       Authorization: `Bearer ${token}`,
+      ...extraHeaders,
     },
   });
   const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
   if (body.ok !== true) {
-    throw new Error(`Slack error on ${method}: ${body.error ?? "unknown"}`);
+    const err = body.error ?? "unknown";
+    if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
+      throw new Error(
+        `Desktop app token (xoxc-) is not accepted by the public Slack API.\n` +
+        `Replace it with an xoxp- user token:\n` +
+        `  slack workspace set-token <name> <xoxp-token>`,
+      );
+    }
+    throw new Error(`Slack error on ${method}: ${err}`);
   }
   return body as Json;
 }
 
-function get(token: string, method: string, params: Record<string, string>): Promise<Json> {
+// Internal Slack API caller — does NOT reject xoxc tokens.
+// Used for hidden endpoints (drafts, etc.) only accessible via session tokens.
+// cookie: raw xoxd value (without "d=" prefix); injected as Cookie header when present.
+async function callSession(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  const extraHeaders: Record<string, string> = {};
+  if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
+  const res = await fetch(`${base()}/${method}`, {
+    ...init,
+    headers: {
+      ...(init.headers ?? {}),
+      Authorization: `Bearer ${token}`,
+      ...extraHeaders,
+    },
+  });
+  const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
+  if (body.ok !== true) {
+    const err = body.error ?? "unknown";
+    if ((err === "invalid_auth" || err === "not_authed") && !token.startsWith("xoxc-")) {
+      throw new Error(
+        `The draft API requires a desktop app session token (xoxc-).\n` +
+        `Import from Slack desktop:  slack workspace import`,
+      );
+    }
+    if ((err === "invalid_auth" || err === "not_authed") && !cookie) {
+      throw new Error(
+        `drafts.list also requires the xoxd session cookie.\n` +
+        `Set it with:  slack workspace set-cookie <workspace-name> <xoxd-value>\n` +
+        `Get xoxd from browser: DevTools → Application → Cookies → slack.com → d`,
+      );
+    }
+    throw new Error(`Slack error on ${method}: ${err}`);
+  }
+  return body as Json;
+}
+
+function postSession(token: string, method: string, params: Record<string, string> = {}, cookie?: string): Promise<Json> {
+  // Internal Slack APIs accept form-encoded body with token field.
+  const body = new URLSearchParams({ token, ...params });
+  return callSession(token, method, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  }, cookie);
+}
+
+function get(token: string, method: string, params: Record<string, string>, cookie?: string): Promise<Json> {
   const qs = new URLSearchParams(params).toString();
-  return call(token, `${method}?${qs}`, { method: "GET" });
+  return call(token, `${method}?${qs}`, { method: "GET" }, cookie);
 }
 
 function post(token: string, method: string, body: Record<string, Json>): Promise<Json> {
@@ -150,7 +206,7 @@ function parseSlackUrl(s: string): string | undefined {
   return m?.[1];
 }
 
-export async function resolveChannel(token: string, ref: string): Promise<string> {
+export async function resolveChannel(token: string, ref: string, cookie?: string): Promise<string> {
   // Accept Slack permalinks directly
   const fromUrl = parseSlackUrl(ref);
   if (fromUrl) return fromUrl;
@@ -170,7 +226,7 @@ export async function resolveChannel(token: string, ref: string): Promise<string
     while (true) {
       const params: Record<string, string> = { limit: "200" };
       if (userCursor) params.cursor = userCursor;
-      const resp = (await get(token, "users.list", params)) as {
+      const resp = (await get(token, "users.list", params, cookie)) as {
         members?: Array<{ id?: string; name?: string; real_name?: string; profile?: { display_name?: string } }>;
         response_metadata?: { next_cursor?: string };
       };
@@ -194,7 +250,7 @@ export async function resolveChannel(token: string, ref: string): Promise<string
     while (true) {
       const params: Record<string, string> = { types: "im", limit: "200" };
       if (dmCursor) params.cursor = dmCursor;
-      const resp = (await get(token, "conversations.list", params)) as {
+      const resp = (await get(token, "conversations.list", params, cookie)) as {
         channels?: Array<{ id?: string; user?: string }>;
         response_metadata?: { next_cursor?: string };
       };
@@ -217,7 +273,7 @@ export async function resolveChannel(token: string, ref: string): Promise<string
       exclude_archived: "true",
     };
     if (cursor) params.cursor = cursor;
-    const resp = (await get(token, "conversations.list", params)) as {
+    const resp = (await get(token, "conversations.list", params, cookie)) as {
       channels?: Array<Record<string, Json>>;
       response_metadata?: { next_cursor?: string };
     };
@@ -265,6 +321,72 @@ export async function userName(token: string, userId: string): Promise<string> {
   } catch {
     return userId;
   }
+}
+
+// Draft API (internal — requires xoxc session token + xoxd cookie)
+export async function listDrafts(token: string, cookie?: string): Promise<Json> {
+  return postSession(token, "drafts.list", {}, cookie);
+}
+
+export async function createDraft(
+  token: string,
+  channelId: string,
+  text: string,
+  cookie?: string,
+): Promise<Json> {
+  const { randomUUID } = await import("node:crypto");
+  const blocks = JSON.stringify([{
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  }]);
+  return postSession(token, "drafts.create", {
+    client_msg_id: randomUUID(),
+    destinations: JSON.stringify([{ channel_id: channelId }]),
+    blocks,
+    file_ids: JSON.stringify([]),
+    is_from_composer: "true",
+  }, cookie);
+}
+
+export async function updateDraft(
+  token: string,
+  draftId: string,
+  channelId: string,
+  text: string,
+  cookie?: string,
+): Promise<Json> {
+  const blocks = JSON.stringify([{
+    type: "rich_text",
+    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+  }]);
+  // client_last_updated_ts must be the current time (server uses it as new stored ts)
+  const nowTs = (Date.now() / 1000).toFixed(6);
+  return postSession(token, "drafts.update", {
+    draft_id: draftId,
+    client_last_updated_ts: nowTs,
+    destinations: JSON.stringify([{ channel_id: channelId }]),
+    blocks,
+    file_ids: JSON.stringify([]),
+  }, cookie);
+}
+
+// Channel info via session API (works with xoxc + xoxd cookie)
+export async function conversationInfoSession(token: string, channelId: string, cookie?: string): Promise<Json> {
+  return postSession(token, "conversations.info", { channel: channelId }, cookie);
+}
+
+export async function deleteDraft(token: string, draftId: string, cookie?: string): Promise<Json> {
+  const nowTs = (Date.now() / 1000).toFixed(6);
+  return postSession(token, "drafts.delete", { draft_id: draftId, client_last_updated_ts: nowTs }, cookie);
+}
+
+// auth.test via session API (works with xoxc + xoxd cookie)
+export async function authTestSession(
+  token: string,
+  cookie?: string,
+): Promise<{ userId: string; teamId: string }> {
+  const resp = (await postSession(token, "auth.test", {}, cookie)) as Record<string, Json>;
+  return { userId: String(resp.user_id ?? ""), teamId: String(resp.team_id ?? "") };
 }
 
 // Safe nested access

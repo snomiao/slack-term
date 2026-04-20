@@ -1,0 +1,1254 @@
+{
+  "ok": true,
+  "query": "to:me",
+  "messages": {
+    "total": 3619,
+    "pagination": {
+      "total_count": 3619,
+      "page": 1,
+      "per_page": 20,
+      "page_count": 181,
+      "first": 1,
+      "last": 20
+    },
+    "paging": {
+      "count": 20,
+      "total": 3619,
+      "page": 1,
+      "pages": 181
+    },
+    "matches": [
+      {
+        "db_message": {},
+        "iid": "20243505-6c7e-4bff-a961-e63f255d31ac",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776637818.048009",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=cXRpaG5iajhkMWpzM3VzdWFwbGk2bHZvc29fMjAyNjA0MjAgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "JHve",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776610800,
+                    "format": "{date_long}",
+                    "fallback": "Monday, April 20, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "consectetur adipiscing elit",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776637818048009",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "ec563752-c19e-4cf6-bd17-9508c056cf03",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D04NEFWU4MS",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-41",
+          "user": "U00000008"
+        },
+        "type": "im",
+        "user": "U00000008",
+        "username": "user3",
+        "ts": "1776555290.050679",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "VmvGp",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/D04NEFWU4MS/p1776555290050679",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "8d8e14dc-c347-4092-95d9-cc9248d4317b",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D04NEFWU4MS",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-41",
+          "user": "U00000008"
+        },
+        "type": "im",
+        "user": "U00000008",
+        "username": "user3",
+        "ts": "1776555287.306749",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "aabGe",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut labore et dolore magna aliqua",
+        "permalink": "https://example.slack.com/archives/D04NEFWU4MS/p1776555287306749"
+      },
+      {
+        "db_message": {},
+        "iid": "20b24fac-5b63-45a5-8c50-8091679ce014",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D07R2FACUKE",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-42",
+          "user": "U00000017"
+        },
+        "type": "im",
+        "user": "U00000017",
+        "username": "user7",
+        "ts": "1776537100.023629",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "2uP9s",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/D07R2FACUKE/p1776537100023629"
+      },
+      {
+        "db_message": {},
+        "iid": "7477599a-08cd-456e-b3bb-c047629e456d",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09C00000091",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-43",
+          "user": "U00000011"
+        },
+        "type": "im",
+        "user": "U00000011",
+        "username": "drjkl",
+        "ts": "1776526474.438399",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "5h1zC",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-44",
+                    "unicode": "1f601"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "sed do eiusmod tempor incididunt",
+        "permalink": "https://example.slack.com/archives/D09C00000091/p1776526474438399",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "4d663158-ad64-4d06-b952-7c8fb9f735f9",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D06T00000022",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-45",
+          "user": "U00000020"
+        },
+        "type": "im",
+        "user": "U00000020",
+        "username": "dr.lt.data",
+        "ts": "1776526119.900399",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "1zAkR",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-33",
+                    "unicode": "1f642"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/D06T00000022/p1776526119900399",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "6bd6d6c2-64a8-496f-abf9-d43418708876",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776378603.400489",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "<!date^1776376800^{time}|4/17/26>-<!date^1776391200^{time}|4/17/26> *<https://www.google.com/calendar/event?eid=NGhxZzk4MTg1djh1Yzl0NTF2NW8xbDFoYTFfMjAyNjA0MTZUMjIwMDAwWiBzbm9AY29tZnkub3Jn&amp;ctz=UTC|:female-technologist::skin-tone-4: Prompt &amp; Play :magic_wand:>*\n*Going?*",
+            "text": "consectetur adipiscing elit",
+            "callback_id": "rsvp_today",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ],
+            "actions": [
+              {
+                "id": "1",
+                "name": "user-46",
+                "text": "ut labore et dolore magna aliqua",
+                "type": "button",
+                "value": "RSVP_AC00000092",
+                "style": ""
+              },
+              {
+                "id": "2",
+                "name": "user-46",
+                "text": "quis nostrud exercitation ullamco",
+                "type": "button",
+                "value": "RSVP_T00000023",
+                "style": ""
+              },
+              {
+                "id": "3",
+                "name": "user-46",
+                "text": "sed do eiusmod tempor incididunt",
+                "type": "button",
+                "value": "RSVP_DECLINED",
+                "style": ""
+              }
+            ]
+          },
+          {
+            "id": 2,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=bDNpa2Q5aHU5YnUxaHBscDN2Z2VnNm43ZjhfMjAyNjA0MTcgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "o5az",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776351600,
+                    "format": "{date_long}",
+                    "fallback": "Friday, April 17, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "consectetur adipiscing elit",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776378603400489",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "150a0c42-217d-49f6-a42d-90095ba20269",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D098J9S870T",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-47",
+          "user": "U00000083"
+        },
+        "type": "im",
+        "user": "U00000083",
+        "username": "benjaminlu1107",
+        "ts": "1776377089.434659",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "OsncT",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "http://otters.ai",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/D098J9S870T/p1776377089434659"
+      },
+      {
+        "db_message": {},
+        "iid": "a193af3b-bf14-4d97-b6dd-88614b535260",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000026",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": true,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "channel-26",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000084",
+        "username": "user6",
+        "ts": "1776311665.000099",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "RgQvS",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "user",
+                    "user_id": "U00000005"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/C00000026/p1776311665000099?thread_ts=1776311665.000099"
+      },
+      {
+        "db_message": {},
+        "iid": "cdaeebda-8960-4700-91e9-4436bd1b4540",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09DK96RNNM",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-48",
+          "user": "U00000085"
+        },
+        "type": "im",
+        "user": "U00000085",
+        "username": "coderfromthenorth93",
+        "ts": "1776301609.528139",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "6SvSX",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/D09DK96RNNM/p1776301609528139",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "d3be91b7-7cf2-4b65-8784-8fd77f387628",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09DK96RNNM",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-48",
+          "user": "U00000085"
+        },
+        "type": "im",
+        "user": "U00000085",
+        "username": "coderfromthenorth93",
+        "ts": "1776301597.054129",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "zsl9e",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut labore et dolore magna aliqua",
+        "permalink": "https://example.slack.com/archives/D09DK96RNNM/p1776301597054129",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "53f34723-7433-4c32-b353-9c9ea20711fb",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776292220.718659",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=cDJuZmsxNG8xc3E1bmxhOHZhOW90Z2xhb2NfMjAyNjA0MTYgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "BOnaj",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776265200,
+                    "format": "{date_long}",
+                    "fallback": "Thursday, April 16, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut labore et dolore magna aliqua",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776292220718659",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "89bc0a13-397d-41ee-aa92-abf25edc7551",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09DK96RNNM",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-48",
+          "user": "U00000085"
+        },
+        "type": "im",
+        "user": "U00000085",
+        "username": "coderfromthenorth93",
+        "ts": "1776225906.713599",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "4xps5",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000005"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/D09DK96RNNM/p1776225906713599"
+      },
+      {
+        "db_message": {},
+        "iid": "05aeccc2-cda6-4669-b853-882e2141fd5c",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776205854.445439",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=YjQzMjJtdTRuOWZlMmpjNWNycGJwdDNvcW9fMjAyNjA0MTUgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "cxa",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776178800,
+                    "format": "{date_long}",
+                    "fallback": "Wednesday, April 15, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776205854445439",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "4b7f4260-c9d9-4341-8154-288cfe24da75",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000026",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": true,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "channel-26",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000001",
+        "username": "user2",
+        "ts": "1776192306.629609",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "6klun",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/C00000026/p1776192306629609"
+      },
+      {
+        "db_message": {},
+        "iid": "7ac5e7b4-c75a-482f-8831-deb0965e74fe",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000026",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": true,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "channel-26",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000084",
+        "username": "user6",
+        "ts": "1776143728.502879",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "qs1C4",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/C00000026/p1776143728502879"
+      },
+      {
+        "db_message": {},
+        "iid": "013b0ea5-a00f-4059-84d6-f8f354470421",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776119443.066669",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=M2M1M25zbGZuY3ZlNDdmOWFidGtscjMzYTRfMjAyNjA0MTQgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "gN92s",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776092400,
+                    "format": "{date_long}",
+                    "fallback": "Tuesday, April 14, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "sed do eiusmod tempor incididunt",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776119443066669",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "6df1c6ab-6ff3-4540-bc75-3ab7832e2d73",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09GGTE7S00",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-49",
+          "user": "U00000055"
+        },
+        "type": "im",
+        "user": "U00000055",
+        "username": "example-bot",
+        "ts": "1776079219.375949",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "HKsqty",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam",
+                    "style": {
+                      "code": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/Example-PR/pull/200",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet",
+                    "style": {
+                      "bold": true
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "strike": true
+                        }
+                      }
+                    ],
+                    "checked": true
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "strike": true
+                        }
+                      }
+                    ],
+                    "checked": true
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "strike": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "strike": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "strike": true
+                        }
+                      }
+                    ],
+                    "checked": true
+                  }
+                ],
+                "checklist": true
+              }
+            ]
+          }
+        ],
+        "text": "consectetur adipiscing elit",
+        "permalink": "https://example.slack.com/archives/D09GGTE7S00/p1776079219375949?thread_ts=1775621127.847529",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "de8e5b89-c1e1-44f6-a0bd-c67f66de1c5c",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D09DK96RNNM",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-48",
+          "user": "U00000085"
+        },
+        "type": "im",
+        "user": "U00000085",
+        "username": "coderfromthenorth93",
+        "ts": "1776046183.062899",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "qFByw",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000005"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/D09DK96RNNM/p1776046183062899"
+      },
+      {
+        "db_message": {},
+        "iid": "4189c716-26ac-4276-bc87-a6b26acb0ef4",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "D0A5F6NKA9F",
+          "is_channel": false,
+          "is_group": false,
+          "is_im": true,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": true,
+          "is_archived": false,
+          "name": "user-40",
+          "user": "U00000082"
+        },
+        "type": "im",
+        "user": "U00000082",
+        "username": "google calendar",
+        "ts": "1776033003.749639",
+        "attachments": [
+          {
+            "id": 1,
+            "color": "3AA3E3",
+            "fallback": "All-day *<https://www.google.com/calendar/event?eid=cXRpaG5iajhkMWpzM3VzdWFwbGk2bHZvc29fMjAyNjA0MTMgc25vQGNvbWZ5Lm9yZw&amp;ctz=UTC|Home>*",
+            "text": "quis nostrud exercitation ullamco",
+            "mrkdwn_in": [
+              "pretext",
+              "text"
+            ]
+          }
+        ],
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "IaAUT",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "date",
+                    "timestamp": 1776006000,
+                    "format": "{date_long}",
+                    "fallback": "Monday, April 13, 2026"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "consectetur adipiscing elit",
+        "permalink": "https://example.slack.com/archives/D0A5F6NKA9F/p1776033003749639",
+        "no_reactions": true
+      }
+    ]
+  }
+}

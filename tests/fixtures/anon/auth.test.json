@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "url": "https://example.slack.com/",
+  "team": "Example Org",
+  "user": "user1",
+  "team_id": "T00000001",
+  "user_id": "U00000005",
+  "is_enterprise_install": false
+}

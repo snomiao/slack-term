@@ -1,0 +1,5282 @@
+{
+  "ok": true,
+  "query": "deploy",
+  "messages": {
+    "total": 27822,
+    "pagination": {
+      "total_count": 27822,
+      "page": 1,
+      "per_page": 10,
+      "page_count": 2783,
+      "first": 1,
+      "last": 10
+    },
+    "paging": {
+      "count": 10,
+      "total": 27822,
+      "page": 1,
+      "pages": 2783
+    },
+    "matches": [
+      {
+        "db_message": {},
+        "iid": "76e4d4f0-9276-4d83-ad96-fcbae3102763",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000088",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-79",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000052",
+        "username": "jacob.e.segal",
+        "ts": "1776634246.261439",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "nqd7U",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000079"
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "ut enim ad minim veniam",
+        "permalink": "https://example.slack.com/archives/C00000088/p1776634246261439?thread_ts=1776604714.588769",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "b0017034-5825-4848-b76d-5d5efc23c116",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000089",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-80",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000055",
+        "username": "example-bot",
+        "ts": "1776628278.068949",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "ownStg",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/releases/tag/v1.44.5",
+                    "text": "consectetur adipiscing elit",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut labore et dolore magna aliqua",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/Example-PR/tree/HEAD/app/tasks/gh-frontend-backport-checker/index.ts",
+                    "text": "consectetur adipiscing elit",
+                    "unsafe": true,
+                    "style": {
+                      "italic": true
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11174",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000029"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11223",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000045"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11224",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000045"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11232",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000040"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10849",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000029"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11233",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000062"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11290",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000045"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11295",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000029"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11240",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000062"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11329",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000062"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11289",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000045"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11193",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000035"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11283",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000045"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11321",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000029"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11296",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "italic": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000029"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11265",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000080"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11335",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000040"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10741",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-37",
+                    "unicode": "27a1-fe0f"
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "emoji",
+                    "name": "user-38",
+                    "unicode": "2757"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "user",
+                    "user_id": "U00000062"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/C00000089/p1776628278068949?thread_ts=1776628278.068949",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "4a797d0d-be20-42a5-a78a-0278375a2def",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000028",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-28",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000055",
+        "username": "example-bot",
+        "ts": "1776628227.922909",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "lrqD",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "emoji",
+                    "name": "user-39",
+                    "unicode": "1f3a8"
+                  },
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/releases/tag/v1.44.5",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11174",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11147",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11223",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11224",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11238",
+                    "text": "ut enim ad minim veniam"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11201",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11237",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11236",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11232",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11133",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10849",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11128",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10968",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11283",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11362",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11328",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11291",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11296",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11321",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11325",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10804",
+                    "text": "ut labore et dolore magna aliqua"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11274",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11378",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11349",
+                    "text": "ut enim ad minim veniam",
+                    "unsafe": true
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11334",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/10741",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "text",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/pull/11213",
+                    "text": "consectetur adipiscing elit"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  },
+                  {
+                    "type": "link",
+                    "url": "https://github.com/ExampleOrg/ExampleUI_frontend/compare/v1.44.4...v1.44.5"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/C00000028/p1776628227922909",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "1088a9d6-3ed2-4418-bcce-020e84ebd552",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000008",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-08",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000081",
+        "username": "github",
+        "ts": "1776627663.125889",
+        "attachments": [
+          {
+            "id": 1,
+            "footer_icon": "https://slack.github.com/static/img/favicon-neutral.png",
+            "ts": 1776627661,
+            "color": "24292f",
+            "fallback": "[ExampleOrg/ExampleUI_frontend] New release <https://github.com/ExampleOrg/ExampleUI_frontend/releases/tag/v1.44.5|Release - v1.44.5> published by github-actions[bot]",
+            "text": "ut labore et dolore magna aliqua",
+            "pretext": "New release published by <https://github.com/apps/github-actions|github-actions[bot]>",
+            "title": "<https://github.com/ExampleOrg/ExampleUI_frontend/releases/tag/v1.44.5|Release - v1.44.5>",
+            "footer": "<https://github.com/ExampleOrg/ExampleUI_frontend|ExampleOrg/ExampleUI_frontend>",
+            "mrkdwn_in": [
+              "text"
+            ]
+          }
+        ],
+        "text": "",
+        "permalink": "https://example.slack.com/archives/C00000008/p1776627663125889",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "b20e5468-5ce5-48b6-8e34-2ae1a9059ca5",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000088",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-79",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000079",
+        "username": "glary-bot",
+        "ts": "1776606946.920119",
+        "blocks": [
+          {
+            "type": "section",
+            "block_id": "CYJ/H",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut enim ad minim veniam",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "v0O6q",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "DN+7o",
+            "text": {
+              "type": "plain_text",
+              "text": "consectetur adipiscing elit",
+              "emoji": true
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "/lPLb",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "h8lPs",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "Ts8Ww",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "25OGv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "iB/vR",
+            "text": {
+              "type": "plain_text",
+              "text": "consectetur adipiscing elit",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "5yLFS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "SyRYE",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "Jk8cP",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "header",
+            "block_id": "q9X1h",
+            "text": {
+              "type": "plain_text",
+              "text": "sed do eiusmod tempor incididunt",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "dU6QI",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "OnnwN",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "J9HbU",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "JuRgu",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "r0P8n",
+            "text": {
+              "type": "plain_text",
+              "text": "lorem ipsum dolor sit amet",
+              "emoji": true
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "hN7Sw",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "header",
+            "block_id": "OIBDm",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "dgZDg",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "Qy9z7",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "BwSId",
+            "text": {
+              "type": "plain_text",
+              "text": "ut labore et dolore magna aliqua",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "/AmBv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "vnhMd",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "/Eoxi",
+            "text": {
+              "type": "plain_text",
+              "text": "quis nostrud exercitation ullamco",
+              "emoji": true
+            }
+          },
+          {
+            "type": "table",
+            "block_id": "aIKT7",
+            "rows": [
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "QfyPe"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "vXC3q"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "consectetur adipiscing elit",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "LwY3x"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "consectetur adipiscing elit"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "vqoc0"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "xiiDA"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "rxJLC"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "bKWr3"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "B0EHt"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "xsJeu"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "2cUdU"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "Wpbn+"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "bAgch"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "2P4Ot"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "qJE4Y"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "BGCNQ"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "jXghn"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "Nw9zz"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "hnzrZ"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "UdUrW"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "V/zBJ"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "kOVa8"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "YbOd7"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "v1kyB"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "kQne+"
+                }
+              ]
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "0CZeM",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/C00000088/p1776606946920119?thread_ts=1776604714.588769",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "cc7b516e-2c11-489e-88cf-b9de86f5a828",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000090",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-81",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000079",
+        "username": "glary-bot",
+        "ts": "1776606946.700049",
+        "blocks": [
+          {
+            "type": "section",
+            "block_id": "CYJ/H",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut enim ad minim veniam",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "v0O6q",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "DN+7o",
+            "text": {
+              "type": "plain_text",
+              "text": "consectetur adipiscing elit",
+              "emoji": true
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "/lPLb",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "h8lPs",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "Ts8Ww",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "25OGv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "iB/vR",
+            "text": {
+              "type": "plain_text",
+              "text": "consectetur adipiscing elit",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "5yLFS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "SyRYE",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "Jk8cP",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "header",
+            "block_id": "q9X1h",
+            "text": {
+              "type": "plain_text",
+              "text": "sed do eiusmod tempor incididunt",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "dU6QI",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "OnnwN",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "J9HbU",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "JuRgu",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "r0P8n",
+            "text": {
+              "type": "plain_text",
+              "text": "lorem ipsum dolor sit amet",
+              "emoji": true
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "hN7Sw",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "header",
+            "block_id": "OIBDm",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "dgZDg",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "Qy9z7",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "BwSId",
+            "text": {
+              "type": "plain_text",
+              "text": "ut labore et dolore magna aliqua",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "/AmBv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "vnhMd",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "header",
+            "block_id": "/Eoxi",
+            "text": {
+              "type": "plain_text",
+              "text": "quis nostrud exercitation ullamco",
+              "emoji": true
+            }
+          },
+          {
+            "type": "table",
+            "block_id": "aIKT7",
+            "rows": [
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "QfyPe"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "vXC3q"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "consectetur adipiscing elit",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "LwY3x"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "consectetur adipiscing elit"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "vqoc0"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "xiiDA"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "rxJLC"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "bKWr3"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "B0EHt"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "xsJeu"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "2cUdU"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "Wpbn+"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "bAgch"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut enim ad minim veniam",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "2P4Ot"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "qJE4Y"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "BGCNQ"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "jXghn"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "lorem ipsum dolor sit amet",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "Nw9zz"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "hnzrZ"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "UdUrW"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "V/zBJ"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "sed do eiusmod tempor incididunt",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "kOVa8"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "ut labore et dolore magna aliqua"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "YbOd7"
+                }
+              ],
+              [
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco",
+                          "style": {
+                            "code": true
+                          }
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "v1kyB"
+                },
+                {
+                  "type": "rich_text",
+                  "elements": [
+                    {
+                      "type": "rich_text_section",
+                      "elements": [
+                        {
+                          "type": "text",
+                          "text": "quis nostrud exercitation ullamco"
+                        }
+                      ]
+                    }
+                  ],
+                  "block_id": "kQne+"
+                }
+              ]
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "0CZeM",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/C00000090/p1776606946700049?thread_ts=1776198944.100249",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "9ded3d10-c200-4a16-a7f4-a6cf9f760760",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000088",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-79",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000079",
+        "username": "glary-bot",
+        "ts": "1776604930.838769",
+        "blocks": [
+          {
+            "type": "section",
+            "block_id": "VDbZS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "WUtfF",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "6JJRx",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "1yZ9W",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "BHfRq",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "divider",
+            "block_id": "mRvhA"
+          },
+          {
+            "type": "header",
+            "block_id": "vqD69",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "AXdfD",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "Z+rMX",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "t8Yem",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "KkfZi",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "UmmXe",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "XgjpJ",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "o7rWu",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "2GJnB",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "gfPs4",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "kl70w",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "pM6uO",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "fMH7S",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "lVyV0"
+          },
+          {
+            "type": "header",
+            "block_id": "akWEO",
+            "text": {
+              "type": "plain_text",
+              "text": "lorem ipsum dolor sit amet",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "YFxPG",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "MxjRv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "Wsr4k",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut enim ad minim veniam",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "lSe8h",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 1,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "+8tVQ",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "nxqJi",
+            "elements": [
+              {
+                "type": "rich_text_quote",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "code": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "code": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "2wvQP",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "5ZW/q",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "VY1vo"
+          },
+          {
+            "type": "section",
+            "block_id": "8QI3M",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "9Ffiv",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "HlYo4"
+          },
+          {
+            "type": "section",
+            "block_id": "it2nU",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "wTDyS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "0k9fU",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/C00000088/p1776604930838769?thread_ts=1776604714.588769",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "9d3cd7b2-31de-4445-ae7f-421936011ace",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000090",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-81",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000079",
+        "username": "glary-bot",
+        "ts": "1776604930.694189",
+        "blocks": [
+          {
+            "type": "section",
+            "block_id": "VDbZS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "WUtfF",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "6JJRx",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "1yZ9W",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "BHfRq",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "divider",
+            "block_id": "mRvhA"
+          },
+          {
+            "type": "header",
+            "block_id": "vqD69",
+            "text": {
+              "type": "plain_text",
+              "text": "ut enim ad minim veniam",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "AXdfD",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "Z+rMX",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "t8Yem",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "KkfZi",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "UmmXe",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "XgjpJ",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "o7rWu",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "ut enim ad minim veniam"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "2GJnB",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "gfPs4",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "kl70w",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "pM6uO",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut labore et dolore magna aliqua",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "fMH7S",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "lVyV0"
+          },
+          {
+            "type": "header",
+            "block_id": "akWEO",
+            "text": {
+              "type": "plain_text",
+              "text": "lorem ipsum dolor sit amet",
+              "emoji": true
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "YFxPG",
+            "text": {
+              "type": "mrkdwn",
+              "text": "sed do eiusmod tempor incididunt",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "MxjRv",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "Wsr4k",
+            "text": {
+              "type": "mrkdwn",
+              "text": "ut enim ad minim veniam",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "lSe8h",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_list",
+                "style": "bullet",
+                "indent": 1,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "bold": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "+8tVQ",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "nxqJi",
+            "elements": [
+              {
+                "type": "rich_text_quote",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "bold": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco",
+                    "style": {
+                      "code": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  },
+                  {
+                    "type": "text",
+                    "text": "sed do eiusmod tempor incididunt",
+                    "style": {
+                      "code": true
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "section",
+            "block_id": "2wvQP",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "5ZW/q",
+            "elements": [
+              {
+                "type": "rich_text_preformatted",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "quis nostrud exercitation ullamco"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "VY1vo"
+          },
+          {
+            "type": "section",
+            "block_id": "8QI3M",
+            "text": {
+              "type": "mrkdwn",
+              "text": "quis nostrud exercitation ullamco",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "9Ffiv",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "quis nostrud exercitation ullamco"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt"
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam"
+                      },
+                      {
+                        "type": "text",
+                        "text": "ut enim ad minim veniam",
+                        "style": {
+                          "code": true
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "divider",
+            "block_id": "HlYo4"
+          },
+          {
+            "type": "section",
+            "block_id": "it2nU",
+            "text": {
+              "type": "mrkdwn",
+              "text": "lorem ipsum dolor sit amet",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "section",
+            "block_id": "wTDyS",
+            "text": {
+              "type": "mrkdwn",
+              "text": "consectetur adipiscing elit",
+              "verbatim": false
+            }
+          },
+          {
+            "type": "rich_text",
+            "block_id": "0k9fU",
+            "elements": [
+              {
+                "type": "rich_text_list",
+                "style": "ordered",
+                "indent": 0,
+                "elements": [
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "consectetur adipiscing elit",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet",
+                        "style": {
+                          "bold": true,
+                          "code": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "sed do eiusmod tempor incididunt",
+                        "style": {
+                          "bold": true
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": "lorem ipsum dolor sit amet"
+                      }
+                    ]
+                  },
+                  {
+                    "type": "rich_text_section",
+                    "elements": [
+                      {
+                        "type": "text",
+                        "text": "ut labore et dolore magna aliqua"
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "quis nostrud exercitation ullamco",
+        "permalink": "https://example.slack.com/archives/C00000090/p1776604930694189?thread_ts=1776198944.100249",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "d553ffda-0020-4677-972c-ebfa9b471d5d",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000008",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-08",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000081",
+        "username": "github",
+        "ts": "1776603414.700499",
+        "attachments": [
+          {
+            "id": 1,
+            "footer_icon": "https://slack.github.com/static/img/favicon-neutral.png",
+            "ts": 1776603413,
+            "color": "28a745",
+            "fallback": "[ExampleOrg/ExampleUI_frontend] Successfully deployed <https://github.com/ExampleOrg/ExampleUI_frontend/commit/2003f2979fbb35b9dd5900d2a9c6f3ee662d7bbb|`2003f29`> to <https://website-frontend-omfpbp6c3-exampleui.vercel.app|Preview>",
+            "pretext": "Deployment to <https://website-frontend-omfpbp6c3-exampleui.vercel.app|Preview> by <https://github.com/apps/vercel|vercel[bot]>",
+            "footer": "<https://github.com/ExampleOrg/ExampleUI_frontend|ExampleOrg/ExampleUI_frontend>",
+            "fields": [
+              {
+                "value": "Completed",
+                "title": "Status",
+                "short": true
+              },
+              {
+                "value": "<https://github.com/ExampleOrg/ExampleUI_frontend/commit/2003f2979fbb35b9dd5900d2a9c6f3ee662d7bbb|`2003f29`>",
+                "title": "Commit",
+                "short": true
+              }
+            ],
+            "mrkdwn_in": [
+              "text"
+            ]
+          }
+        ],
+        "text": "",
+        "permalink": "https://example.slack.com/archives/C00000008/p1776603414700499",
+        "no_reactions": true
+      },
+      {
+        "db_message": {},
+        "iid": "6876279f-5c35-44fe-b5a4-4fc4f6607a3a",
+        "team": "T00000001",
+        "score": 0,
+        "channel": {
+          "id": "C00000089",
+          "is_channel": true,
+          "is_group": false,
+          "is_im": false,
+          "is_mpim": false,
+          "is_shared": false,
+          "is_org_shared": false,
+          "is_ext_shared": false,
+          "is_private": false,
+          "is_archived": false,
+          "name": "channel-80",
+          "pending_shared": [],
+          "is_pending_ext_shared": false
+        },
+        "type": "message",
+        "user": "U00000045",
+        "username": "cbyrne",
+        "ts": "1776602120.326999",
+        "blocks": [
+          {
+            "type": "rich_text",
+            "block_id": "QnxUd",
+            "elements": [
+              {
+                "type": "rich_text_section",
+                "elements": [
+                  {
+                    "type": "text",
+                    "text": "lorem ipsum dolor sit amet"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "text": "lorem ipsum dolor sit amet",
+        "permalink": "https://example.slack.com/archives/C00000089/p1776602120326999?thread_ts=1776602120.326999"
+      }
+    ]
+  }
+}
