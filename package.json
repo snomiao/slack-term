@@ -1,6 +1,6 @@
 {
   "name": "@snomiao/slack",
-  "version": "0.2.0",
+  "version": "1.7.0",
   "repository": {
     "type": "git",
     "url": "https://github.com/snomiao/slack-cli.git"
