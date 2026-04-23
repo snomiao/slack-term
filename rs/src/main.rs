@@ -12,14 +12,41 @@ fn is_interactive() -> bool {
 
 /// Format a message with timestamp, display_name, and resolved mention text.
 /// Produces: `[YYYY-MM-DD HH:MM:SS] <real_name|@username> text`
+fn slack_ts_to_iso(ts_str: &str) -> String {
+    let ts_f = ts_str.parse::<f64>().unwrap_or(0.0);
+    let secs = ts_f as i64;
+    let micros: u32 = ts_str.find('.')
+        .map(|p| format!("{:0<6}", &ts_str[p+1..]).chars().take(6).collect::<String>().parse().unwrap_or(0))
+        .unwrap_or(0);
+    let dt = chrono::DateTime::from_timestamp(secs, micros * 1000).unwrap_or_default();
+    format!("{}.{:06}Z", dt.format("%Y-%m-%dT%H:%M:%S"), micros)
+}
+
+/// Parse a ts argument: accepts raw Slack ts ("1767850498.239129") or ISO 8601
+/// ("2026-04-23T10:30:45.239129Z") and returns Slack ts string.
+fn parse_ts_arg(ts: &str) -> String {
+    // If it looks like a float already, pass through
+    if ts.parse::<f64>().is_ok() {
+        return ts.to_string();
+    }
+    // Try ISO 8601 parse
+    // chrono can parse RFC3339 / ISO8601
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        let secs = dt.timestamp();
+        let micros = dt.timestamp_subsec_micros();
+        return format!("{secs}.{micros:06}");
+    }
+    // fallback: return as-is
+    ts.to_string()
+}
+
 async fn format_message(
     token: &str,
     m: &serde_json::Value,
     user_cache: &mut HashMap<String, String>,
 ) -> String {
-    let ts_f = m["ts"].as_str().unwrap_or("0").parse::<f64>().unwrap_or(0.0);
-    let dt = chrono::DateTime::from_timestamp(ts_f as i64, 0).unwrap_or_default();
-    let time = dt.format("%Y-%m-%d %H:%M:%S").to_string();
+    let ts_str = m["ts"].as_str().unwrap_or("0");
+    let time = slack_ts_to_iso(ts_str);
     let (real, uname) = if let Some(uid) = m["user"].as_str() {
         let key_real = uid.to_string();
         let key_handle = format!("@{uid}");
@@ -167,7 +194,8 @@ async fn main() -> Result<()> {
         Cmd::Thread { target, ts, limit } => {
             let channel_id = slack::resolve_channel(&token, &target).await?;
             let mut user_cache: HashMap<String, String> = HashMap::new();
-            let resp = slack::replies(&token, &channel_id, &ts, limit).await?;
+            let slack_ts = parse_ts_arg(&ts);
+            let resp = slack::replies(&token, &channel_id, &slack_ts, limit).await?;
             let messages = resp["messages"].as_array().cloned().unwrap_or_default();
             for m in &messages {
                 let line = format_message(&token, m, &mut user_cache).await;
