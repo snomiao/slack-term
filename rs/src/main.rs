@@ -133,10 +133,34 @@ async fn main() -> Result<()> {
         Cmd::Msgs { target: Some(tgt), limit } => {
             let channel_id = slack::resolve_channel(&token, &tgt).await?;
             let mut user_cache: HashMap<String, String> = HashMap::new();
+
+            // Print conversation header
+            let info = slack::channel_info(&token, &channel_id).await.unwrap_or_default();
+            let ch = &info["channel"];
+            let header = if ch["is_im"].as_bool() == Some(true) {
+                let uid = ch["user"].as_str().unwrap_or("");
+                let (name, handle) = slack::user_info_pair(&token, uid).await;
+                format!("DM with {name}|@{handle}")
+            } else if ch["is_mpim"].as_bool() == Some(true) {
+                format!("Group DM: {}", ch["name"].as_str().unwrap_or(&channel_id))
+            } else {
+                format!("#{}", ch["name"].as_str().unwrap_or(&channel_id))
+            };
+            println!("── {header} ─────────────────────────────────");
+
             let hist = slack::history(&token, &channel_id, limit).await?;
             let messages = hist["messages"].as_array().cloned().unwrap_or_default();
             for m in messages.iter().rev() {
-                let line = format_message(&token, m, &mut user_cache).await;
+                let mut line = format_message(&token, m, &mut user_cache).await;
+                let reply_count = m["reply_count"].as_i64().unwrap_or(0);
+                if reply_count > 0 {
+                    line.push_str(&format!("  [{reply_count} replies]"));
+                }
+                let ts = m["ts"].as_str().unwrap_or("");
+                let thread_ts = m["thread_ts"].as_str().unwrap_or("");
+                if !thread_ts.is_empty() && thread_ts != ts {
+                    line.push_str("  [reply in thread]");
+                }
                 println!("{line}");
             }
         }

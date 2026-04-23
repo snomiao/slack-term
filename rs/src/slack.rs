@@ -327,6 +327,11 @@ pub async fn user_name(token: &str, user_id: &str) -> String {
         .to_string()
 }
 
+/// Get channel/DM metadata (type, name, is_im, is_mpim, user)
+pub async fn channel_info(token: &str, channel_id: &str) -> Result<Value> {
+    get(token, "conversations.info", &[("channel", channel_id)]).await
+}
+
 /// Get replies in a thread
 pub async fn replies(token: &str, channel_id: &str, thread_ts: &str, limit: i64) -> Result<Value> {
     get(token, "conversations.replies", &[
