@@ -1,25 +1,50 @@
 mod slack;
 
 use anyhow::Result;
+use chrono::{Datelike, TimeZone};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
 fn is_interactive() -> bool {
-    // Returns true only if stderr is a real terminal (not piped/captured)
     unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
 }
 
-/// Format a message with timestamp, display_name, and resolved mention text.
-/// Produces: `[YYYY-MM-DD HH:MM:SS] <real_name|@username> text`
-fn slack_ts_to_iso(ts_str: &str) -> String {
+fn is_stdout_tty() -> bool {
+    unsafe { libc::isatty(libc::STDOUT_FILENO) == 1 }
+}
+
+fn slack_ts_to_local(ts_str: &str) -> chrono::DateTime<chrono::Local> {
     let ts_f = ts_str.parse::<f64>().unwrap_or(0.0);
     let secs = ts_f as i64;
     let micros: u32 = ts_str.find('.')
         .map(|p| format!("{:0<6}", &ts_str[p+1..]).chars().take(6).collect::<String>().parse().unwrap_or(0))
         .unwrap_or(0);
-    let dt = chrono::DateTime::from_timestamp(secs, micros * 1000).unwrap_or_default();
-    format!("{}.{:06}Z", dt.format("%Y-%m-%dT%H:%M:%S"), micros)
+    chrono::DateTime::from_timestamp(secs, micros * 1000)
+        .unwrap_or_default()
+        .with_timezone(&chrono::Local)
+}
+
+fn slack_ts_to_iso(ts_str: &str) -> String {
+    let dt = slack_ts_to_local(ts_str);
+    let micros = dt.timestamp_subsec_micros();
+    format!("{}.{:06}", dt.format("%Y-%m-%dT%H:%M:%S"), micros)
+}
+
+fn fmt_ts(ts_str: &str) -> String {
+    let dt = slack_ts_to_local(ts_str);
+    if !is_stdout_tty() {
+        let micros = dt.timestamp_subsec_micros();
+        return format!("{}.{:06}", dt.format("%Y-%m-%dT%H:%M:%S"), micros);
+    }
+    let now = chrono::Local::now();
+    if dt.date_naive() == now.date_naive() {
+        dt.format("%H:%M").to_string()
+    } else if dt.year() == now.year() {
+        dt.format("%m-%d %H:%M").to_string()
+    } else {
+        dt.format("%Y-%m-%d %H:%M").to_string()
+    }
 }
 
 /// Parse a ts argument: accepts raw Slack ts ("1767850498.239129") or ISO 8601
@@ -29,11 +54,17 @@ fn parse_ts_arg(ts: &str) -> String {
     if ts.parse::<f64>().is_ok() {
         return ts.to_string();
     }
-    // Try ISO 8601 parse
-    // chrono can parse RFC3339 / ISO8601
+    // Try RFC3339 with timezone (e.g. "...Z" or "...+09:00")
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
         let secs = dt.timestamp();
         let micros = dt.timestamp_subsec_micros();
+        return format!("{secs}.{micros:06}");
+    }
+    // Try local ISO without timezone (e.g. "2026-04-23T10:30:45.239129")
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%.f") {
+        let local = chrono::Local.from_local_datetime(&dt).single().unwrap_or_default();
+        let secs = local.timestamp();
+        let micros = local.timestamp_subsec_micros();
         return format!("{secs}.{micros:06}");
     }
     // fallback: return as-is
@@ -46,7 +77,7 @@ async fn format_message(
     user_cache: &mut HashMap<String, String>,
 ) -> String {
     let ts_str = m["ts"].as_str().unwrap_or("0");
-    let time = slack_ts_to_iso(ts_str);
+    let time = fmt_ts(ts_str);
     let (real, uname) = if let Some(uid) = m["user"].as_str() {
         let key_real = uid.to_string();
         let key_handle = format!("@{uid}");
