@@ -229,6 +229,31 @@ async function cmdNews(token: string, limit: number): Promise<void> {
   }
 }
 
+// --- channels ---
+async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean): Promise<void> {
+  const resp = (await listConversations(token)) as Record<string, Json>;
+  let channels = asArray(resp.channels)
+    .map(asRecord)
+    .filter((c) => all || c.is_member === true)
+    .filter((c) => {
+      if (!filter) return true;
+      const n = typeof c.name === "string" ? c.name : "";
+      return n.toLowerCase().includes(filter.toLowerCase());
+    })
+    .sort((a, b) => Number(b.updated ?? 0) - Number(a.updated ?? 0))
+    .slice(0, limit);
+
+  for (const ch of channels) {
+    const id = String(ch.id ?? "");
+    const name = typeof ch.name === "string" ? ch.name : typeof ch.user === "string" ? ch.user : id;
+    const isIm = ch.is_im === true;
+    const isMpim = ch.is_mpim === true;
+    const prefix = isIm || isMpim ? "@" : "#";
+    const memberMark = ch.is_member === true ? "" : " (not joined)";
+    console.log(`${prefix}${name}\t${id}${memberMark}`);
+  }
+}
+
 // --- search ---
 async function cmdSearch(token: string, query: string, count: number): Promise<void> {
   const resp = await searchAll(token, query, count);
@@ -473,6 +498,7 @@ function usage(): never {
       "Commands:",
       "  msgs [<#channel|@user|url>] [-n|--limit N]",
       "  thread <#channel|@user|url> <ts> [-n|--limit N]",
+      "  channels [-n|--limit N] [--filter STR] [--all]",
       "  news [-l|--limit N]",
       "  search <query> [-n|--count N]",
       "  drafts [--all]                  list pending drafts (--all includes sent)",
@@ -661,6 +687,19 @@ async function main(): Promise<void> {
       const ts = positionals[1];
       if (!target || !ts) usage();
       await cmdThread(token, target, ts, Number(values.limit));
+      return;
+    }
+    case "channels": {
+      const { values } = parseArgs({
+        args: rest,
+        options: {
+          limit: { type: "string", short: "n", default: "200" },
+          filter: { type: "string", short: "f" },
+          all: { type: "boolean" },
+        },
+        strict: true,
+      });
+      await cmdChannels(token, Number(values.limit), values.filter, values.all);
       return;
     }
     case "news": {
