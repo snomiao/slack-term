@@ -178,10 +178,20 @@ export async function send(
 }
 
 export async function listConversations(token: string): Promise<Json> {
-  return get(token, "conversations.list", {
-    limit: "200",
-    types: "public_channel,private_channel,im,mpim",
-  });
+  const allChannels: Json[] = [];
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { limit: "200", types: "public_channel,private_channel,im,mpim" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "conversations.list", params)) as {
+      channels?: Json[];
+      response_metadata?: { next_cursor?: string };
+    };
+    allChannels.push(...(resp.channels ?? []));
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return { channels: allChannels };
 }
 
 export async function openDm(token: string, userId: string): Promise<string> {
@@ -387,6 +397,56 @@ export async function authTestSession(
 ): Promise<{ userId: string; teamId: string }> {
   const resp = (await postSession(token, "auth.test", {}, cookie)) as Record<string, Json>;
   return { userId: String(resp.user_id ?? ""), teamId: String(resp.team_id ?? "") };
+}
+
+// File upload via Slack v2 upload API (files.getUploadURLExternal → upload → completeUploadExternal)
+export async function uploadFile(
+  token: string,
+  channel: string,
+  filePath: string,
+  opts: { title?: string; threadTs?: string; initialComment?: string } = {},
+): Promise<{ fileId: string; permalink?: string }> {
+  const { statSync, readFileSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+
+  const stat = statSync(filePath);
+  const filename = basename(filePath);
+
+  // Step 1: 外部アップロードURLを取得
+  const urlResp = (await get(token, "files.getUploadURLExternal", {
+    filename,
+    length: String(stat.size),
+  })) as { upload_url?: string; file_id?: string };
+
+  const uploadUrl = urlResp.upload_url;
+  const fileId = urlResp.file_id;
+  if (!uploadUrl || !fileId) throw new Error("files.getUploadURLExternal returned no upload_url/file_id");
+
+  // Step 2: ファイルデータを外部URLへ PUT
+  const fileData = readFileSync(filePath);
+  const putResp = await fetch(uploadUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: fileData,
+  });
+  if (!putResp.ok) throw new Error(`Upload PUT failed: ${putResp.status} ${putResp.statusText}`);
+
+  // Step 3: アップロード完了 → チャンネルへ共有
+  const completeBody: Record<string, Json> = {
+    files: [{ id: fileId, title: opts.title ?? filename }],
+    channel_id: channel,
+  };
+  if (opts.threadTs) completeBody.thread_ts = opts.threadTs;
+  if (opts.initialComment) completeBody.initial_comment = opts.initialComment;
+
+  const completeResp = (await post(token, "files.completeUploadExternal", completeBody)) as {
+    files?: Array<{ permalink?: string }>;
+  };
+
+  const result: { fileId: string; permalink?: string } = { fileId };
+  const plink = completeResp.files?.[0]?.permalink;
+  if (plink) result.permalink = plink;
+  return result;
 }
 
 // Safe nested access

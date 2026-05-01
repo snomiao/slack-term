@@ -26,6 +26,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  uploadFile,
   userInfoPair,
   userName,
   getPath,
@@ -490,6 +491,64 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   console.log(`✓ Sent (ts: ${ts})`);
 }
 
+// --- upload ---
+interface UploadArgs {
+  target: string;
+  filePath: string;
+  title?: string;
+  thread?: string;
+  comment?: string;
+  code?: string;
+  channelId?: string;
+  userId?: string;
+}
+async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
+  const { statSync, existsSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+
+  if (!existsSync(args.filePath)) {
+    console.error(`Error: file not found: ${args.filePath}`);
+    process.exit(1);
+  }
+  const stat = statSync(args.filePath);
+
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else if (args.userId) channelId = await openDm(token, args.userId);
+  else if (args.target.startsWith("#") || args.target.startsWith("@")) {
+    channelId = await resolveChannel(token, args.target);
+  } else {
+    console.error(`Error: target must be #channel-name or @username (got: ${args.target})`);
+    process.exit(1);
+  }
+
+  const filename = basename(args.filePath);
+  const title = args.title ?? filename;
+  const sizeFmt = stat.size < 1024
+    ? `${stat.size} B`
+    : stat.size < 1048576
+    ? `${(stat.size / 1024).toFixed(1)} KB`
+    : `${(stat.size / 1048576).toFixed(1)} MB`;
+
+  const code = safetyCode(channelId, args.filePath, title);
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `─── Uploading file ───────────────────────────`,
+      `  To:    ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
+      `  File:  ${args.filePath}`,
+      `  Title: ${title}`,
+      `  Size:  ${sizeFmt}`,
+      `─────────────────────────────────────────────`,
+    ]);
+  }
+
+  const uploadOpts: { title?: string; threadTs?: string; initialComment?: string } = { title };
+  if (args.thread !== undefined) uploadOpts.threadTs = args.thread;
+  if (args.comment !== undefined) uploadOpts.initialComment = args.comment;
+  const { fileId, permalink } = await uploadFile(token, channelId, args.filePath, uploadOpts);
+  console.log(`✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
+}
+
 // --- dispatch ---
 function usage(): never {
   console.error(
@@ -507,6 +566,7 @@ function usage(): never {
       "  drafts edit <draft-id> [--code=XXXX] <new-text>",
       "  drafts delete <draft-id> [--code=XXXX]",
       "  send <target> <message> [--thread TS] [--code XXXX] [--channel-id ID] [--user-id ID]",
+      "  upload <target> <file> [--title TEXT] [--thread TS] [--comment TEXT] [--code XXXX] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
       "  workspace ls|list",
       "  workspace import          (auto-import from Slack desktop app)",
@@ -814,6 +874,33 @@ async function main(): Promise<void> {
       if (values["channel-id"] !== undefined) sendArgs.channelId = values["channel-id"];
       if (values["user-id"] !== undefined) sendArgs.userId = values["user-id"];
       await cmdSend(token, sendArgs);
+      return;
+    }
+    case "upload": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          title: { type: "string" },
+          thread: { type: "string" },
+          comment: { type: "string" },
+          code: { type: "string" },
+          "channel-id": { type: "string" },
+          "user-id": { type: "string" },
+        },
+        strict: true,
+      });
+      const target = positionals[0];
+      const filePath = positionals[1];
+      if (!target || !filePath) usage();
+      const uploadArgs: UploadArgs = { target, filePath };
+      if (values.title !== undefined) uploadArgs.title = values.title;
+      if (values.thread !== undefined) uploadArgs.thread = values.thread;
+      if (values.comment !== undefined) uploadArgs.comment = values.comment;
+      if (values.code !== undefined) uploadArgs.code = values.code;
+      if (values["channel-id"] !== undefined) uploadArgs.channelId = values["channel-id"];
+      if (values["user-id"] !== undefined) uploadArgs.userId = values["user-id"];
+      await cmdUpload(token, uploadArgs);
       return;
     }
     case "dump": {
