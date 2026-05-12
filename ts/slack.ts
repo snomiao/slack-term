@@ -177,6 +177,21 @@ export async function send(
   return resp.ts ?? "";
 }
 
+export async function editMessage(
+  token: string,
+  channel: string,
+  ts: string,
+  text: string,
+): Promise<string> {
+  const resp = (await post(token, "chat.update", {
+    channel,
+    ts,
+    text,
+    blocks: [{ type: "markdown", text }],
+  })) as { ts?: string };
+  return resp.ts ?? ts;
+}
+
 export async function listConversations(token: string): Promise<Json> {
   const allChannels: Json[] = [];
   let cursor = "";
@@ -209,11 +224,23 @@ function normName(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
 }
 
-/** Extract channel ID from a Slack permalink
- *  (e.g. `https://app.slack.com/client/TXXXXXXX/CXXXXXXXX`) */
+/** Parse a Slack permalink, returning channel ID and (optional) message ts.
+ *  Supports both forms:
+ *    https://app.slack.com/client/T.../C...[/p1700000000000100]
+ *    https://<ws>.slack.com/archives/C...[/p1700000000000100][?thread_ts=...]
+ */
+export function parseSlackPermalink(s: string): { channel: string; ts?: string } | undefined {
+  const m = s.match(
+    /(?:app\.slack\.com\/client\/T[A-Za-z0-9]+|[A-Za-z0-9-]+\.slack\.com\/archives)\/([A-Za-z0-9]+)(?:\/p(\d{10})(\d{6}))?/,
+  );
+  if (!m) return undefined;
+  const channel = m[1]!;
+  const ts = m[2] && m[3] ? `${m[2]}.${m[3]}` : undefined;
+  return ts ? { channel, ts } : { channel };
+}
+
 function parseSlackUrl(s: string): string | undefined {
-  const m = s.match(/app\.slack\.com\/client\/T[A-Za-z0-9]+\/([A-Za-z0-9]+)/);
-  return m?.[1];
+  return parseSlackPermalink(s)?.channel;
 }
 
 export async function resolveChannel(token: string, ref: string, cookie?: string): Promise<string> {

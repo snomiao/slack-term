@@ -17,10 +17,12 @@ import {
   createDraft,
   deleteDraft,
   updateDraft,
+  editMessage,
   history,
   listConversations,
   listDrafts,
   openDm,
+  parseSlackPermalink,
   replies,
   resolveChannel,
   search,
@@ -447,6 +449,66 @@ function requireCode(provided: string | undefined, expected: string, contextLine
   process.exit(1);
 }
 
+/** Split a target ref that may embed a message ts.
+ *  Accepts: `#chan:ts`, `@user:ts`, Slack permalink URL, or plain ref. */
+function splitRefTs(s: string): { ref: string; ts?: string } {
+  const url = parseSlackPermalink(s);
+  if (url) return url.ts ? { ref: url.channel, ts: url.ts } : { ref: url.channel };
+  if (s.startsWith("#") || s.startsWith("@")) {
+    const colon = s.indexOf(":");
+    if (colon > 0) {
+      const maybeTs = s.slice(colon + 1);
+      if (/^\d{10}\.\d{6}$/.test(maybeTs)) {
+        return { ref: s.slice(0, colon), ts: maybeTs };
+      }
+    }
+  }
+  return { ref: s };
+}
+
+// --- edit ---
+interface EditArgs {
+  target: string;
+  newText: string;
+  code?: string;
+  channelId?: string;
+}
+async function cmdEdit(token: string, args: EditArgs): Promise<void> {
+  const { ref, ts } = splitRefTs(args.target);
+  if (!ts) {
+    console.error("Error: target must embed a message ts (e.g. #chan:1700000000.000100 or a Slack permalink URL)");
+    process.exit(2);
+  }
+
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else channelId = await resolveChannel(token, ref);
+
+  // Fetch the message to display the original text and compute the safety hash.
+  const resp = (await replies(token, channelId, ts, 1)) as Record<string, Json>;
+  const msgs = asArray(resp.messages).map(asRecord);
+  const original = msgs.find((m) => String(m.ts) === ts);
+  if (!original) {
+    console.error(`Message not found at ts=${ts} in channel ${channelId}`);
+    process.exit(1);
+  }
+  const originalText = typeof original.text === "string" ? original.text : "";
+
+  const code = safetyCode(originalText, args.newText);
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `─── Original message ─────────────────────────`,
+      ...originalText.split("\n").map((l) => `  ${l}`),
+      `─── Replacing with ───────────────────────────`,
+      ...args.newText.split("\n").map((l) => `  ${l}`),
+      `─────────────────────────────────────────────`,
+    ]);
+  }
+
+  const newTs = await editMessage(token, channelId, ts, args.newText);
+  console.log(`✓ Edited (ts: ${newTs})`);
+}
+
 // --- send ---
 interface SendArgs {
   target: string;
@@ -566,6 +628,7 @@ function usage(): never {
       "  drafts edit <draft-id> [--code=XXXX] <new-text>",
       "  drafts delete <draft-id> [--code=XXXX]",
       "  send <target> <message> [--thread TS] [--code XXXX] [--channel-id ID] [--user-id ID]",
+      "  edit <#chan:ts|@user:ts|url> <new-text> [--code XXXX] [--channel-id ID]",
       "  upload <target> <file> [--title TEXT] [--thread TS] [--comment TEXT] [--code XXXX] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
       "  workspace ls|list",
@@ -874,6 +937,25 @@ async function main(): Promise<void> {
       if (values["channel-id"] !== undefined) sendArgs.channelId = values["channel-id"];
       if (values["user-id"] !== undefined) sendArgs.userId = values["user-id"];
       await cmdSend(token, sendArgs);
+      return;
+    }
+    case "edit": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          code: { type: "string" },
+          "channel-id": { type: "string" },
+        },
+        strict: true,
+      });
+      const target = positionals[0];
+      const newText = positionals[1];
+      if (!target || !newText) usage();
+      const editArgs: EditArgs = { target, newText };
+      if (values.code !== undefined) editArgs.code = values.code;
+      if (values["channel-id"] !== undefined) editArgs.channelId = values["channel-id"];
+      await cmdEdit(token, editArgs);
       return;
     }
     case "upload": {

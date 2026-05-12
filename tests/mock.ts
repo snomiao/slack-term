@@ -76,6 +76,10 @@ export async function startMock(
           respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
           return;
         }
+        if (method === "chat.update") {
+          respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
+          return;
+        }
         if (method === "conversations.open") {
           respond({ ok: true, channel: { id: "C00000099" } });
           return;

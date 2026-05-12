@@ -239,6 +239,27 @@ describe("slack.ts", () => {
     expect(ts).toBe("1700000000.000100");
   });
 
+  test("editMessage posts chat.update and returns ts", async () => {
+    const ts = await slack.editMessage(token, "C00000001", "1700000000.000100", "new text");
+    expect(ts).toBe("1700000000.000100");
+  });
+
+  test("parseSlackPermalink extracts channel from app.slack.com URL", () => {
+    const r = slack.parseSlackPermalink("https://app.slack.com/client/T00000001/C12345678");
+    expect(r).toEqual({ channel: "C12345678" });
+  });
+
+  test("parseSlackPermalink extracts channel + ts from archives permalink", () => {
+    const r = slack.parseSlackPermalink(
+      "https://acme.slack.com/archives/C12345678/p1700000000000100",
+    );
+    expect(r).toEqual({ channel: "C12345678", ts: "1700000000.000100" });
+  });
+
+  test("parseSlackPermalink returns undefined for non-Slack URL", () => {
+    expect(slack.parseSlackPermalink("https://example.com/foo")).toBeUndefined();
+  });
+
   test("openDm returns channel id", async () => {
     const id = await slack.openDm(token, "U00000002");
     expect(id).toBe("C00000099");
