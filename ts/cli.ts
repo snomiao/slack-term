@@ -20,6 +20,7 @@ import {
   history,
   listConversations,
   listDrafts,
+  listUsers,
   openDm,
   parseSlackPermalink,
   replies,
@@ -617,6 +618,8 @@ function usage(): never {
       "Usage: slack [--workspace=<name>] <command> [args]",
       "Commands:",
       "  read [<#channel|@user|url>] [-n|--limit N]",
+      "  channel ls [-n|--limit N] [--filter STR] [--all]",
+      "  user ls [-n|--limit N] [--filter STR]",
       "  thread <#channel|@user|url> <ts> [-n|--limit N]",
       "  channels [-n|--limit N] [--filter STR] [--all]",
       "  news [-l|--limit N]",
@@ -737,9 +740,13 @@ async function main(): Promise<void> {
       await cmdThread(token, target, ts, Number(values.limit));
       return;
     }
+    case "channel":
     case "channels": {
+      const sub = cmd === "channel" ? rest[0] : undefined;
+      const subArgs = cmd === "channel" ? rest.slice(1) : rest;
+      if (cmd === "channel" && sub !== "ls" && sub !== "list") usage();
       const { values } = parseArgs({
-        args: rest,
+        args: subArgs,
         options: {
           limit: { type: "string", short: "n", default: "200" },
           filter: { type: "string", short: "f" },
@@ -748,6 +755,37 @@ async function main(): Promise<void> {
         strict: true,
       });
       await cmdChannels(token, Number(values.limit), values.filter, values.all);
+      return;
+    }
+    case "user": {
+      const sub = rest[0];
+      if (sub !== "ls" && sub !== "list") usage();
+      const { values } = parseArgs({
+        args: rest.slice(1),
+        options: {
+          limit: { type: "string", short: "n", default: "200" },
+          filter: { type: "string", short: "f" },
+        },
+        strict: true,
+      });
+      const resp = (await listUsers(token)) as Record<string, Json>;
+      const filter = values.filter?.toLowerCase();
+      const members = asArray(resp.members)
+        .map(asRecord)
+        .filter((u) => u.deleted !== true && u.is_bot !== true && String(u.id) !== "USLACKBOT")
+        .filter((u) => {
+          if (!filter) return true;
+          const name = String(u.name ?? "").toLowerCase();
+          const real = String((asRecord(u.profile)).real_name ?? "").toLowerCase();
+          return name.includes(filter) || real.includes(filter);
+        })
+        .slice(0, Number(values.limit));
+      for (const u of members) {
+        const profile = asRecord(u.profile);
+        const display = String(profile.display_name || profile.real_name || u.name || u.id);
+        const handle = String(u.name ?? u.id);
+        console.log(`@${handle}\t${display}`);
+      }
       return;
     }
     case "news": {

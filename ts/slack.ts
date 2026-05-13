@@ -360,6 +360,23 @@ export async function userName(token: string, userId: string): Promise<string> {
   }
 }
 
+export async function listUsers(token: string): Promise<Json> {
+  const allMembers: Json[] = [];
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.list", params)) as {
+      members?: Json[];
+      response_metadata?: { next_cursor?: string };
+    };
+    allMembers.push(...(resp.members ?? []));
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return { members: allMembers };
+}
+
 // Draft API (internal — requires xoxc session token + xoxd cookie)
 export async function listDrafts(token: string, cookie?: string): Promise<Json> {
   return postSession(token, "drafts.list", {}, cookie);
