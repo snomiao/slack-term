@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { addProfile, listProfiles, removeProfile, resolveCookie, resolveToken, setCookie, useProfile } from "./profiles.ts";
-import { extractSessions } from "./slack-app.ts";
+import { cmdAuthLogin, importFromDesktop } from "./auth.ts";
 
 import {
   authTest,
@@ -631,6 +631,7 @@ function usage(): never {
       "  edit <#chan:ts|@user:ts|url> <new-text> [--code XXXX] [--channel-id ID]",
       "  upload <target> <file> [--title TEXT] [--thread TS] [--comment TEXT] [--code XXXX] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
+      "  auth login                (alias: login) — interactive auth setup",
       "  workspace ls|list",
       "  workspace import          (auto-import from Slack desktop app)",
       "  workspace add <name> <token>",
@@ -661,32 +662,7 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
       return;
     }
     case "import": {
-      console.error("Scanning Slack desktop app...");
-      const sessions = await extractSessions();
-      if (sessions.length === 0) {
-        console.error("No sessions found. Make sure Slack is installed and you have logged in.");
-        return;
-      }
-      for (const s of sessions) {
-        const teamLabel = s.teamName ?? s.teamId;
-        console.error(`  Found: ${teamLabel} ${s.url ?? ""}`);
-        const name = teamLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-        const profile: Parameters<typeof addProfile>[1] = {
-          token: s.token,
-          team: s.teamName ?? s.teamId,
-          teamId: s.teamId,
-          url: s.url ?? "",
-          user: "",
-        };
-        if (s.cookie) profile.cookie = s.cookie;
-        addProfile(name, profile);
-        const cookieNote = s.cookie ? " + xoxd cookie" : "";
-        console.log(`Added workspace "${name}": ${teamLabel}${cookieNote}`);
-      }
-      console.log(`\nNote: desktop app tokens (xoxc-) are internal Slack tokens.`);
-      console.log(`If API calls fail, replace with an xoxp- token:`);
-      console.log(`  slack workspace set-token <name> <xoxp-token>`);
-      console.log(`\nDone. Run: slack workspace ls`);
+      await importFromDesktop();
       return;
     }
     case "add": {
@@ -775,9 +751,13 @@ async function main(): Promise<void> {
     else filteredArgs.push(arg);
   }
   const [cmd, ...rest] = filteredArgs;
-  // workspace subcommand needs no token
+  // workspace / auth subcommands need no token
   if (cmd === "workspace") {
     await cmdWorkspace(rest[0] ?? "", rest.slice(1));
+    return;
+  }
+  if (cmd === "login" || (cmd === "auth" && (rest[0] === "login" || rest[0] === undefined))) {
+    await cmdAuthLogin();
     return;
   }
 

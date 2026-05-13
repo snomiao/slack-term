@@ -18,7 +18,7 @@
     "vitest": "^4.1.4"
   },
   "bin": {
-    "slack": "./ts/cli.ts"
+    "slack": "./dist/cli.js"
   },
   "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
   "engines": {
