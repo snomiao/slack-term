@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 // Slack CLI entry — mirrors the Rust impl in src/main.rs.
 
-import { parseArgs } from "node:util";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
 import { cmdAuthLogin } from "./auth.ts";
 
@@ -612,362 +613,305 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
 }
 
 // --- dispatch ---
-function usage(): never {
-  console.error(
-    [
-      "Usage: slack [--workspace=<name>] <command> [args]",
-      "Commands:",
-      "  read [<#channel|@user|url>] [-n|--limit N]",
-      "  channel ls [-n|--limit N] [--filter STR] [--all]",
-      "  user ls [-n|--limit N] [--filter STR]",
-      "  thread <#channel|@user|url> <ts> [-n|--limit N]",
-      "  channels [-n|--limit N] [--filter STR] [--all]",
-      "  news [-l|--limit N]",
-      "  search <query> [-n|--count N]",
-      "  drafts [--all]                  list pending drafts (--all includes sent)",
-      "  drafts new <#channel|@user> <text>",
-      "  drafts get <draft-id>",
-      "  drafts edit <draft-id> [--code=XXXX] <new-text>",
-      "  drafts delete <draft-id> [--code=XXXX]",
-      "  send <target> <message> [--thread TS] [--code XXXX] [--channel-id ID] [--user-id ID]",
-      "  edit <#chan:ts|@user:ts|url> <new-text> [--code XXXX] [--channel-id ID]",
-      "  upload <target> <file> [--title TEXT] [--thread TS] [--comment TEXT] [--code XXXX] [--channel-id ID] [--user-id ID]",
-      "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
-      "  auth login                (alias: login) — interactive auth setup",
-      "  auth ls                   list configured workspaces",
-      "  auth use [-g] <name>      switch active workspace",
-      "  auth rm <name>            remove a workspace",
-    ].join("\n"),
-  );
-  process.exit(2);
-}
-
-async function cmdAuth(sub: string, args: string[]): Promise<void> {
-  switch (sub) {
-    case "login":
-    case undefined:
-    case "": {
-      await cmdAuthLogin();
-      return;
-    }
-    case "list":
-    case "ls": {
-      const profiles = listProfiles();
-      if (profiles.length === 0) {
-        console.log("No workspaces configured. Run: slack auth login");
-        return;
-      }
-      for (const { name, profile, current } of profiles) {
-        console.log(`${current ? "* " : "  "}${name}  ${profile.team}  (${profile.user})  ${profile.url ?? ""}`);
-      }
-      return;
-    }
-    case "use": {
-      const globalFlag = args.includes("-g");
-      const name = args.find((a) => a !== "-g");
-      if (!name) {
-        console.error("Usage: slack auth use [-g] <name>");
-        console.error("  -g   write to ~/.slack-cli/workspace (global, default)");
-        process.exit(2);
-      }
-      if (!globalFlag) ensureSlackCliDir(join(process.cwd(), ".slack-cli"));
-      useProfile(name, globalFlag);
-      const scope = globalFlag ? "globally" : "locally";
-      console.log(`Switched to workspace "${name}" ${scope}`);
-      return;
-    }
-    case "rm":
-    case "remove": {
-      const [name] = args;
-      if (!name) { console.error("Usage: slack auth rm <name>"); process.exit(2); }
-      removeProfile(name);
-      console.log(`Removed workspace "${name}"`);
-      return;
-    }
-    default:
-      usage();
-  }
-}
 
 async function main(): Promise<void> {
   loadDotenvFiles();
 
-  // Strip global --workspace=<name> flag before subcommand dispatch.
-  const rawArgs = process.argv.slice(2);
-  let workspaceFlag: string | undefined;
-  const filteredArgs: string[] = [];
-  for (const arg of rawArgs) {
-    const m = arg.match(/^--workspace=(.+)$/);
-    if (m) { workspaceFlag = m[1]; }
-    else filteredArgs.push(arg);
-  }
-  const [cmd, ...rest] = filteredArgs;
-  // auth subcommands need no token
-  if (cmd === "auth" || cmd === "login") {
-    await cmdAuth(cmd === "login" ? "login" : rest[0] ?? "", rest.slice(cmd === "login" ? 0 : 1));
-    return;
-  }
+  type W = { workspace?: string };
+  const tok = (a: W) => resolveToken(a.workspace);
+  const ck = (a: W) => resolveCookie(a.workspace);
 
-  const token = resolveToken(workspaceFlag);
-  const cookie = resolveCookie(workspaceFlag);
-
-  switch (cmd) {
-    case "read":
-    case "msgs": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: { limit: { type: "string", short: "n", default: "20" } },
-        strict: true,
-      });
-      if (positionals[0]) {
-        await cmdMsgsTarget(token, positionals[0], Number(values.limit));
-      } else {
-        await cmdMsgs(token);
-      }
-      return;
-    }
-    case "thread": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: { limit: { type: "string", short: "n", default: "100" } },
-        strict: true,
-      });
-      const target = positionals[0];
-      const ts = positionals[1];
-      if (!target || !ts) usage();
-      await cmdThread(token, target, ts, Number(values.limit));
-      return;
-    }
-    case "channel":
-    case "channels": {
-      const sub = cmd === "channel" ? rest[0] : undefined;
-      const subArgs = cmd === "channel" ? rest.slice(1) : rest;
-      if (cmd === "channel" && sub !== "ls" && sub !== "list") usage();
-      const { values } = parseArgs({
-        args: subArgs,
-        options: {
-          limit: { type: "string", short: "n", default: "200" },
-          filter: { type: "string", short: "f" },
-          all: { type: "boolean" },
-        },
-        strict: true,
-      });
-      await cmdChannels(token, Number(values.limit), values.filter, values.all);
-      return;
-    }
-    case "user": {
-      const sub = rest[0];
-      if (sub !== "ls" && sub !== "list") usage();
-      const { values } = parseArgs({
-        args: rest.slice(1),
-        options: {
-          limit: { type: "string", short: "n", default: "200" },
-          filter: { type: "string", short: "f" },
-        },
-        strict: true,
-      });
-      const resp = (await listUsers(token)) as Record<string, Json>;
-      const filter = values.filter?.toLowerCase();
-      const members = asArray(resp.members)
-        .map(asRecord)
-        .filter((u) => u.deleted !== true && u.is_bot !== true && String(u.id) !== "USLACKBOT")
-        .filter((u) => {
-          if (!filter) return true;
-          const name = String(u.name ?? "").toLowerCase();
-          const real = String((asRecord(u.profile)).real_name ?? "").toLowerCase();
-          return name.includes(filter) || real.includes(filter);
+  await yargs(hideBin(process.argv))
+    .scriptName("slack")
+    .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
+    .command(
+      ["read [target]", "msgs [target]"],
+      "Browse messages",
+      (y) => y
+        .positional("target", { type: "string", describe: "#channel, @user, or URL" })
+        .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" }),
+      async (argv) => {
+        const token = tok(argv as W);
+        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit);
+        else await cmdMsgs(token);
+      },
+    )
+    .command(
+      "thread <target> <ts>",
+      "Show thread messages",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true })
+        .positional("ts", { type: "string", demandOption: true })
+        .option("limit", { alias: "n", type: "number", default: 100 }),
+      async (argv) => {
+        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit);
+      },
+    )
+    .command(
+      ["channel", "channels"],
+      "List channels",
+      (y) => y
+        .command(
+          ["$0", "ls", "list"],
+          "List channels",
+          (y2) => y2
+            .option("limit", { alias: "n", type: "number", default: 200 })
+            .option("filter", { alias: "f", type: "string" })
+            .option("all", { type: "boolean", default: false }),
+          async (argv) => {
+            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all);
+          },
+        ),
+    )
+    .command(
+      "user",
+      "User commands",
+      (y) => y
+        .command(
+          ["$0", "ls", "list"],
+          "List workspace members",
+          (y2) => y2
+            .option("limit", { alias: "n", type: "number", default: 200 })
+            .option("filter", { alias: "f", type: "string" }),
+          async (argv) => {
+            const resp = (await listUsers(tok(argv as W))) as Record<string, Json>;
+            const filter = argv.filter?.toLowerCase();
+            const members = asArray(resp.members)
+              .map(asRecord)
+              .filter((u) => u.deleted !== true && u.is_bot !== true && String(u.id) !== "USLACKBOT")
+              .filter((u) => {
+                if (!filter) return true;
+                const name = String(u.name ?? "").toLowerCase();
+                const real = String(asRecord(u.profile).real_name ?? "").toLowerCase();
+                return name.includes(filter) || real.includes(filter);
+              })
+              .slice(0, argv.limit);
+            for (const u of members) {
+              const profile = asRecord(u.profile);
+              const display = String(profile.display_name || profile.real_name || u.name || u.id);
+              console.log(`@${String(u.name ?? u.id)}\t${display}`);
+            }
+          },
+        ),
+    )
+    .command(
+      "news",
+      "Activity feed (mentions to you)",
+      (y) => y.option("limit", { alias: "l", type: "number", default: 20 }),
+      async (argv) => {
+        await cmdNews(tok(argv as W), argv.limit);
+      },
+    )
+    .command(
+      "search <query>",
+      "Full-text search",
+      (y) => y
+        .positional("query", { type: "string", demandOption: true })
+        .option("count", { alias: "n", type: "number", default: 100 }),
+      async (argv) => {
+        await cmdSearch(tok(argv as W), argv.query!, argv.count);
+      },
+    )
+    .command(
+      "send <target> <message>",
+      "Send a message (confirm-hash safety gate)",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true })
+        .positional("message", { type: "string", demandOption: true })
+        .option("thread", { type: "string", describe: "Thread timestamp" })
+        .option("code", { type: "string", describe: "Safety hash to confirm send" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
+      async (argv) => {
+        const args: SendArgs = { target: argv.target!, message: argv.message! };
+        if (argv.thread) args.thread = argv.thread;
+        if (argv.code) args.code = argv.code;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        if (argv["user-id"]) args.userId = argv["user-id"];
+        await cmdSend(tok(argv as W), args);
+      },
+    )
+    .command(
+      "edit <target> <newText>",
+      "Edit a sent message",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
+        .positional("newText", { type: "string", demandOption: true })
+        .option("code", { type: "string", describe: "Safety hash to confirm edit" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+      async (argv) => {
+        const args: EditArgs = { target: argv.target!, newText: argv.newText! };
+        if (argv.code) args.code = argv.code;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        await cmdEdit(tok(argv as W), args);
+      },
+    )
+    .command(
+      "upload <target> <file>",
+      "Upload a file to a channel or DM",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true })
+        .positional("file", { type: "string", demandOption: true, describe: "Path to file" })
+        .option("title", { type: "string" })
+        .option("thread", { type: "string", describe: "Thread timestamp" })
+        .option("comment", { type: "string", describe: "Initial comment" })
+        .option("code", { type: "string", describe: "Safety hash to confirm upload" })
+        .option("channel-id", { type: "string" })
+        .option("user-id", { type: "string" }),
+      async (argv) => {
+        const args: UploadArgs = { target: argv.target!, filePath: argv.file! };
+        if (argv.title) args.title = argv.title;
+        if (argv.thread) args.thread = argv.thread;
+        if (argv.comment) args.comment = argv.comment;
+        if (argv.code) args.code = argv.code;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        if (argv["user-id"]) args.userId = argv["user-id"];
+        await cmdUpload(tok(argv as W), args);
+      },
+    )
+    .command(
+      "dump",
+      "Bulk export channel history as markdown",
+      (y) => y
+        .option("days", { alias: "d", type: "number", default: 7, describe: "Days of history" })
+        .option("limit", { alias: "l", type: "number", default: 200 })
+        .option("filter", { alias: "f", type: "string", describe: "Filter channel names" }),
+      async (argv) => {
+        await cmdDump(tok(argv as W), argv.days, argv.limit, argv.filter);
+      },
+    )
+    .command(
+      "drafts",
+      "Manage message drafts (requires xoxc desktop token)",
+      (y) => y
+        .command(
+          ["$0", "ls", "list"],
+          "List pending drafts",
+          (y2) => y2.option("all", { alias: "a", type: "boolean", default: false, describe: "Include sent drafts" }),
+          async (argv) => {
+            await cmdDrafts(tok(argv as W), ck(argv as W), argv.all);
+          },
+        )
+        .command(
+          ["new <channel> [text..]", "save <channel> [text..]"],
+          "Create a draft",
+          (y2) => y2
+            .positional("channel", { type: "string", demandOption: true })
+            .positional("text", { type: "string", array: true, default: [] }),
+          async (argv) => {
+            const token = tok(argv as W); const cookie = ck(argv as W);
+            const text = (argv.text as string[]).join(" ");
+            if (!text) { console.error("Usage: slack drafts new <#channel|@user> <text>"); process.exit(2); }
+            const channelId = await resolveChannel(token, argv.channel!, cookie);
+            const resp = (await createDraft(token, channelId, text, cookie)) as Record<string, Json>;
+            console.log(`✓ Draft created (id: ${asRecord(resp.draft).id ?? "?"})`);
+          },
+        )
+        .command(
+          "get <id>",
+          "Show a draft",
+          (y2) => y2.positional("id", { type: "string", demandOption: true }),
+          async (argv) => {
+            await cmdDraftGet(tok(argv as W), ck(argv as W), argv.id!);
+          },
+        )
+        .command(
+          ["edit <id> [text..]", "update <id> [text..]"],
+          "Edit a draft",
+          (y2) => y2
+            .positional("id", { type: "string", demandOption: true })
+            .positional("text", { type: "string", array: true, default: [] })
+            .option("code", { type: "string" }),
+          async (argv) => {
+            const token = tok(argv as W); const cookie = ck(argv as W);
+            const text = (argv.text as string[]).join(" ");
+            if (!text) { console.error("Usage: slack drafts edit <id> <new-text>"); process.exit(2); }
+            const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
+            const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
+            if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }
+            const prevText = draftText(d);
+            const code = safetyCode(prevText, text);
+            if (argv.code !== code) requireCode(argv.code, code, [
+              `─── Current draft ────────────────────────────`,
+              ...prevText.split("\n").map((l) => `  ${l}`),
+              `─── Replacing with ───────────────────────────`,
+              ...text.split("\n").map((l) => `  ${l}`),
+              `─────────────────────────────────────────────`,
+            ]);
+            const resp = (await updateDraft(token, argv.id!, draftChannelId(d), text, cookie)) as Record<string, Json>;
+            console.log(`✓ Draft updated (id: ${asRecord(resp.draft).id ?? "?"})`);
+          },
+        )
+        .command(
+          ["delete <id>", "rm <id>"],
+          "Delete a draft",
+          (y2) => y2
+            .positional("id", { type: "string", demandOption: true })
+            .option("code", { type: "string" }),
+          async (argv) => {
+            const token = tok(argv as W); const cookie = ck(argv as W);
+            const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
+            const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
+            if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }
+            const prevText = draftText(d);
+            const code = safetyCode(argv.id!, prevText);
+            if (argv.code !== code) requireCode(argv.code, code, [
+              `─── Deleting draft ───────────────────────────`,
+              `  id: ${argv.id}`,
+              ...prevText.split("\n").map((l) => `  ${l}`),
+              `─────────────────────────────────────────────`,
+            ]);
+            await deleteDraft(token, argv.id!, cookie);
+            console.log(`✓ Draft deleted (id: ${argv.id})`);
+          },
+        ),
+    )
+    .command(
+      "auth",
+      "Authentication and workspace management",
+      (y) => y
+        .command(["login", "$0"], "Interactive auth setup", () => {}, async () => {
+          await cmdAuthLogin();
         })
-        .slice(0, Number(values.limit));
-      for (const u of members) {
-        const profile = asRecord(u.profile);
-        const display = String(profile.display_name || profile.real_name || u.name || u.id);
-        const handle = String(u.name ?? u.id);
-        console.log(`@${handle}\t${display}`);
-      }
-      return;
-    }
-    case "news": {
-      const { values } = parseArgs({
-        args: rest,
-        options: { limit: { type: "string", short: "l", default: "20" } },
-        strict: true,
-      });
-      await cmdNews(token, Number(values.limit));
-      return;
-    }
-    case "drafts": {
-      const sub = rest[0];
-      if (sub === "new" || sub === "save") {
-        // drafts new <#channel|@user> <text...>
-        const args2 = rest.slice(1);
-        const target = args2[0];
-        const text = args2.slice(1).join(" ");
-        if (!target || !text) {
-          console.error("Usage: slack drafts new <#channel|@user> <text>");
-          process.exit(2);
-        }
-        const channelId = await resolveChannel(token, target, cookie);
-        const resp = (await createDraft(token, channelId, text, cookie)) as Record<string, Json>;
-        console.log(`✓ Draft created (id: ${asRecord(resp.draft).id ?? "?"})`);
-      } else if (sub === "get") {
-        const draftId = rest[1];
-        if (!draftId) { console.error("Usage: slack drafts get <draft-id>"); process.exit(2); }
-        await cmdDraftGet(token, cookie, draftId);
-      } else if (sub === "edit" || sub === "update") {
-        // drafts edit <draft-id> [--code=XXXX] <text...>
-        const draftId = rest[1];
-        const codeArg = rest.find((a) => a.startsWith("--code="))?.slice(7);
-        const textParts = rest.slice(2).filter((a) => !a.startsWith("--code="));
-        const text = textParts.join(" ");
-        if (!draftId || !text) {
-          console.error("Usage: slack drafts edit <draft-id> <new-text>");
-          process.exit(2);
-        }
-        const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
-        const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === draftId);
-        if (!d) { console.error(`Draft not found: ${draftId}`); process.exit(1); }
-        const prevText = draftText(d);
-        const code = safetyCode(prevText, text);
-        if (codeArg !== code) {
-          requireCode(codeArg, code, [
-            `─── Current draft content ────────────────────`,
-            ...prevText.split("\n").map((l) => `  ${l}`),
-            `─── Replacing with ───────────────────────────`,
-            ...text.split("\n").map((l) => `  ${l}`),
-            `─────────────────────────────────────────────`,
-          ]);
-        }
-        const channelId = draftChannelId(d);
-        const resp = (await updateDraft(token, draftId, channelId, text, cookie)) as Record<string, Json>;
-        console.log(`✓ Draft updated (id: ${asRecord(resp.draft).id ?? "?"})`);
-      } else if (sub === "delete" || sub === "rm") {
-        const draftId = rest[1];
-        const codeArg = rest.find((a) => a.startsWith("--code="))?.slice(7);
-        if (!draftId) { console.error("Usage: slack drafts delete <draft-id>"); process.exit(2); }
-        const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
-        const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === draftId);
-        if (!d) { console.error(`Draft not found: ${draftId}`); process.exit(1); }
-        const prevText = draftText(d);
-        const code = safetyCode(draftId, prevText);
-        if (codeArg !== code) {
-          requireCode(codeArg, code, [
-            `─── Deleting draft ───────────────────────────`,
-            `  id: ${draftId}`,
-            ...prevText.split("\n").map((l) => `  ${l}`),
-            `─────────────────────────────────────────────`,
-          ]);
-        }
-        await deleteDraft(token, draftId, cookie);
-        console.log(`✓ Draft deleted (id: ${draftId})`);
-      } else {
-        const showAll = rest.includes("--all") || rest.includes("-a");
-        await cmdDrafts(token, cookie, showAll);
-      }
-      return;
-    }
-    case "search": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: { count: { type: "string", short: "n", default: "100" } },
-        strict: true,
-      });
-      const query = positionals[0];
-      if (!query) usage();
-      await cmdSearch(token, query, Number(values.count));
-      return;
-    }
-    case "send": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: {
-          thread: { type: "string" },
-          code: { type: "string" },
-          "channel-id": { type: "string" },
-          "user-id": { type: "string" },
-        },
-        strict: true,
-      });
-      const target = positionals[0];
-      const message = positionals[1];
-      if (!target || !message) usage();
-      const sendArgs: SendArgs = { target, message };
-      if (values.thread !== undefined) sendArgs.thread = values.thread;
-      if (values.code !== undefined) sendArgs.code = values.code;
-      if (values["channel-id"] !== undefined) sendArgs.channelId = values["channel-id"];
-      if (values["user-id"] !== undefined) sendArgs.userId = values["user-id"];
-      await cmdSend(token, sendArgs);
-      return;
-    }
-    case "edit": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: {
-          code: { type: "string" },
-          "channel-id": { type: "string" },
-        },
-        strict: true,
-      });
-      const target = positionals[0];
-      const newText = positionals[1];
-      if (!target || !newText) usage();
-      const editArgs: EditArgs = { target, newText };
-      if (values.code !== undefined) editArgs.code = values.code;
-      if (values["channel-id"] !== undefined) editArgs.channelId = values["channel-id"];
-      await cmdEdit(token, editArgs);
-      return;
-    }
-    case "upload": {
-      const { values, positionals } = parseArgs({
-        args: rest,
-        allowPositionals: true,
-        options: {
-          title: { type: "string" },
-          thread: { type: "string" },
-          comment: { type: "string" },
-          code: { type: "string" },
-          "channel-id": { type: "string" },
-          "user-id": { type: "string" },
-        },
-        strict: true,
-      });
-      const target = positionals[0];
-      const filePath = positionals[1];
-      if (!target || !filePath) usage();
-      const uploadArgs: UploadArgs = { target, filePath };
-      if (values.title !== undefined) uploadArgs.title = values.title;
-      if (values.thread !== undefined) uploadArgs.thread = values.thread;
-      if (values.comment !== undefined) uploadArgs.comment = values.comment;
-      if (values.code !== undefined) uploadArgs.code = values.code;
-      if (values["channel-id"] !== undefined) uploadArgs.channelId = values["channel-id"];
-      if (values["user-id"] !== undefined) uploadArgs.userId = values["user-id"];
-      await cmdUpload(token, uploadArgs);
-      return;
-    }
-    case "dump": {
-      const { values } = parseArgs({
-        args: rest,
-        options: {
-          days: { type: "string", short: "d", default: "7" },
-          limit: { type: "string", short: "l", default: "200" },
-          filter: { type: "string", short: "f" },
-        },
-        strict: true,
-      });
-      await cmdDump(token, Number(values.days), Number(values.limit), values.filter);
-      return;
-    }
-    default:
-      usage();
-  }
+        .command("ls", "List configured workspaces", () => {}, () => {
+          const profiles = listProfiles();
+          if (profiles.length === 0) { console.log("No workspaces configured. Run: slack auth login"); return; }
+          for (const { name, profile, current } of profiles)
+            console.log(`${current ? "* " : "  "}${name}  ${profile.team}  (${profile.user})  ${profile.url ?? ""}`);
+        })
+        .command(
+          "use <name>",
+          "Switch active workspace",
+          (y2) => y2
+            .positional("name", { type: "string", demandOption: true })
+            .option("g", { type: "boolean", default: false, describe: "Write global lockfile (~/.slack-cli/workspace)" }),
+          (argv) => {
+            if (!argv.g) ensureSlackCliDir(join(process.cwd(), ".slack-cli"));
+            useProfile(argv.name!, argv.g);
+            console.log(`Switched to workspace "${argv.name}" ${argv.g ? "globally" : "locally"}`);
+          },
+        )
+        .command(
+          ["rm <name>", "remove <name>"],
+          "Remove a workspace",
+          (y2) => y2.positional("name", { type: "string", demandOption: true }),
+          (argv) => {
+            removeProfile(argv.name!);
+            console.log(`Removed workspace "${argv.name}"`);
+          },
+        ),
+    )
+    .command("login", false as unknown as string, () => {}, async () => {
+      await cmdAuthLogin();
+    })
+    .demandCommand(1, "Specify a command. Run with --help for usage.")
+    .strict()
+    .help()
+    .alias("help", "h")
+    .parseAsync();
 }
 
 main().catch((e: unknown) => {
-  const msg = e instanceof Error ? e.message : String(e);
-  console.error(`Error: ${msg}`);
+  console.error(e instanceof Error ? e.message : String(e));
   process.exit(1);
 });
