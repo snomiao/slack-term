@@ -7,11 +7,10 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { addProfile, listProfiles, removeProfile, resolveCookie, resolveToken, setCookie, useProfile } from "./profiles.ts";
-import { cmdAuthLogin, importFromDesktop } from "./auth.ts";
+import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
+import { cmdAuthLogin } from "./auth.ts";
 
 import {
-  authTest,
   authTestSession,
   conversationInfoSession,
   createDraft,
@@ -617,7 +616,7 @@ function usage(): never {
     [
       "Usage: slack [--workspace=<name>] <command> [args]",
       "Commands:",
-      "  msgs [<#channel|@user|url>] [-n|--limit N]",
+      "  read [<#channel|@user|url>] [-n|--limit N]",
       "  thread <#channel|@user|url> <ts> [-n|--limit N]",
       "  channels [-n|--limit N] [--filter STR] [--all]",
       "  news [-l|--limit N]",
@@ -632,28 +631,27 @@ function usage(): never {
       "  upload <target> <file> [--title TEXT] [--thread TS] [--comment TEXT] [--code XXXX] [--channel-id ID] [--user-id ID]",
       "  dump [-d|--days N] [-l|--limit N] [-f|--filter STR]",
       "  auth login                (alias: login) — interactive auth setup",
-      "  workspace ls|list",
-      "  workspace import          (auto-import from Slack desktop app)",
-      "  workspace add <name> <token>",
-      "  workspace set-token <name> <token>",
-      "  workspace set-cookie <name> <xoxd>  (store xoxd cookie for draft API)",
-      "  workspace use <name>",
-      "  workspace remove <name>",
-      "  workspace current",
+      "  auth ls                   list configured workspaces",
+      "  auth use [-g] <name>      switch active workspace",
+      "  auth rm <name>            remove a workspace",
     ].join("\n"),
   );
   process.exit(2);
 }
 
-async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
+async function cmdAuth(sub: string, args: string[]): Promise<void> {
   switch (sub) {
+    case "login":
+    case undefined:
+    case "": {
+      await cmdAuthLogin();
+      return;
+    }
     case "list":
     case "ls": {
       const profiles = listProfiles();
       if (profiles.length === 0) {
-        console.log("No workspaces configured.");
-        console.log("Import from the Slack desktop app:  slack workspace import");
-        console.log("Or add manually:                    slack workspace add <name> <token>");
+        console.log("No workspaces configured. Run: slack auth login");
         return;
       }
       for (const { name, profile, current } of profiles) {
@@ -661,76 +659,26 @@ async function cmdWorkspace(sub: string, args: string[]): Promise<void> {
       }
       return;
     }
-    case "import": {
-      await importFromDesktop();
-      return;
-    }
-    case "add": {
-      const [name, token] = args;
-      if (!name || !token) {
-        console.error("Usage: slack workspace add <name> <token>");
-        process.exit(2);
-      }
-      console.error(`Verifying token...`);
-      const info = await authTest(token);
-      addProfile(name, { token, ...info });
-      console.log(`Added workspace "${name}": ${info.team} (${info.user})`);
-      return;
-    }
-    case "set-token": {
-      const [name, token] = args;
-      if (!name || !token) {
-        console.error("Usage: slack workspace set-token <name> <token>");
-        console.error("  Updates the token for an existing workspace profile.");
-        process.exit(2);
-      }
-      console.error(`Verifying token...`);
-      const info = await authTest(token);
-      addProfile(name, { token, ...info });
-      console.log(`Updated workspace "${name}": ${info.team} (${info.user})`);
-      return;
-    }
-    case "set-cookie": {
-      const [name, xoxd] = args;
-      if (!name || !xoxd) {
-        console.error("Usage: slack workspace set-cookie <name> <xoxd-value>");
-        console.error("  Stores the xoxd session cookie for draft API access.");
-        console.error("  Get it from: DevTools → Application → Cookies → slack.com → d");
-        process.exit(2);
-      }
-      const cookieVal = xoxd.startsWith("d=") ? xoxd.slice(2) : xoxd;
-      setCookie(name, cookieVal);
-      console.log(`Cookie set for workspace "${name}". Run: slack drafts`);
-      return;
-    }
     case "use": {
       const globalFlag = args.includes("-g");
       const name = args.find((a) => a !== "-g");
       if (!name) {
-        console.error("Usage: slack workspace use [-g] <name>");
-        console.error("  -g   write to ~/.slack-cli/workspace (global)");
-        console.error("       default: write to .slack-cli/workspace (local cwd)");
+        console.error("Usage: slack auth use [-g] <name>");
+        console.error("  -g   write to ~/.slack-cli/workspace (global, default)");
         process.exit(2);
       }
       if (!globalFlag) ensureSlackCliDir(join(process.cwd(), ".slack-cli"));
       useProfile(name, globalFlag);
-      const scope = globalFlag ? "globally (~/.slack-cli/workspace)" : "locally (.slack-cli/workspace)";
+      const scope = globalFlag ? "globally" : "locally";
       console.log(`Switched to workspace "${name}" ${scope}`);
-      if (!globalFlag) console.log(`Tip: add .slack-cli/ to your .gitignore`);
       return;
     }
+    case "rm":
     case "remove": {
       const [name] = args;
-      if (!name) { console.error("Usage: slack workspace remove <name>"); process.exit(2); }
+      if (!name) { console.error("Usage: slack auth rm <name>"); process.exit(2); }
       removeProfile(name);
       console.log(`Removed workspace "${name}"`);
-      return;
-    }
-    case "current": {
-      const profiles = listProfiles();
-      const cur = profiles.find((p) => p.current);
-      if (!cur) { console.log("No workspace selected"); return; }
-      console.log(`${cur.name}  ${cur.profile.team}  (${cur.profile.user})`);
       return;
     }
     default:
@@ -751,13 +699,9 @@ async function main(): Promise<void> {
     else filteredArgs.push(arg);
   }
   const [cmd, ...rest] = filteredArgs;
-  // workspace / auth subcommands need no token
-  if (cmd === "workspace") {
-    await cmdWorkspace(rest[0] ?? "", rest.slice(1));
-    return;
-  }
-  if (cmd === "login" || (cmd === "auth" && (rest[0] === "login" || rest[0] === undefined))) {
-    await cmdAuthLogin();
+  // auth subcommands need no token
+  if (cmd === "auth" || cmd === "login") {
+    await cmdAuth(cmd === "login" ? "login" : rest[0] ?? "", rest.slice(cmd === "login" ? 0 : 1));
     return;
   }
 
@@ -765,6 +709,7 @@ async function main(): Promise<void> {
   const cookie = resolveCookie(workspaceFlag);
 
   switch (cmd) {
+    case "read":
     case "msgs": {
       const { values, positionals } = parseArgs({
         args: rest,
