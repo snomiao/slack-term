@@ -27,9 +27,11 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 One package, no native binaries, any platform with Node 18+.
 
 ```sh
-npm install -g @snomiao/slack
-# or: bun add -g @snomiao/slack  |  pnpm add -g @snomiao/slack
+npm install -g slack-term
+# or: bun add -g slack-term  |  pnpm add -g slack-term
 ```
+
+> **Note:** Previously published as `@snomiao/slack` (now deprecated).
 
 ### Rust (cargo)
 
