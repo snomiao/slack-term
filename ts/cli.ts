@@ -624,6 +624,21 @@ async function main(): Promise<void> {
   await yargs(hideBin(process.argv))
     .scriptName("slack")
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
+    .middleware(async (argv) => {
+      const cmd = String((argv._ ?? [])[0] ?? "");
+      if (cmd === "auth" || cmd === "login") return;
+      try {
+        resolveToken((argv as W).workspace);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.startsWith("No profiles configured")) {
+          console.log("No workspace configured. Let's set that up:\n");
+          await cmdAuthLogin();
+          process.exit(0);
+        }
+        throw e;
+      }
+    }, true)
     .command(
       ["read [target]", "msgs [target]"],
       "Browse messages",

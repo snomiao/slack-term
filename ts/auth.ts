@@ -50,8 +50,19 @@ async function ask(rl: Interface, q: string): Promise<string> {
   return (await rl.question(q)).trim();
 }
 
-/** Shared logic for importing sessions from the Slack desktop app.
- *  Used by both `slack workspace import` and `slack login` option 1. */
+async function saveToken(rl: Interface, token: string): Promise<string> {
+  console.error("Verifying token...");
+  const info = await authTest(token);
+  const defaultName = slugify(info.team);
+  const nameInput = await ask(rl, `Workspace name [${defaultName}]: `);
+  const name = nameInput || defaultName;
+  addProfile(name, { token, ...info });
+  console.log(`✓ Saved workspace "${name}": ${info.team} (${info.user})`);
+  console.log(`  Run: slack auth use -g ${name}`);
+  return name;
+}
+
+/** Shared logic for importing sessions from the Slack desktop app. */
 export async function importFromDesktop(): Promise<void> {
   console.error("Scanning Slack desktop app...");
   const sessions = await extractSessions();
@@ -62,32 +73,53 @@ export async function importFromDesktop(): Promise<void> {
   for (const s of sessions) {
     const teamLabel = s.teamName ?? s.teamId;
     const name = slugify(teamLabel);
-    const profile = {
+    addProfile(name, {
       token: s.token,
       team: teamLabel,
       teamId: s.teamId,
       url: s.url ?? "",
       user: "",
       ...(s.cookie ? { cookie: s.cookie } : {}),
-    };
-    addProfile(name, profile);
-    const cookieNote = s.cookie ? " + xoxd cookie" : "";
-    console.log(`Added workspace "${name}": ${teamLabel}${cookieNote}`);
+    });
+    console.log(`Added workspace "${name}": ${teamLabel}${s.cookie ? " + xoxd cookie" : ""}`);
   }
   console.log("");
   if (sessions.length === 1) {
     const name = slugify(sessions[0]!.teamName ?? sessions[0]!.teamId);
-    console.log(`Run: slack workspace use -g ${name}`);
+    console.log(`Run: slack auth use -g ${name}`);
   } else {
-    console.log("Run: slack workspace ls   then: slack workspace use -g <name>");
+    console.log("Run: slack auth ls   then: slack auth use -g <name>");
   }
   console.log("");
   console.log("Note: desktop app tokens (xoxc-) are internal Slack tokens.");
-  console.log("If API calls fail, replace with an xoxp- user token:");
-  console.log("  slack workspace set-token <name> <xoxp-token>");
+  console.log("If API calls fail, replace with an xoxp- user token by re-running: slack auth login");
 }
 
-async function loginApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
+async function loginExisting(rl: Interface): Promise<void> {
+  console.log("Which token type does your app use?");
+  console.log("");
+  console.log("  1) User token (xoxp-)  — full access including search  [recommended]");
+  console.log("  2) Bot token  (xoxb-)  — search and news unavailable");
+  console.log("");
+  const typeChoice = await ask(rl, "Choice [1/2]: ");
+  const mode = typeChoice === "2" ? "bot" : "user";
+  const expectedPrefix = mode === "user" ? "xoxp-" : "xoxb-";
+  const tokenSection = mode === "user" ? "User OAuth Token" : "Bot User OAuth Token";
+
+  console.log("");
+  console.log(`Go to your app page → OAuth & Permissions → ${tokenSection}`);
+  console.log("");
+
+  const token = await ask(rl, "Paste your token: ");
+  if (!token) { console.error("No token provided."); process.exit(1); }
+  if (!token.startsWith(expectedPrefix)) {
+    console.error(`Expected a ${expectedPrefix} token, got: ${token.slice(0, 10)}...`);
+    process.exit(1);
+  }
+  await saveToken(rl, token);
+}
+
+async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
   const manifest = mode === "user" ? userManifest() : botManifest();
   const tokenLabel = mode === "user" ? "User OAuth Token (xoxp-...)" : "Bot User OAuth Token (xoxb-...)";
   const expectedPrefix = mode === "user" ? "xoxp-" : "xoxb-";
@@ -114,24 +146,12 @@ async function loginApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
   console.log("");
 
   const token = await ask(rl, "Paste your token: ");
-  if (!token) {
-    console.error("No token provided.");
-    process.exit(1);
-  }
+  if (!token) { console.error("No token provided."); process.exit(1); }
   if (!token.startsWith(expectedPrefix)) {
     console.error(`Expected a ${expectedPrefix} token, got: ${token.slice(0, 10)}...`);
     process.exit(1);
   }
-
-  console.error("Verifying token...");
-  const info = await authTest(token);
-  const defaultName = slugify(info.team);
-  const nameInput = await ask(rl, `Workspace name [${defaultName}]: `);
-  const name = nameInput || defaultName;
-
-  addProfile(name, { token, ...info });
-  console.log(`✓ Saved workspace "${name}": ${info.team} (${info.user})`);
-  console.log(`  Run: slack workspace use -g ${name}`);
+  await saveToken(rl, token);
 }
 
 export async function cmdAuthLogin(): Promise<void> {
@@ -141,26 +161,31 @@ export async function cmdAuthLogin(): Promise<void> {
   console.log("     Reads the xoxc- token directly from the installed app.");
   console.log("     Token: all platforms  |  xoxd cookie: macOS only");
   console.log("");
-  console.log("  2) Create a Slack app — user token (xoxp-)  [recommended]");
-  console.log("     Full access including search. Best for personal use.");
+  console.log("  2) Connect existing Slack app  [recommended if you have one]");
+  console.log("     Paste a token from an app you already created.");
   console.log("");
-  console.log("  3) Create a Slack app — bot token (xoxb-)");
+  console.log("  3) Create new Slack app — user token (xoxp-)");
+  console.log("     Guided setup with manifest. Full access including search.");
+  console.log("");
+  console.log("  4) Create new Slack app — bot token (xoxb-)");
   console.log("     Bot is invited to channels. Search and news unavailable.");
   console.log("");
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const choice = await ask(rl, "Choice [1/2/3]: ");
+    const choice = await ask(rl, "Choice [1/2/3/4]: ");
     console.log("");
 
     if (choice === "1") {
       await importFromDesktop();
     } else if (choice === "2") {
-      await loginApp(rl, "user");
+      await loginExisting(rl);
     } else if (choice === "3") {
-      await loginApp(rl, "bot");
+      await loginNewApp(rl, "user");
+    } else if (choice === "4") {
+      await loginNewApp(rl, "bot");
     } else {
-      console.error(`Invalid choice: "${choice}". Enter 1, 2, or 3.`);
+      console.error(`Invalid choice: "${choice}". Enter 1, 2, 3, or 4.`);
       process.exit(1);
     }
   } finally {
