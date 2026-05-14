@@ -1064,7 +1064,7 @@ async function main(): Promise<void> {
             await cmdAuthLogin({ token: argv.token, name: argv.name });
           },
         )
-        .command(["ls", "status", "$0"], "Show auth status", () => {}, () => {
+        .command(["ls", "status"], "Show auth status", () => {}, () => {
           const profiles = listProfiles();
           if (profiles.length === 0) { console.log("No workspaces configured. Run: slack auth login"); return; }
           for (const { name, profile, current } of profiles)
@@ -1090,7 +1090,8 @@ async function main(): Promise<void> {
             removeProfile(argv.name!);
             console.log(`Removed workspace "${argv.name}"`);
           },
-        ),
+        )
+        .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
     )
     .command("login", false as unknown as string, (y2) => y2
       .option("token", { type: "string" })
