@@ -22,6 +22,8 @@ import {
   listConversations,
   listDrafts,
   listUsers,
+  userInfo,
+  conversationInfo,
   openDm,
   parseSlackPermalink,
   replies,
@@ -684,6 +686,30 @@ async function main(): Promise<void> {
             await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.format);
           },
         )
+        .command(
+          "get <channel>",
+          "Show channel details",
+          (y2) => y2.positional("channel", { type: "string", demandOption: true, describe: "#name or channel ID" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            const ref = argv.channel!;
+            const channelRef = ref.startsWith("#") || ref.startsWith("@") || ref.startsWith("C") || ref.startsWith("G") || ref.startsWith("D") ? ref : `#${ref}`;
+            const channelId = await resolveChannel(token, channelRef);
+            const resp = asRecord((await conversationInfo(token, channelId)) as Json);
+            const ch = asRecord(resp.channel);
+            const name = typeof ch.name === "string" ? ch.name : channelId;
+            const isIm = ch.is_im === true;
+            const prefix = isIm ? "@" : "#";
+            const purpose = String(asRecord(ch.purpose).value ?? "");
+            const topic = String(asRecord(ch.topic).value ?? "");
+            const memberCount = ch.num_members ?? ch.member_count ?? "";
+            console.log(`${prefix}${name}  ${channelId}`);
+            if (topic) console.log(`topic:   ${topic}`);
+            if (purpose) console.log(`purpose: ${purpose}`);
+            if (memberCount) console.log(`members: ${memberCount}`);
+            console.log(`private: ${ch.is_private === true}`);
+          },
+        )
         .demandCommand(1, "")
         .showHelpOnFail(true),
     )
@@ -740,11 +766,49 @@ async function main(): Promise<void> {
               const real = String(profile.real_name || "");
               const email = String(profile.email || "");
               const tz = String(u.tz ?? "");
-              const parts = [display, real].filter((s) => s && s !== handle).join(" / ");
+              const names = [...new Set([display, real].filter((s) => s && s !== handle))];
+              const parts = names.join(" / ");
               const tzPart = tz && tz !== localTz ? tz : "";
               const meta = [email, tzPart].filter(Boolean).join("  ");
               console.log(`@${handle}  ${id}  ${parts}${meta ? "  " + meta : ""}`);
             }
+          },
+        )
+        .command(
+          "get <user>",
+          "Show user details",
+          (y2) => y2.positional("user", { type: "string", demandOption: true, describe: "@handle or user ID" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            const ref = argv.user!.startsWith("@") ? argv.user!.slice(1) : argv.user!;
+            // If not a Slack user ID (U + alphanumeric), resolve from users list by handle
+            let userId = ref;
+            if (!/^U[A-Z0-9]+$/.test(ref)) {
+              const listResp = (await listUsers(token)) as Record<string, Json>;
+              const match = asArray(listResp.members).map(asRecord)
+                .find((u) => String(u.name ?? "") === ref);
+              if (!match) { console.error(`User not found: @${ref}`); process.exit(1); }
+              userId = String(match.id);
+            }
+            const resp = asRecord((await userInfo(token, userId)) as Json);
+            const u = asRecord(resp.user);
+            const profile = asRecord(u.profile);
+            const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const handle = String(u.name ?? userId);
+            const id = String(u.id ?? userId);
+            const display = String(profile.display_name || "");
+            const real = String(profile.real_name || "");
+            const email = String(profile.email || "");
+            const tz = String(u.tz ?? "");
+            const phone = String(profile.phone || "");
+            const title = String(profile.title || "");
+            console.log(`@${handle}  ${id}`);
+            const names = [...new Set([display, real].filter((s) => s && s !== handle))];
+            if (names.length) console.log(`name:  ${names.join(" / ")}`);
+            if (email) console.log(`email: ${email}`);
+            if (phone) console.log(`phone: ${phone}`);
+            if (title) console.log(`title: ${title}`);
+            if (tz && tz !== localTz) console.log(`tz:    ${tz}`);
           },
         )
         .demandCommand(1, "")
@@ -926,10 +990,10 @@ async function main(): Promise<void> {
       "auth",
       "Authentication and workspace management",
       (y) => y
-        .command(["login", "$0"], "Interactive auth setup", () => {}, async () => {
+        .command("login", "Interactive auth setup", () => {}, async () => {
           await cmdAuthLogin();
         })
-        .command("ls", "List configured workspaces", () => {}, () => {
+        .command(["ls", "status", "$0"], "Show auth status", () => {}, () => {
           const profiles = listProfiles();
           if (profiles.length === 0) { console.log("No workspaces configured. Run: slack auth login"); return; }
           for (const { name, profile, current } of profiles)

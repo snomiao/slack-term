@@ -429,6 +429,14 @@ export async function conversationInfoSession(token: string, channelId: string, 
   return postSession(token, "conversations.info", { channel: channelId }, cookie);
 }
 
+export async function userInfo(token: string, userId: string): Promise<Json> {
+  return get(token, "users.info", { user: userId });
+}
+
+export async function conversationInfo(token: string, channelId: string): Promise<Json> {
+  return get(token, "conversations.info", { channel: channelId });
+}
+
 export async function deleteDraft(token: string, draftId: string, cookie?: string): Promise<Json> {
   const nowTs = (Date.now() / 1000).toFixed(6);
   return postSession(token, "drafts.delete", { draft_id: draftId, client_last_updated_ts: nowTs }, cookie);
