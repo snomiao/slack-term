@@ -267,9 +267,30 @@ async function cmdChannels(token: string, limit: number, filter?: string, all?: 
 }
 
 // --- search ---
-async function cmdSearch(token: string, query: string, count: number): Promise<void> {
+async function cmdSearch(token: string, query: string, count: number, json: boolean): Promise<void> {
   const resp = await searchAll(token, query, count);
-  console.log(JSON.stringify(resp, null, 2));
+  if (json) {
+    console.log(JSON.stringify(resp, null, 2));
+    return;
+  }
+  const matches = asArray(getPath(resp as Record<string, Json>, ["messages", "matches"])).map(asRecord);
+  const cache = new Map<string, string>();
+  for (const m of matches) {
+    const ch = asRecord(m.channel);
+    const isIm = ch.is_im === true;
+    const rawName = typeof ch.name === "string" ? ch.name : "dm";
+    let chLabel: string;
+    if (isIm && rawName.startsWith("U")) {
+      if (!cache.has(rawName)) cache.set(rawName, await userName(token, rawName));
+      chLabel = `@${cache.get(rawName) ?? rawName}`;
+    } else if (isIm) {
+      chLabel = `@${rawName}`;
+    } else {
+      chLabel = `#${rawName}`;
+    }
+    const line = await formatMsgLine(token, m, cache);
+    console.log(`${chLabel}  ${line}`);
+  }
 }
 
 // --- dump ---
@@ -830,9 +851,10 @@ async function main(): Promise<void> {
       "Full-text search",
       (y) => y
         .positional("query", { type: "string", demandOption: true })
-        .option("count", { alias: "n", type: "number", default: 100 }),
+        .option("count", { alias: "n", type: "number", default: 100 })
+        .option("json", { type: "boolean", default: false, describe: "Output raw JSON" }),
       async (argv) => {
-        await cmdSearch(tok(argv as W), argv.query!, argv.count);
+        await cmdSearch(tok(argv as W), argv.query!, argv.count, argv.json);
       },
     )
     .command(
