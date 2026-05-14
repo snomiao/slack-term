@@ -626,7 +626,7 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (cmd === "auth" || cmd === "login") return;
+      if (!cmd || cmd === "auth" || cmd === "login") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {

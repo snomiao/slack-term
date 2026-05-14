@@ -115,17 +115,15 @@ export function resolveToken(workspaceFlag?: string): string {
   const names = Object.keys(profiles);
   const envToken = process.env.SLACK_MCP_XOXP_TOKEN;
 
-  // Conflict: env token and profiles are mutually exclusive
+  // Conflict: env token and profiles are mutually exclusive — prefer profiles
   if (envToken && names.length > 0) {
-    throw new Error(
-      "Both SLACK_MCP_XOXP_TOKEN and workspace profiles are configured — keep only one.\n" +
-      "  • Unset SLACK_MCP_XOXP_TOKEN to use profiles\n" +
-      "  • Or remove all profiles: slack workspace remove <name>",
+    console.error(
+      "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist — using profiles.\n" +
+      "  Run: unset SLACK_MCP_XOXP_TOKEN  (and remove from ~/.zshrc or ~/.bashrc)",
     );
+  } else if (envToken) {
+    return envToken;
   }
-
-  // Env token only (no profiles) — highest priority when unambiguous
-  if (envToken) return envToken;
 
   // Explicit per-command selection
   const selected = workspaceFlag ?? process.env.SLACK_WORKSPACE;
@@ -157,7 +155,7 @@ export function resolveToken(workspaceFlag?: string): string {
 
   // No profiles and no env token
   if (names.length === 0) {
-    throw new Error("No profiles configured. Run: slack workspace add <name> <token>  — or set SLACK_MCP_XOXP_TOKEN");
+    throw new Error("No profiles configured. Run: slack auth login");
   }
 
   // Profiles exist but none selected — never silently pick one
