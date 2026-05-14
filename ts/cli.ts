@@ -112,14 +112,38 @@ function formatYmdHmsUtc(epochSec: number): string {
   return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
 }
 
-// Format one message line: `[YYYY-MM-DD HH:MM:SS] <real|@handle> text` (UTC)
+// Lossless Slack ts → ISO string: "2026-05-11T06:01:04.000100"
+function slackTsToIso(tsRaw: string): string {
+  const [secStr, fracStr = "000000"] = tsRaw.split(".");
+  const epochSec = Number(secStr);
+  const d = new Date(epochSec * 1000);
+  const y = d.getUTCFullYear();
+  const mo = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const da = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  const s = String(d.getUTCSeconds()).padStart(2, "0");
+  const frac = fracStr.padEnd(6, "0").slice(0, 6);
+  return `${y}-${mo}-${da}T${h}:${mi}:${s}.${frac}`;
+}
+
+// Parse ISO ts back to Slack ts — throws if fractional is absent or not exactly 6 digits.
+function isoToSlackTs(iso: string): string {
+  const m = iso.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})\.(\d{6})$/);
+  if (!m) throw new Error(`Invalid message timestamp "${iso}" — expected 2026-05-11T06:01:04.000100`);
+  const epochMs = Date.parse(m[1] + "Z");
+  if (isNaN(epochMs)) throw new Error(`Cannot parse date in "${iso}"`);
+  return `${Math.floor(epochMs / 1000)}.${m[2]}`;
+}
+
+// Format one message line: `[2026-05-11T06:01:04.000100] <real|@handle> text` (UTC)
 async function formatMsgLine(
   token: string,
   m: Record<string, Json>,
   cache: Map<string, string>,
 ): Promise<string> {
-  const ts = tsNum(m);
-  const stamp = formatYmdHmsUtc(ts);
+  const rawTs = typeof m.ts === "string" ? m.ts : `${tsNum(m)}.000000`;
+  const stamp = slackTsToIso(rawTs);
   let real = "?";
   let handle = "?";
   if (typeof m.user === "string") {
@@ -480,7 +504,8 @@ function requireCode(provided: string | undefined, expected: string, contextLine
 }
 
 /** Split a target ref that may embed a message ts.
- *  Accepts: `#chan:ts`, `@user:ts`, Slack permalink URL, or plain ref. */
+ *  Accepts: `#chan:1700000000.000100`, `#chan:2026-05-11T06:01:04.000100`, Slack permalink URL, or plain ref.
+ *  Throws if an ISO-format ts is present but missing the required 6-digit fractional part. */
 function splitRefTs(s: string): { ref: string; ts?: string } {
   const url = parseSlackPermalink(s);
   if (url) return url.ts ? { ref: url.channel, ts: url.ts } : { ref: url.channel };
@@ -490,6 +515,9 @@ function splitRefTs(s: string): { ref: string; ts?: string } {
       const maybeTs = s.slice(colon + 1);
       if (/^\d{10}\.\d{6}$/.test(maybeTs)) {
         return { ref: s.slice(0, colon), ts: maybeTs };
+      }
+      if (/^\d{4}-\d{2}-\d{2}T/.test(maybeTs)) {
+        return { ref: s.slice(0, colon), ts: isoToSlackTs(maybeTs) };
       }
     }
   }
@@ -506,7 +534,7 @@ interface EditArgs {
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const { ref, ts } = splitRefTs(args.target);
   if (!ts) {
-    console.error("Error: target must embed a message ts (e.g. #chan:1700000000.000100 or a Slack permalink URL)");
+    console.error("Error: target must embed a message ts (e.g. #chan:2026-05-11T06:01:04.000100 or a Slack permalink URL)");
     process.exit(2);
   }
 
