@@ -625,7 +625,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 // --- upload ---
 interface UploadArgs {
   target: string;
-  filePath: string;
+  filePaths: string[];
   title?: string;
   thread?: string;
   comment?: string;
@@ -637,11 +637,12 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   const { statSync, existsSync } = await import("node:fs");
   const { basename } = await import("node:path");
 
-  if (!existsSync(args.filePath)) {
-    console.error(`Error: file not found: ${args.filePath}`);
-    process.exit(1);
+  for (const fp of args.filePaths) {
+    if (!existsSync(fp)) {
+      console.error(`Error: file not found: ${fp}`);
+      process.exit(1);
+    }
   }
-  const stat = statSync(args.filePath);
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
@@ -653,31 +654,49 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     process.exit(1);
   }
 
-  const filename = basename(args.filePath);
-  const title = args.title ?? filename;
-  const sizeFmt = stat.size < 1024
-    ? `${stat.size} B`
-    : stat.size < 1048576
-    ? `${(stat.size / 1024).toFixed(1)} KB`
-    : `${(stat.size / 1048576).toFixed(1)} MB`;
-
-  const code = safetyCode(channelId, args.filePath, title);
-  if (args.code !== code) {
-    requireCode(args.code, code, [
-      `--- Uploading file ---------------------------`,
-      `  To:    ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
-      `  File:  ${args.filePath}`,
-      `  Title: ${title}`,
-      `  Size:  ${sizeFmt}`,
-      `--------------------------------────────────`,
-    ]);
+  function fmtSize(n: number): string {
+    return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
   }
 
-  const uploadOpts: { title?: string; threadTs?: string; initialComment?: string } = { title };
-  if (args.thread !== undefined) uploadOpts.threadTs = args.thread;
-  if (args.comment !== undefined) uploadOpts.initialComment = args.comment;
-  const { fileId, permalink } = await uploadFile(token, channelId, args.filePath, uploadOpts);
-  console.log(`✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
+  const isBatch = args.filePaths.length > 1;
+  const files = args.filePaths.map((fp) => {
+    const filename = basename(fp);
+    const title = isBatch ? filename : (args.title ?? filename);
+    return { fp, filename, title, sizeFmt: fmtSize(statSync(fp).size) };
+  });
+
+  // Safety code covers the full batch — single-file code is identical to the old formula.
+  const code = safetyCode(channelId, ...files.flatMap((f) => [f.fp, f.title]));
+  if (args.code !== code) {
+    const destLine = `  To:    ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`;
+    const lines = isBatch
+      ? [
+          `--- Uploading ${files.length} files ------------------------`,
+          destLine,
+          ...files.map((f) => `    ${f.filename}  (${f.sizeFmt})`),
+          `--------------------------------────────────`,
+        ]
+      : [
+          `--- Uploading file ---------------------------`,
+          destLine,
+          `  File:  ${files[0]!.fp}`,
+          `  Title: ${files[0]!.title}`,
+          `  Size:  ${files[0]!.sizeFmt}`,
+          `--------------------------------────────────`,
+        ];
+    requireCode(args.code, code, lines);
+  }
+
+  const total = files.length;
+  for (let i = 0; i < total; i++) {
+    const f = files[i]!;
+    const uploadOpts: { title?: string; threadTs?: string; initialComment?: string } = { title: f.title };
+    if (args.thread !== undefined) uploadOpts.threadTs = args.thread;
+    if (args.comment !== undefined && i === 0) uploadOpts.initialComment = args.comment;
+    const { fileId, permalink } = await uploadFile(token, channelId, f.fp, uploadOpts);
+    const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
+    console.log(`${prefix}✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
+  }
 }
 
 // --- dispatch ---
@@ -931,19 +950,19 @@ async function main(): Promise<void> {
       },
     )
     .command(
-      "upload <target> <file>",
-      "Upload a file to a channel or DM",
+      "upload <target> <file..>",
+      "Upload one or more files to a channel or DM",
       (y) => y
         .positional("target", { type: "string", demandOption: true })
-        .positional("file", { type: "string", demandOption: true, describe: "Path to file" })
-        .option("title", { type: "string" })
+        .positional("file", { type: "string", array: true, demandOption: true, describe: "Path(s) to file(s)" })
+        .option("title", { type: "string", describe: "Title (single file only)" })
         .option("thread", { type: "string", describe: "Thread timestamp" })
-        .option("comment", { type: "string", describe: "Initial comment" })
-        .option("code", { type: "string", describe: "Safety hash to confirm upload" })
+        .option("comment", { type: "string", describe: "Initial comment (first file)" })
+        .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
         .option("user-id", { type: "string" }),
       async (argv) => {
-        const args: UploadArgs = { target: argv.target!, filePath: argv.file! };
+        const args: UploadArgs = { target: argv.target!, filePaths: argv.file as string[] };
         if (argv.title) args.title = argv.title;
         if (argv.thread) args.thread = argv.thread;
         if (argv.comment) args.comment = argv.comment;
