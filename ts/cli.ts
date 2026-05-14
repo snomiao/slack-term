@@ -162,7 +162,7 @@ async function formatMsgLine(
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map(l => `  ${l}`).join("\n") : "");
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
-  return `[${stamp}]  ${who}:  ${body}`;
+  return `${stamp}  ${who}:  ${body}`;
 }
 
 // --- msgs <target> — channel/DM history with timestamps ---
