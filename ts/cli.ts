@@ -234,9 +234,9 @@ async function cmdNews(token: string, limit: number): Promise<void> {
 }
 
 // --- channels ---
-async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean): Promise<void> {
+async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean, format = "text"): Promise<void> {
   const resp = (await listConversations(token)) as Record<string, Json>;
-  let channels = asArray(resp.channels)
+  const channels = asArray(resp.channels)
     .map(asRecord)
     .filter((c) => all || c.is_member === true)
     .filter((c) => {
@@ -247,6 +247,10 @@ async function cmdChannels(token: string, limit: number, filter?: string, all?: 
     .sort((a, b) => Number(b.updated ?? 0) - Number(a.updated ?? 0))
     .slice(0, limit);
 
+  if (format === "jsonl") {
+    for (const ch of channels) console.log(JSON.stringify(ch));
+    return;
+  }
   for (const ch of channels) {
     const id = String(ch.id ?? "");
     const name = typeof ch.name === "string" ? ch.name : typeof ch.user === "string" ? ch.user : id;
@@ -254,7 +258,9 @@ async function cmdChannels(token: string, limit: number, filter?: string, all?: 
     const isMpim = ch.is_mpim === true;
     const prefix = isIm || isMpim ? "@" : "#";
     const memberMark = ch.is_member === true ? "" : " (not joined)";
-    console.log(`${prefix}${name}\t${id}${memberMark}`);
+    const purpose = typeof asRecord(ch.purpose).value === "string" ? String(asRecord(ch.purpose).value) : "";
+    const meta = purpose ? `  ${purpose.split("\n")[0]?.slice(0, 60)}` : "";
+    console.log(`${prefix}${name}  ${id}${memberMark}${meta}`);
   }
 }
 
@@ -663,7 +669,7 @@ async function main(): Promise<void> {
       },
     )
     .command(
-      ["channel", "channels"],
+      ["channel", "channels", "ch"],
       "Channel commands",
       (y) => y
         .command(
@@ -672,16 +678,17 @@ async function main(): Promise<void> {
           (y2) => y2
             .option("limit", { alias: "n", type: "number", default: 200 })
             .option("filter", { alias: "f", type: "string" })
-            .option("all", { type: "boolean", default: false }),
+            .option("all", { type: "boolean", default: false })
+            .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text" }),
           async (argv) => {
-            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all);
+            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.format);
           },
         )
         .demandCommand(1, "")
         .showHelpOnFail(true),
     )
     .command(
-      "user",
+      ["user", "usr"],
       "User commands",
       (y) => y
         .command(
@@ -689,7 +696,8 @@ async function main(): Promise<void> {
           "List workspace members",
           (y2) => y2
             .option("limit", { alias: "n", type: "number", default: 200 })
-            .option("filter", { alias: "f", type: "string" }),
+            .option("filter", { alias: "f", type: "string" })
+            .option("format", { type: "string", choices: ["text", "jsonl", "yaml"] as const, default: "text" }),
           async (argv) => {
             const resp = (await listUsers(tok(argv as W))) as Record<string, Json>;
             const filter = argv.filter?.toLowerCase();
@@ -700,13 +708,40 @@ async function main(): Promise<void> {
                 if (!filter) return true;
                 const name = String(u.name ?? "").toLowerCase();
                 const real = String(asRecord(u.profile).real_name ?? "").toLowerCase();
-                return name.includes(filter) || real.includes(filter);
+                const email = String(asRecord(u.profile).email ?? "").toLowerCase();
+                return name.includes(filter) || real.includes(filter) || email.includes(filter);
               })
               .slice(0, argv.limit);
+            if (argv.format === "jsonl") {
+              for (const u of members) console.log(JSON.stringify(u));
+              return;
+            }
+            if (argv.format === "yaml") {
+              for (const u of members) {
+                console.log("---");
+                function yamlVal(v: Json, indent = ""): string {
+                  if (v === null) return "null";
+                  if (typeof v === "string") return v.includes("\n") ? `|\n  ${v.split("\n").join("\n  ")}` : v;
+                  if (typeof v !== "object") return String(v);
+                  if (Array.isArray(v)) return v.map((i) => `\n${indent}  - ${yamlVal(i, indent + "  ")}`).join("");
+                  return Object.entries(v as Record<string, Json>).map(([k, val]) =>
+                    `\n${indent}  ${k}: ${yamlVal(val, indent + "  ")}`).join("");
+                }
+                for (const [k, v] of Object.entries(u)) console.log(`${k}: ${yamlVal(v)}`);
+              }
+              return;
+            }
             for (const u of members) {
               const profile = asRecord(u.profile);
-              const display = String(profile.display_name || profile.real_name || u.name || u.id);
-              console.log(`@${String(u.name ?? u.id)}\t${display}`);
+              const handle = String(u.name ?? u.id);
+              const id = String(u.id ?? "");
+              const display = String(profile.display_name || "");
+              const real = String(profile.real_name || "");
+              const email = String(profile.email || "");
+              const tz = String(u.tz ?? "");
+              const parts = [display, real].filter((s) => s && s !== handle).join(" / ");
+              const meta = [email, tz].filter(Boolean).join("  ");
+              console.log(`@${handle}  ${id}  ${parts}${meta ? "  " + meta : ""}`);
             }
           },
         )
