@@ -212,7 +212,8 @@ async function cmdMsgs(token: string): Promise<void> {
         const t = typeof m.text === "string" ? m.text : "";
         return t.length > 0 && !t.startsWith("<@");
       })
-      .slice(0, 3);
+      .slice(0, 3)
+      .reverse();
     if (msgs.length === 0) continue;
     console.log(`-- #${name} --------------------------------`);
     for (const m of msgs) {
@@ -227,35 +228,42 @@ async function cmdMsgs(token: string): Promise<void> {
 // --- news ---
 async function cmdNews(token: string, limit: number): Promise<void> {
   const resp = (await search(token, "to:me")) as Record<string, Json>;
-  const matches = asArray(getPath(resp, ["messages", "matches"])).map(asRecord);
+  const matches = asArray(getPath(resp, ["messages", "matches"])).map(asRecord).slice(0, limit);
   const cache = new Map<string, string>();
-  let lastDay = "";
-  for (const m of matches.slice(0, limit)) {
-    const ts = tsNum(m);
-    const label = dayLabel(ts);
-    if (label !== lastDay) {
-      if (lastDay !== "") console.log("");
-      console.log(`  ${label}`);
-      console.log("  ----------------------------");
-      lastDay = label;
-    }
-    const ch = asRecord(m.channel);
-    const isIm = ch.is_im === true;
-    const rawName = typeof ch.name === "string" ? ch.name : "dm";
-    let chLabel: string;
-    if (isIm && rawName.startsWith("U")) {
-      const handleKey = "@" + rawName;
-      if (!cache.has(handleKey)) {
-        const [, h] = await userInfoPair(token, rawName);
-        cache.set(handleKey, h);
+
+  // Group by day (API returns newest-first; reverse within each group for chronological reading)
+  const groups: { label: string; msgs: Record<string, Json>[] }[] = [];
+  for (const m of matches) {
+    const label = dayLabel(tsNum(m));
+    const last = groups[groups.length - 1];
+    if (last?.label === label) last.msgs.push(m);
+    else groups.push({ label, msgs: [m] });
+  }
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const { label, msgs } = groups[gi]!;
+    if (gi > 0) console.log("");
+    console.log(`  ${label}`);
+    console.log("  ----------------------------");
+    for (const m of [...msgs].reverse()) {
+      const ch = asRecord(m.channel);
+      const isIm = ch.is_im === true;
+      const rawName = typeof ch.name === "string" ? ch.name : "dm";
+      let chLabel: string;
+      if (isIm && rawName.startsWith("U")) {
+        const handleKey = "@" + rawName;
+        if (!cache.has(handleKey)) {
+          const [, h] = await userInfoPair(token, rawName);
+          cache.set(handleKey, h);
+        }
+        chLabel = `@${cache.get(handleKey) ?? rawName}`;
+      } else if (isIm) {
+        chLabel = `@${rawName}`;
+      } else {
+        chLabel = `#${rawName}`;
       }
-      chLabel = `@${cache.get(handleKey) ?? rawName}`;
-    } else if (isIm) {
-      chLabel = `@${rawName}`;
-    } else {
-      chLabel = `#${rawName}`;
+      console.log(await formatMsgLine(token, m, cache, chLabel));
     }
-    console.log(await formatMsgLine(token, m, cache, chLabel));
   }
 }
 
