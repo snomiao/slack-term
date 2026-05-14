@@ -136,35 +136,32 @@ function isoToSlackTs(iso: string): string {
   return `${Math.floor(epochMs / 1000)}.${m[2]}`;
 }
 
-// Format one message line: `[2026-05-11T06:01:04.000100] <real|@handle> text` (UTC)
+// Format one message line: `[ts]  @handle  text` (UTC). Pass chLabel (e.g. "#general") for search.
 async function formatMsgLine(
   token: string,
   m: Record<string, Json>,
   cache: Map<string, string>,
+  chLabel?: string,
 ): Promise<string> {
   const rawTs = typeof m.ts === "string" ? m.ts : `${tsNum(m)}.000000`;
   const stamp = slackTsToIso(rawTs);
-  let real = "?";
   let handle = "?";
   if (typeof m.user === "string") {
     const uid = m.user;
-    const realKey = uid;
     const handleKey = "@" + uid;
-    if (!cache.has(realKey) || !cache.has(handleKey)) {
-      const [d, h] = await userInfoPair(token, uid);
-      cache.set(realKey, d);
+    if (!cache.has(handleKey)) {
+      const [, h] = await userInfoPair(token, uid);
       cache.set(handleKey, h);
     }
-    real = cache.get(realKey) ?? uid;
     handle = cache.get(handleKey) ?? uid;
   } else if (typeof m.username === "string") {
-    real = m.username;
     handle = m.username;
   }
   const raw = typeof m.text === "string" ? m.text : "";
   const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
   const oneline = resolved.split("\n").join(" ↵ ");
-  return `[${stamp}] <${real}|@${handle}> ${oneline}`;
+  const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
+  return `[${stamp}]  ${who}  ${oneline}`;
 }
 
 // --- msgs <target> — channel/DM history with timestamps ---
@@ -312,8 +309,7 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
     } else {
       chLabel = `#${rawName}`;
     }
-    const line = await formatMsgLine(token, m, cache);
-    console.log(`${chLabel}  ${line}`);
+    console.log(await formatMsgLine(token, m, cache, chLabel));
   }
 }
 
