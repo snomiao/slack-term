@@ -681,9 +681,10 @@ async function main(): Promise<void> {
             .option("limit", { alias: "n", type: "number", default: 200 })
             .option("filter", { alias: "f", type: "string" })
             .option("all", { type: "boolean", default: false })
-            .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text" }),
+            .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text" })
+            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
           async (argv) => {
-            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.format);
+            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.json ? "jsonl" : argv.format);
           },
         )
         .command(
@@ -723,8 +724,10 @@ async function main(): Promise<void> {
           (y2) => y2
             .option("limit", { alias: "n", type: "number", default: 200 })
             .option("filter", { alias: "f", type: "string" })
-            .option("format", { type: "string", choices: ["text", "jsonl", "yaml"] as const, default: "text" }),
+            .option("format", { type: "string", choices: ["text", "jsonl", "yaml"] as const, default: "text" })
+            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
           async (argv) => {
+            const format = argv.json ? "jsonl" : argv.format;
             const resp = (await listUsers(tok(argv as W))) as Record<string, Json>;
             const filter = argv.filter?.toLowerCase();
             const members = asArray(resp.members)
@@ -738,11 +741,11 @@ async function main(): Promise<void> {
                 return name.includes(filter) || real.includes(filter) || email.includes(filter);
               })
               .slice(0, argv.limit);
-            if (argv.format === "jsonl") {
+            if (format === "jsonl") {
               for (const u of members) console.log(JSON.stringify(u));
               return;
             }
-            if (argv.format === "yaml") {
+            if (format === "yaml") {
               for (const u of members) {
                 console.log("---");
                 function yamlVal(v: Json, indent = ""): string {
