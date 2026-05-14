@@ -136,6 +136,10 @@ function isoToSlackTs(iso: string): string {
   return `${Math.floor(epochMs / 1000)}.${m[2]}`;
 }
 
+function parseInputTs(s: string): string {
+  return /^\d{4}-\d{2}-\d{2}T/.test(s) ? isoToSlackTs(s) : s;
+}
+
 // Format one message line: `[ts]  @handle  text` (UTC). Pass chLabel (e.g. "#general") for search.
 async function formatMsgLine(
   token: string,
@@ -179,7 +183,7 @@ async function cmdMsgsTarget(token: string, target: string, limit: number): Prom
 // --- thread ---
 async function cmdThread(token: string, target: string, ts: string, limit: number): Promise<void> {
   const channelId = await resolveChannel(token, target);
-  const resp = (await replies(token, channelId, ts, limit)) as Record<string, Json>;
+  const resp = (await replies(token, channelId, parseInputTs(ts), limit)) as Record<string, Json>;
   const msgs = asArray(resp.messages).map(asRecord);
   const cache = new Map<string, string>();
   for (const m of msgs) {
@@ -251,13 +255,7 @@ async function cmdNews(token: string, limit: number): Promise<void> {
     } else {
       chLabel = `#${rawName}`;
     }
-    const display = await displayUser(token, m, cache);
-    const raw = typeof m.text === "string" ? m.text : "";
-    const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
-    const firstLine = (resolved.split("\n")[0] ?? "").slice(0, 80);
-    const icon = isIm ? "💬" : "🔔";
-    console.log(`  ${icon} ${chLabel}  ${formatHm(ts)}`);
-    console.log(`     ${display}: ${firstLine}`);
+    console.log(await formatMsgLine(token, m, cache, chLabel));
   }
 }
 
