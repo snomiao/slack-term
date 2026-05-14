@@ -58,7 +58,15 @@ async function saveToken(rl: Interface, token: string): Promise<string> {
   const name = nameInput || defaultName;
   addProfile(name, { token, ...info });
   console.log(`✓ Saved workspace "${name}": ${info.team} (${info.user})`);
-  console.log(`  Run: slack auth use -g ${name}`);
+  if (process.env.SLACK_MCP_XOXP_TOKEN) {
+    console.log("");
+    console.log("⚠ SLACK_MCP_XOXP_TOKEN is set in your environment -it conflicts with profiles.");
+    console.log("  Unset it so your new profile is used:");
+    console.log("    unset SLACK_MCP_XOXP_TOKEN");
+    console.log("  Also remove it from your shell config (~/.zshrc, ~/.bashrc, etc.)");
+  } else {
+    console.log(`  Run: slack auth use -g ${name}`);
+  }
   return name;
 }
 
@@ -98,8 +106,8 @@ export async function importFromDesktop(): Promise<void> {
 async function loginExisting(rl: Interface): Promise<void> {
   console.log("Which token type does your app use?");
   console.log("");
-  console.log("  1) User token (xoxp-)  — full access including search  [recommended]");
-  console.log("  2) Bot token  (xoxb-)  — search and news unavailable");
+  console.log("  1) User token (xoxp-)  -full access including search  [recommended]");
+  console.log("  2) Bot token  (xoxb-)  -search and news unavailable");
   console.log("");
   const typeChoice = await ask(rl, "Choice [1/2]: ");
   const mode = typeChoice === "2" ? "bot" : "user";
@@ -109,8 +117,8 @@ async function loginExisting(rl: Interface): Promise<void> {
   console.log("");
   console.log("Find your token here:");
   console.log("  https://api.slack.com/apps");
-  console.log("  → Select your app → OAuth & Permissions");
-  console.log(`  → Copy the "${tokenSection}" (starts with ${expectedPrefix})`);
+  console.log("  -> Select your app -> OAuth & Permissions");
+  console.log(`  -> Copy the "${tokenSection}" (starts with ${expectedPrefix})`);
   console.log("");
 
   const token = await ask(rl, "Paste your token: ");
@@ -133,19 +141,19 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
     console.log("");
   }
 
-  console.log("Step 1 — Create your Slack app:");
+  console.log("Step 1 -Create your Slack app:");
   console.log("  Open:  https://api.slack.com/apps");
-  console.log('  Click "Create New App" → "From a manifest" → select your workspace');
+  console.log('  Click "Create New App" -> "From a manifest" -> select your workspace');
   console.log("  Paste this manifest (JSON tab):");
   console.log("");
-  console.log("─────────────────────────────────────────────────────────────");
+  console.log("-------------------------------------------------------------");
   console.log(manifest);
-  console.log("─────────────────────────────────────────────────────────────");
+  console.log("-------------------------------------------------------------");
   console.log("");
-  console.log('Step 2 — Install: "Install App" → "Install to Workspace" → Authorize');
+  console.log('Step 2 -Install: "Install App" -> "Install to Workspace" -> Authorize');
   console.log("");
-  console.log(`Step 3 — Copy your token:`);
-  console.log(`  OAuth & Permissions → ${tokenLabel}`);
+  console.log(`Step 3 -Copy your token:`);
+  console.log(`  OAuth & Permissions -> ${tokenLabel}`);
   console.log("");
 
   const token = await ask(rl, "Paste your token: ");
@@ -160,17 +168,17 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
 export async function cmdAuthLogin(): Promise<void> {
   console.log("How would you like to authenticate with Slack?");
   console.log("");
-  console.log("  1) Slack desktop app — import session token");
+  console.log("  1) Slack desktop app -import session token");
   console.log("     Reads the xoxc- token directly from the installed app.");
   console.log("     Token: all platforms  |  xoxd cookie: macOS only");
   console.log("");
   console.log("  2) Connect existing Slack app  [recommended if you have one]");
   console.log("     Paste a token from an app you already created.");
   console.log("");
-  console.log("  3) Create new Slack app — user token (xoxp-)");
+  console.log("  3) Create new Slack app -user token (xoxp-)");
   console.log("     Guided setup with manifest. Full access including search.");
   console.log("");
-  console.log("  4) Create new Slack app — bot token (xoxb-)");
+  console.log("  4) Create new Slack app -bot token (xoxb-)");
   console.log("     Bot is invited to channels. Search and news unavailable.");
   console.log("");
 

@@ -186,7 +186,7 @@ async function cmdMsgs(token: string): Promise<void> {
       })
       .slice(0, 3);
     if (msgs.length === 0) continue;
-    console.log(`── #${name} ─────────────────────────────────`);
+    console.log(`-- #${name} --------------------------------`);
     for (const m of msgs) {
       const who = await displayUser(token, m, cache);
       const raw = (typeof m.text === "string" ? m.text : "").split("\n")[0] ?? "";
@@ -208,7 +208,7 @@ async function cmdNews(token: string, limit: number): Promise<void> {
     if (label !== lastDay) {
       if (lastDay !== "") console.log("");
       console.log(`  ${label}`);
-      console.log("  ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄");
+      console.log("  ----------------------------");
       lastDay = label;
     }
     const ch = asRecord(m.channel);
@@ -401,7 +401,7 @@ async function cmdDrafts(token: string, cookie?: string, showAll = false): Promi
     const id = typeof d.id === "string" ? d.id : "";
     const sentTag = d.is_sent === true ? "  [SENT]" : "";
     const resolved = resolveDateMarkup(await resolveMentions(token, text, mentionCache));
-    console.log(`── ${id}  ${chLabel}  [${stamp}]${sentTag}`);
+    console.log(`-- ${id}  ${chLabel}  [${stamp}]${sentTag}`);
     for (const line of resolved.split("\n")) console.log(`   ${line}`);
   }
 }
@@ -498,11 +498,11 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const code = safetyCode(originalText, args.newText);
   if (args.code !== code) {
     requireCode(args.code, code, [
-      `─── Original message ─────────────────────────`,
+      `--- Original message -------------------------`,
       ...originalText.split("\n").map((l) => `  ${l}`),
-      `─── Replacing with ───────────────────────────`,
+      `--- Replacing with ---------------------------`,
       ...args.newText.split("\n").map((l) => `  ${l}`),
-      `─────────────────────────────────────────────`,
+      `--------------------------------────────────`,
     ]);
   }
 
@@ -542,12 +542,12 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 
   if (args.code !== code) {
     requireCode(args.code, code, [
-      `─── Last message in channel ──────────────────`,
+      `--- Last message in channel ------------------`,
       `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
-      `─── Sending ──────────────────────────────────`,
+      `--- Sending ----------------------------------`,
       `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
       `  Message: ${args.message}`,
-      `─────────────────────────────────────────────`,
+      `--------------------------------────────────`,
     ]);
   }
   const ts = await slackSend(token, channelId, args.message, args.thread);
@@ -596,12 +596,12 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   const code = safetyCode(channelId, args.filePath, title);
   if (args.code !== code) {
     requireCode(args.code, code, [
-      `─── Uploading file ───────────────────────────`,
+      `--- Uploading file ---------------------------`,
       `  To:    ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
       `  File:  ${args.filePath}`,
       `  Title: ${title}`,
       `  Size:  ${sizeFmt}`,
-      `─────────────────────────────────────────────`,
+      `--------------------------------────────────`,
     ]);
   }
 
@@ -847,11 +847,11 @@ async function main(): Promise<void> {
             const prevText = draftText(d);
             const code = safetyCode(prevText, text);
             if (argv.code !== code) requireCode(argv.code, code, [
-              `─── Current draft ────────────────────────────`,
+              `--- Current draft ----------------------------`,
               ...prevText.split("\n").map((l) => `  ${l}`),
-              `─── Replacing with ───────────────────────────`,
+              `--- Replacing with ---------------------------`,
               ...text.split("\n").map((l) => `  ${l}`),
-              `─────────────────────────────────────────────`,
+              `--------------------------------────────────`,
             ]);
             const resp = (await updateDraft(token, argv.id!, draftChannelId(d), text, cookie)) as Record<string, Json>;
             console.log(`✓ Draft updated (id: ${asRecord(resp.draft).id ?? "?"})`);
@@ -871,10 +871,10 @@ async function main(): Promise<void> {
             const prevText = draftText(d);
             const code = safetyCode(argv.id!, prevText);
             if (argv.code !== code) requireCode(argv.code, code, [
-              `─── Deleting draft ───────────────────────────`,
+              `─-- Deleting draft ───────────────────────────`,
               `  id: ${argv.id}`,
               ...prevText.split("\n").map((l) => `  ${l}`),
-              `─────────────────────────────────────────────`,
+              `--------------------------------────────────`,
             ]);
             await deleteDraft(token, argv.id!, cookie);
             console.log(`✓ Draft deleted (id: ${argv.id})`);
