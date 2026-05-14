@@ -107,7 +107,10 @@ async function loginExisting(rl: Interface): Promise<void> {
   const tokenSection = mode === "user" ? "User OAuth Token" : "Bot User OAuth Token";
 
   console.log("");
-  console.log(`Go to your app page → OAuth & Permissions → ${tokenSection}`);
+  console.log("Find your token here:");
+  console.log("  https://api.slack.com/apps");
+  console.log("  → Select your app → OAuth & Permissions");
+  console.log(`  → Copy the "${tokenSection}" (starts with ${expectedPrefix})`);
   console.log("");
 
   const token = await ask(rl, "Paste your token: ");
