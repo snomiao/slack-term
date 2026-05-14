@@ -664,10 +664,10 @@ async function main(): Promise<void> {
     )
     .command(
       ["channel", "channels"],
-      "List channels",
+      "Channel commands",
       (y) => y
         .command(
-          ["$0", "ls", "list"],
+          ["ls", "list"],
           "List channels",
           (y2) => y2
             .option("limit", { alias: "n", type: "number", default: 200 })
@@ -676,14 +676,16 @@ async function main(): Promise<void> {
           async (argv) => {
             await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all);
           },
-        ),
+        )
+        .demandCommand(1, "")
+        .showHelpOnFail(true),
     )
     .command(
       "user",
       "User commands",
       (y) => y
         .command(
-          ["$0", "ls", "list"],
+          ["ls", "list"],
           "List workspace members",
           (y2) => y2
             .option("limit", { alias: "n", type: "number", default: 200 })
@@ -707,7 +709,9 @@ async function main(): Promise<void> {
               console.log(`@${String(u.name ?? u.id)}\t${display}`);
             }
           },
-        ),
+        )
+        .demandCommand(1, "")
+        .showHelpOnFail(true),
     )
     .command(
       "news",
