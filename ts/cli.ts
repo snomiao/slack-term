@@ -240,8 +240,12 @@ async function cmdNews(token: string, limit: number): Promise<void> {
     const rawName = typeof ch.name === "string" ? ch.name : "dm";
     let chLabel: string;
     if (isIm && rawName.startsWith("U")) {
-      if (!cache.has(rawName)) cache.set(rawName, await userName(token, rawName));
-      chLabel = `@${cache.get(rawName) ?? rawName}`;
+      const handleKey = "@" + rawName;
+      if (!cache.has(handleKey)) {
+        const [, h] = await userInfoPair(token, rawName);
+        cache.set(handleKey, h);
+      }
+      chLabel = `@${cache.get(handleKey) ?? rawName}`;
     } else if (isIm) {
       chLabel = `@${rawName}`;
     } else {
@@ -303,8 +307,12 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
     const rawName = typeof ch.name === "string" ? ch.name : "dm";
     let chLabel: string;
     if (isIm && rawName.startsWith("U")) {
-      if (!cache.has(rawName)) cache.set(rawName, await userName(token, rawName));
-      chLabel = `@${cache.get(rawName) ?? rawName}`;
+      const handleKey = "@" + rawName;
+      if (!cache.has(handleKey)) {
+        const [, h] = await userInfoPair(token, rawName);
+        cache.set(handleKey, h);
+      }
+      chLabel = `@${cache.get(handleKey) ?? rawName}`;
     } else if (isIm) {
       chLabel = `@${rawName}`;
     } else {
