@@ -31,6 +31,9 @@ import {
   search,
   searchAll,
   send as slackSend,
+  scheduleMessage,
+  listScheduledMessages,
+  deleteScheduledMessage,
   uploadFile,
   userInfoPair,
   userName,
@@ -622,6 +625,93 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   console.log(`✓ Sent (ts: ${ts})`);
 }
 
+// --- schedule ---
+function parsePostAt(at: string): number {
+  if (/^\d{10,}$/.test(at)) return parseInt(at, 10);
+  const d = new Date(at.replace(" ", "T"));
+  if (isNaN(d.getTime())) throw new Error(`Cannot parse time: ${at}`);
+  return Math.floor(d.getTime() / 1000);
+}
+
+interface ScheduleSendArgs {
+  target: string;
+  message: string;
+  at: string;
+  thread?: string;
+  code?: string;
+  channelId?: string;
+  userId?: string;
+}
+async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else if (args.userId) channelId = await openDm(token, args.userId);
+  else if (args.target.startsWith("#") || args.target.startsWith("@")) {
+    channelId = await resolveChannel(token, args.target);
+  } else {
+    console.error(`Error: target must be #channel-name or @username (got: ${args.target})`);
+    process.exit(1);
+  }
+
+  const postAt = parsePostAt(args.at);
+  const postAtDate = new Date(postAt * 1000).toISOString();
+  const code = safetyCode(channelId, args.message, String(postAt));
+
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `--- Scheduling message -----------------------`,
+      `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
+      `  At:      ${postAtDate} (Unix: ${postAt})`,
+      `  Message: ${args.message}`,
+      `---------------------------------------------`,
+    ]);
+  }
+  const id = await scheduleMessage(token, channelId, args.message, postAt, args.thread);
+  console.log(`✓ Scheduled (id: ${id}, at: ${postAtDate})`);
+}
+
+async function cmdScheduleList(token: string, target?: string, channelId?: string): Promise<void> {
+  let channel: string | undefined;
+  if (channelId) {
+    channel = channelId;
+  } else if (target) {
+    channel = await resolveChannel(token, target);
+  }
+  const resp = (await listScheduledMessages(token, channel)) as {
+    scheduled_messages?: { id: string; channel_id: string; post_at: number; text: string }[];
+  };
+  const msgs = resp.scheduled_messages ?? [];
+  if (msgs.length === 0) { console.log("(no scheduled messages)"); return; }
+  for (const m of msgs) {
+    const at = new Date(m.post_at * 1000).toISOString();
+    console.log(`${m.id}  ${at}  [${m.channel_id}]  ${m.text.split("\n")[0]?.slice(0, 80) ?? ""}`);
+  }
+}
+
+interface ScheduleRmArgs {
+  target: string;
+  id: string;
+  code?: string;
+  channelId?: string;
+}
+async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void> {
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else channelId = await resolveChannel(token, args.target);
+
+  const code = safetyCode(channelId, args.id);
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `--- Deleting scheduled message ---------------`,
+      `  Channel: ${args.target}`,
+      `  ID:      ${args.id}`,
+      `---------------------------------------------`,
+    ]);
+  }
+  await deleteScheduledMessage(token, channelId, args.id);
+  console.log(`✓ Deleted scheduled message ${args.id}`);
+}
+
 // --- upload ---
 interface UploadArgs {
   target: string;
@@ -933,6 +1023,59 @@ async function main(): Promise<void> {
         if (argv["user-id"]) args.userId = argv["user-id"];
         await cmdSend(tok(argv as W), args);
       },
+    )
+    .command(
+      "schedule",
+      "Manage scheduled messages",
+      (y) => y
+        .command(
+          "send <target> <message>",
+          "Schedule a message for later delivery",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true })
+            .positional("message", { type: "string", demandOption: true })
+            .option("at", { type: "string", demandOption: true, describe: "Delivery time (ISO datetime or Unix ts)" })
+            .option("thread", { type: "string", describe: "Thread timestamp" })
+            .option("code", { type: "string", describe: "Safety hash to confirm" })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" })
+            .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
+          async (argv) => {
+            const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
+            if (argv.thread) args.thread = argv.thread;
+            if (argv.code) args.code = argv.code;
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            if (argv["user-id"]) args.userId = argv["user-id"];
+            await cmdScheduleSend(tok(argv as W), args);
+          },
+        )
+        .command(
+          ["ls", "list"],
+          "List pending scheduled messages",
+          (y2) => y2
+            .positional("target", { type: "string", describe: "#channel to filter by" })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+          async (argv) => {
+            await cmdScheduleList(tok(argv as W), argv.target as string | undefined, argv["channel-id"]);
+          },
+        )
+        .command(
+          "rm <target> <id>",
+          "Delete a scheduled message",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "#channel or @user" })
+            .positional("id", { type: "string", demandOption: true, describe: "Scheduled message ID" })
+            .option("code", { type: "string", describe: "Safety hash to confirm" })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+          async (argv) => {
+            const args: ScheduleRmArgs = { target: argv.target!, id: argv.id! };
+            if (argv.code) args.code = argv.code;
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            await cmdScheduleRm(tok(argv as W), args);
+          },
+        )
+        .demandCommand(1, "")
+        .showHelpOnFail(true),
+      () => {},
     )
     .command(
       "edit <target> <newText>",

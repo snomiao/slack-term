@@ -177,6 +177,44 @@ export async function send(
   return resp.ts ?? "";
 }
 
+export async function scheduleMessage(
+  token: string,
+  channel: string,
+  text: string,
+  postAt: number,
+  threadTs?: string,
+): Promise<string> {
+  const body: Record<string, Json> = {
+    channel,
+    text,
+    post_at: postAt,
+    blocks: [{ type: "markdown", text }],
+  };
+  if (threadTs !== undefined) body.thread_ts = threadTs;
+  const resp = (await post(token, "chat.scheduleMessage", body)) as { scheduled_message_id?: string };
+  return resp.scheduled_message_id ?? "";
+}
+
+export async function listScheduledMessages(
+  token: string,
+  channel?: string,
+): Promise<Json> {
+  const params: Record<string, string> = {};
+  if (channel) params.channel = channel;
+  return get(token, "chat.scheduledMessages.list", params);
+}
+
+export async function deleteScheduledMessage(
+  token: string,
+  channel: string,
+  scheduledMessageId: string,
+): Promise<void> {
+  await post(token, "chat.deleteScheduledMessage", {
+    channel,
+    scheduled_message_id: scheduledMessageId,
+  });
+}
+
 export async function editMessage(
   token: string,
   channel: string,
