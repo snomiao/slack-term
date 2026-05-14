@@ -117,10 +117,13 @@ export function resolveToken(workspaceFlag?: string): string {
 
   // Conflict: env token and profiles are mutually exclusive — prefer profiles
   if (envToken && names.length > 0) {
-    console.error(
-      "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist — using profiles.\n" +
-      "  Run: unset SLACK_MCP_XOXP_TOKEN  (and remove from ~/.zshrc or ~/.bashrc)",
-    );
+    if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
+      (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
+      console.error(
+        "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist - using profiles.\n" +
+        "  Run: unset SLACK_MCP_XOXP_TOKEN  (and remove from ~/.zshrc or ~/.bashrc)",
+      );
+    }
   } else if (envToken) {
     return envToken;
   }
