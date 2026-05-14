@@ -159,9 +159,10 @@ async function formatMsgLine(
   }
   const raw = typeof m.text === "string" ? m.text : "";
   const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
-  const oneline = resolved.split("\n").join(" ↵ ");
+  const lines = resolved.split("\n");
+  const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map(l => `  ${l}`).join("\n") : "");
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
-  return `[${stamp}]  ${who}  ${oneline}`;
+  return `[${stamp}]  ${who}:  ${body}`;
 }
 
 // --- msgs <target> — channel/DM history with timestamps ---
