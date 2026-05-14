@@ -993,9 +993,16 @@ async function main(): Promise<void> {
       "auth",
       "Authentication and workspace management",
       (y) => y
-        .command("login", "Interactive auth setup", () => {}, async () => {
-          await cmdAuthLogin();
-        })
+        .command(
+          "login",
+          "Add a workspace (interactive or --token for non-interactive)",
+          (y2) => y2
+            .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
+            .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
+          async (argv) => {
+            await cmdAuthLogin({ token: argv.token, name: argv.name });
+          },
+        )
         .command(["ls", "status", "$0"], "Show auth status", () => {}, () => {
           const profiles = listProfiles();
           if (profiles.length === 0) { console.log("No workspaces configured. Run: slack auth login"); return; }
@@ -1024,8 +1031,10 @@ async function main(): Promise<void> {
           },
         ),
     )
-    .command("login", false as unknown as string, () => {}, async () => {
-      await cmdAuthLogin();
+    .command("login", false as unknown as string, (y2) => y2
+      .option("token", { type: "string" })
+      .option("name", { type: "string" }), async (argv) => {
+      await cmdAuthLogin({ token: argv.token, name: argv.name });
     })
     .demandCommand(1, "Specify a command. Run with --help for usage.")
     .strict()

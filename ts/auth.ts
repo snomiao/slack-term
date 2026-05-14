@@ -1,6 +1,6 @@
 // Interactive auth setup: slack auth login / slack login
 import { createInterface, type Interface } from "node:readline/promises";
-import { addProfile } from "./profiles.ts";
+import { addProfile, listProfiles } from "./profiles.ts";
 import { authTest } from "./slack.ts";
 import { extractSessions } from "./slack-app.ts";
 
@@ -50,17 +50,24 @@ async function ask(rl: Interface, q: string): Promise<string> {
   return (await rl.question(q)).trim();
 }
 
-async function saveToken(rl: Interface, token: string): Promise<string> {
+async function saveToken(rl: Interface | null, token: string, nameOverride?: string): Promise<string> {
   console.error("Verifying token...");
   const info = await authTest(token);
   const defaultName = slugify(info.team);
-  const nameInput = await ask(rl, `Workspace name [${defaultName}]: `);
-  const name = nameInput || defaultName;
+  let name: string;
+  if (nameOverride) {
+    name = nameOverride;
+  } else if (rl) {
+    const nameInput = await ask(rl, `Workspace name [${defaultName}]: `);
+    name = nameInput || defaultName;
+  } else {
+    name = defaultName;
+  }
   addProfile(name, { token, ...info });
-  console.log(`✓ Saved workspace "${name}": ${info.team} (${info.user})`);
+  console.log(`Saved workspace "${name}": ${info.team} (${info.user})`);
   if (process.env.SLACK_MCP_XOXP_TOKEN) {
     console.log("");
-    console.log("⚠ SLACK_MCP_XOXP_TOKEN is set in your environment -it conflicts with profiles.");
+    console.log("Warning: SLACK_MCP_XOXP_TOKEN is set in your environment - it conflicts with profiles.");
     console.log("  Unset it so your new profile is used:");
     console.log("    unset SLACK_MCP_XOXP_TOKEN");
     console.log("  Also remove it from your shell config (~/.zshrc, ~/.bashrc, etc.)");
@@ -165,20 +172,50 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
   await saveToken(rl, token);
 }
 
-export async function cmdAuthLogin(): Promise<void> {
+export async function cmdAuthLogin(opts: { token?: string; name?: string } = {}): Promise<void> {
+  // Show existing profiles if any
+  const existing = listProfiles();
+  if (existing.length > 0) {
+    console.log("Currently logged in:");
+    for (const { name, profile, current } of existing)
+      console.log(`  ${current ? "*" : " "} ${name}  ${profile.team}  (${profile.user || "unknown"})`);
+    console.log("");
+    console.log("Adding another workspace:");
+    console.log("");
+  }
+
+  // Non-interactive: token passed via --token flag or piped via stdin
+  if (opts.token) {
+    await saveToken(null, opts.token, opts.name);
+    return;
+  }
+
+  if (!process.stdin.isTTY) {
+    // Read token from stdin (piped)
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    const token = Buffer.concat(chunks).toString("utf8").trim();
+    if (!token) {
+      console.error("No token provided on stdin.");
+      process.exit(1);
+    }
+    await saveToken(null, token, opts.name);
+    return;
+  }
+
   console.log("How would you like to authenticate with Slack?");
   console.log("");
-  console.log("  1) Slack desktop app -import session token");
+  console.log("  1) Slack desktop app - import session token");
   console.log("     Reads the xoxc- token directly from the installed app.");
   console.log("     Token: all platforms  |  xoxd cookie: macOS only");
   console.log("");
   console.log("  2) Connect existing Slack app  [recommended if you have one]");
   console.log("     Paste a token from an app you already created.");
   console.log("");
-  console.log("  3) Create new Slack app -user token (xoxp-)");
+  console.log("  3) Create new Slack app - user token (xoxp-)");
   console.log("     Guided setup with manifest. Full access including search.");
   console.log("");
-  console.log("  4) Create new Slack app -bot token (xoxb-)");
+  console.log("  4) Create new Slack app - bot token (xoxb-)");
   console.log("     Bot is invited to channels. Search and news unavailable.");
   console.log("");
 
