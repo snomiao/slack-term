@@ -731,6 +731,7 @@ async function main(): Promise<void> {
               }
               return;
             }
+            const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
             for (const u of members) {
               const profile = asRecord(u.profile);
               const handle = String(u.name ?? u.id);
@@ -740,7 +741,8 @@ async function main(): Promise<void> {
               const email = String(profile.email || "");
               const tz = String(u.tz ?? "");
               const parts = [display, real].filter((s) => s && s !== handle).join(" / ");
-              const meta = [email, tz].filter(Boolean).join("  ");
+              const tzPart = tz && tz !== localTz ? tz : "";
+              const meta = [email, tzPart].filter(Boolean).join("  ");
               console.log(`@${handle}  ${id}  ${parts}${meta ? "  " + meta : ""}`);
             }
           },
