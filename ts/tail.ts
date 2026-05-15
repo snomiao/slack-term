@@ -143,7 +143,7 @@ export async function cmdTail(
   }
 
   const channelId = await resolveChannel(token, target);
-  const interval = opts.interval ?? 3000;
+  const interval = opts.interval ?? 60000;
   const cache = new Map<string, string>();
   const seen = new Set<string>();
 
@@ -174,7 +174,11 @@ export async function cmdTail(
       token,
       channelId,
       cursor,
-      { thread: opts.thread, me: opts.me, myUserId },
+      {
+        ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+        ...(opts.me !== undefined ? { me: opts.me } : {}),
+        ...(myUserId !== undefined ? { myUserId } : {}),
+      },
       seen,
       cache,
     );

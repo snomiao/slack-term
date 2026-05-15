@@ -41,7 +41,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
-import { dayLabel, formatHm, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
+import { dayLabel, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -1224,7 +1224,10 @@ async function main(): Promise<void> {
             .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
             .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
           async (argv) => {
-            await cmdAuthLogin({ token: argv.token, name: argv.name });
+            await cmdAuthLogin({
+              ...(argv.token !== undefined ? { token: argv.token } : {}),
+              ...(argv.name !== undefined ? { name: argv.name } : {}),
+            });
           },
         )
         .command(["ls", "status"], "Show auth status", () => {}, () => {
@@ -1264,14 +1267,14 @@ async function main(): Promise<void> {
         .option("since", { type: "string", describe: "Backfill from N ago (e.g. 10m, 2h, 1d)" })
         .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
         .option("me", { type: "boolean", default: false, describe: "Filter to messages that mention you" })
-        .option("interval", { type: "number", default: 3000, describe: "Poll interval in ms" }),
+        .option("interval", { type: "number", default: 60000, describe: "Poll interval in ms (default 60s; use --interval=3000 for near-real-time)" }),
       async (argv) => {
         const token = tok(argv as W);
         const signal = new AbortController();
         process.on("SIGINT", () => { signal.abort(); process.exit(0); });
         await cmdTail(token, argv.target, {
-          since: argv.since,
-          thread: argv.thread,
+          ...(argv.since !== undefined ? { since: argv.since } : {}),
+          ...(argv.thread !== undefined ? { thread: argv.thread } : {}),
           me: argv.me,
           interval: argv.interval,
         }, signal.signal);
@@ -1280,7 +1283,10 @@ async function main(): Promise<void> {
     .command("login", false as unknown as string, (y2) => y2
       .option("token", { type: "string" })
       .option("name", { type: "string" }), async (argv) => {
-      await cmdAuthLogin({ token: argv.token, name: argv.name });
+      await cmdAuthLogin({
+        ...(argv.token !== undefined ? { token: argv.token } : {}),
+        ...(argv.name !== undefined ? { name: argv.name } : {}),
+      });
     })
     .demandCommand(1, "Specify a command. Run with --help for usage.")
     .strict()
