@@ -305,6 +305,47 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
   console.log(`RTM WebSocket mode is now available: slack tail @you`);
 }
 
+/** Paste an existing xoxp-/xoxb- token (non-interactive or TTY). */
+export async function cmdAuthToken(opts: { token?: string; name?: string } = {}): Promise<void> {
+  if (opts.token) {
+    await saveToken(null, opts.token, opts.name);
+    return;
+  }
+  if (!process.stdin.isTTY) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+    const token = Buffer.concat(chunks).toString("utf8").trim();
+    if (!token) { console.error("No token provided on stdin."); process.exit(1); }
+    await saveToken(null, token, opts.name);
+    return;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    await loginExisting(rl);
+  } finally {
+    rl.close();
+  }
+}
+
+/** Guided Slack app creation wizard (user or bot token). */
+export async function cmdAuthApp(opts: { bot?: boolean } = {}): Promise<void> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (opts.bot !== undefined) {
+      await loginNewApp(rl, opts.bot ? "bot" : "user");
+      return;
+    }
+    console.log("Which token type?");
+    console.log("  1) User token (xoxp-)  -full access including search  [default]");
+    console.log("  2) Bot token  (xoxb-)  -search and news unavailable");
+    console.log("");
+    const choice = await ask(rl, "Choice [1/2, Enter=1]: ");
+    await loginNewApp(rl, choice === "2" ? "bot" : "user");
+  } finally {
+    rl.close();
+  }
+}
+
 export async function cmdAuthLogin(opts: { token?: string; name?: string } = {}): Promise<void> {
   // Show existing profiles if any
   const existing = listProfiles();

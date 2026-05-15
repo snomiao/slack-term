@@ -9,7 +9,7 @@ import { join } from "node:path";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
-import { cmdAuthLogin, cmdAuthChrome } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthChrome, cmdAuthToken, cmdAuthApp } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
@@ -1222,8 +1222,29 @@ async function main(): Promise<void> {
       "Authentication and workspace management",
       (y) => y
         .command(
+          "token",
+          "Add a workspace — paste an existing xoxp-/xoxb- token",
+          (y2) => y2
+            .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
+            .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
+          async (argv) => {
+            await cmdAuthToken({
+              ...(argv.token !== undefined ? { token: argv.token } : {}),
+              ...(argv.name !== undefined ? { name: argv.name } : {}),
+            });
+          },
+        )
+        .command(
+          "app",
+          "Create a new Slack app and obtain a token (guided wizard)",
+          (y2) => y2.option("bot", { type: "boolean", describe: "Create a bot token (xoxb-) instead of user (xoxp-)" }),
+          async (argv) => {
+            await cmdAuthApp({ ...(argv.bot !== undefined ? { bot: argv.bot } : {}) });
+          },
+        )
+        .command(
           "login",
-          "Add a workspace (interactive or --token for non-interactive)",
+          "Interactive auth wizard (all auth methods: desktop app, token, new app)",
           (y2) => y2
             .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
             .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
