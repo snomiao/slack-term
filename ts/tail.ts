@@ -1,4 +1,4 @@
-import { history, resolveChannel, userInfoPair, authTest, type Json } from "./slack.ts";
+import { history, resolveChannel, userInfoPair, authTest, conversationInfo, RateLimitError, type Json } from "./slack.ts";
 import { resolveDateMarkup, resolveMentions } from "./format.ts";
 
 export function parseSince(s: string): number {
@@ -16,6 +16,7 @@ export function parseSince(s: string): number {
 
 export const _internals = {
   sleep: (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms)),
+  now: (): number => Date.now(),
 };
 
 function asRecord(v: Json | undefined): Record<string, Json> {
@@ -80,10 +81,22 @@ export async function pollCycle(
   opts: PollOpts,
   seen: Set<string>,
   cache: Map<string, string>,
-): Promise<{ newCursor: string; lines: string[] }> {
-  const histResp = asRecord((await history(token, channelId, 20, cursor || undefined)) as Json);
+  pageCursor?: string,
+): Promise<{ newCursor: string; lines: string[]; hasMore: boolean; nextPageCursor: string | undefined }> {
+  const histResp = asRecord((await history(
+    token,
+    channelId,
+    20,
+    pageCursor ? undefined : (cursor || undefined),
+    pageCursor,
+  )) as Json);
   // history returns newest-first; reverse to emit oldest-first
   const msgs = asArray(histResp.messages).map(asRecord).reverse();
+
+  const meta = asRecord(histResp.response_metadata as Json | undefined);
+  const nextPageCursor = (histResp.has_more === true && typeof meta.next_cursor === "string")
+    ? meta.next_cursor
+    : undefined;
 
   const lines: string[] = [];
   let newCursor = cursor;
@@ -91,6 +104,10 @@ export async function pollCycle(
   for (const m of msgs) {
     const ts = typeof m.ts === "string" ? m.ts : "";
     if (!ts || seen.has(ts)) continue;
+
+    // Skip edit/delete events; only display original messages
+    const subtype = typeof m.subtype === "string" ? m.subtype : "";
+    if (subtype === "message_changed" || subtype === "message_deleted") continue;
 
     if (opts.thread) {
       const parentTs = typeof m.thread_ts === "string" ? m.thread_ts : ts;
@@ -112,7 +129,7 @@ export async function pollCycle(
     newCursor = ts;
   }
 
-  return { newCursor, lines };
+  return { newCursor, lines, hasMore: histResp.has_more === true, nextPageCursor };
 }
 
 export type TailOpts = {
@@ -147,10 +164,35 @@ export async function cmdTail(
   const cache = new Map<string, string>();
   const seen = new Set<string>();
 
+  // Preflight: verify channel access before entering the poll loop
+  try {
+    const info = asRecord(await conversationInfo(token, channelId) as Json);
+    const ch = asRecord(info.channel as Json);
+    if (ch.is_archived === true) {
+      console.error(`Warning: this channel is archived — no new messages will arrive.`);
+    }
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes("not_in_channel")) {
+      console.error(`Error: you are not a member of that channel. Join it in Slack first, then retry.`);
+      process.exit(1);
+    }
+    if (msg.includes("missing_scope")) {
+      console.error(`Error: token lacks the required history scope. Check your token's channels:history (or groups:history) permission.`);
+      process.exit(1);
+    }
+    if (msg.includes("channel_not_found")) {
+      console.error(`Error: channel not found — it may be a private channel inaccessible with your token.`);
+      process.exit(1);
+    }
+    // Non-fatal: warn and continue (e.g. transient network error)
+    console.error(`Warning: preflight check failed: ${msg}`);
+  }
+
   let cursor = "";
   if (opts.since) {
     const secondsBack = parseSince(opts.since);
-    cursor = (Date.now() / 1000 - secondsBack).toFixed(6);
+    cursor = (_internals.now() / 1000 - secondsBack).toFixed(6);
   } else {
     // Seed with most recent message so we only emit new messages going forward
     const histResp = asRecord((await history(token, channelId, 1)) as Json);
@@ -159,7 +201,7 @@ export async function cmdTail(
       cursor = msgs[0].ts;
       seen.add(cursor);
     } else {
-      cursor = (Date.now() / 1000).toFixed(6);
+      cursor = (_internals.now() / 1000).toFixed(6);
     }
   }
 
@@ -169,21 +211,58 @@ export async function cmdTail(
     myUserId = info.userId || undefined;
   }
 
+  const pollOpts: PollOpts = {
+    ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+    ...(opts.me !== undefined ? { me: opts.me } : {}),
+    ...(myUserId !== undefined ? { myUserId } : {}),
+  };
+
+  let isFirstPoll = true;
+  let lastPollEndTime = _internals.now();
+
   while (!signal?.aborted) {
-    const { newCursor, lines } = await pollCycle(
-      token,
-      channelId,
-      cursor,
-      {
-        ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
-        ...(opts.me !== undefined ? { me: opts.me } : {}),
-        ...(myUserId !== undefined ? { myUserId } : {}),
-      },
-      seen,
-      cache,
-    );
-    cursor = newCursor;
-    for (const line of lines) process.stdout.write(line + "\n");
+    try {
+      const now = _internals.now();
+      const elapsed = now - lastPollEndTime;
+      // If we woke after an unexpectedly long gap (e.g. laptop sleep), paginate to
+      // avoid missing messages beyond the single-page limit.
+      const shouldPaginate = interval > 0 && elapsed > interval * 5;
+
+      let pageCursor: string | undefined;
+      let isFirstPage = true;
+
+      do {
+        const { newCursor, lines, nextPageCursor } = await pollCycle(
+          token,
+          channelId,
+          cursor,
+          pollOpts,
+          seen,
+          cache,
+          pageCursor,
+        );
+        cursor = newCursor;
+
+        if (isFirstPoll && isFirstPage && opts.since && lines.length === 0) {
+          process.stdout.write(`(no messages in the last ${opts.since} — watching for new)\n`);
+        }
+        isFirstPage = false;
+
+        for (const line of lines) process.stdout.write(line + "\n");
+        pageCursor = shouldPaginate ? nextPageCursor : undefined;
+      } while (pageCursor);
+
+      isFirstPoll = false;
+    } catch (e: unknown) {
+      if (e instanceof RateLimitError) {
+        console.error(`Warning: Slack rate limit hit — backing off for ${e.retryAfter}s`);
+        await _internals.sleep(e.retryAfter * 1000);
+        continue;
+      }
+      throw e;
+    }
+
+    lastPollEndTime = _internals.now();
     await _internals.sleep(interval);
   }
 }

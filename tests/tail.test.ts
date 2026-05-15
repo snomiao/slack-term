@@ -191,6 +191,34 @@ describe("pollCycle", () => {
     }
   });
 
+  test("skips message_changed and message_deleted subtypes", async () => {
+    const seen = new Set<string>();
+    const cache = new Map<string, string>();
+    const mockSub = await startMock({
+      inline: {
+        ...baseFixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000000.000000": {
+          ok: true,
+          messages: [
+            { ts: "1700000003.000000", user: "U00000001", text: "real message" },
+            { ts: "1700000002.000000", subtype: "message_changed", user: "U00000001", text: "edited" },
+            { ts: "1700000001.000000", subtype: "message_deleted", user: "U00000001", text: "" },
+          ],
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockSub.baseUrl}/api`;
+    try {
+      const { lines } = await pollCycle("xoxp-fake", "C00000001", "1700000000.000000", {}, seen, cache);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("real message");
+    } finally {
+      process.env.SLACK_API_BASE = origBase;
+      await mockSub.stop();
+    }
+  });
+
   test("multi-line message body indents continuation lines", async () => {
     const seen = new Set<string>();
     const cache = new Map<string, string>();
@@ -292,6 +320,10 @@ describe("cmdTail", () => {
       ok: true,
       channels: [{ id: "C00000001", name: "general" }],
     },
+    "conversations.info__channel=C00000001": {
+      ok: true,
+      channel: { id: "C00000001", name: "general", is_member: true, is_archived: false },
+    },
     "conversations.history__channel=C00000001&limit=1": {
       ok: true,
       messages: [{ ts: "1700000005.000000", user: "U00000001", text: "seed" }],
@@ -317,7 +349,6 @@ describe("cmdTail", () => {
   test("streams new messages after seed point", async () => {
     const ac = new AbortController();
     const output: string[] = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
     const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
       output.push(String(chunk));
       ac.abort(); // stop after first batch
@@ -334,9 +365,8 @@ describe("cmdTail", () => {
   });
 
   test("backfill with --since prints backfill messages", async () => {
-    // Pin Date.now() so cursor = 1700000600 - 600 = 1700000000.000000 (matches fixture)
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(1700000600000));
+    // Pin _internals.now so cursor = 1700000600 - 600 = 1700000000.000000 (matches fixture)
+    const nowSpy = vi.spyOn(_internals, "now").mockReturnValue(1700000600000);
     const mock2 = await startMock({
       inline: {
         ...fixtures,
@@ -361,9 +391,9 @@ describe("cmdTail", () => {
       // ignore abort
     } finally {
       spy.mockRestore();
+      nowSpy.mockRestore();
       process.env.SLACK_API_BASE = origBase;
       await mock2.stop();
-      vi.useRealTimers();
     }
     expect(output.join("")).toContain("backfill message");
   });
@@ -437,9 +467,8 @@ describe("cmdTail", () => {
   });
 
   test("handles empty channel at start (no seed message) then emits new messages", async () => {
-    // Pin Date.now() so empty-seed cursor = 1700000000.000000 (matches fixture)
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(1700000000000));
+    // Pin _internals.now so empty-seed cursor = 1700000000.000000 (matches fixture)
+    const nowSpy = vi.spyOn(_internals, "now").mockReturnValue(1700000000000);
     const mock4 = await startMock({
       inline: {
         ...fixtures,
@@ -468,10 +497,191 @@ describe("cmdTail", () => {
       // ignore abort
     } finally {
       spy.mockRestore();
+      nowSpy.mockRestore();
       process.env.SLACK_API_BASE = origBase;
       await mock4.stop();
-      vi.useRealTimers();
     }
     expect(output.join("")).toContain("first ever");
+  });
+
+  test("preflight: exits on not_in_channel error", async () => {
+    const mockPF = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.info__channel=C00000001": {
+          ok: false,
+          error: "not_in_channel",
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockPF.baseUrl}/api`;
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("not a member");
+    } finally {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockPF.stop();
+    }
+  });
+
+  test("preflight: exits on missing_scope error", async () => {
+    const mockPF2 = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.info__channel=C00000001": {
+          ok: false,
+          error: "missing_scope",
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockPF2.baseUrl}/api`;
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("scope");
+    } finally {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockPF2.stop();
+    }
+  });
+
+  test("--since with no backfill messages emits notice", async () => {
+    // Pin _internals.now: cursor = 1700000600 - 600 = 1700000000.000000
+    const nowSpy = vi.spyOn(_internals, "now").mockReturnValue(1700000600000);
+    const mockEmpty = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000000.000000": {
+          ok: true,
+          messages: [],
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockEmpty.baseUrl}/api`;
+    const ac = new AbortController();
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort(); // stop after the notice is written
+      return true;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#general", { since: "10m", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      spy.mockRestore();
+      nowSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockEmpty.stop();
+    }
+    expect(output.join("")).toContain("no messages in the last 10m");
+  });
+
+  test("rate limit: logs warning and sleeps retryAfter on 429", async () => {
+    const mockRL = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          __status: 429,
+          __retryAfter: 5,
+          ok: false,
+          error: "ratelimited",
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockRL.baseUrl}/api`;
+    const ac = new AbortController();
+    const errors: string[] = [];
+    const sleepCalls: number[] = [];
+    const sleepSpy = vi.spyOn(_internals, "sleep").mockImplementation(async (ms) => {
+      sleepCalls.push(ms);
+      if (ms === 5000) ac.abort(); // abort after the rate-limit backoff sleep
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation((msg) => {
+      errors.push(String(msg));
+    });
+    try {
+      await cmdTail("xoxp-fake", "#general", { interval: 60000 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      errSpy.mockRestore();
+      sleepSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockRL.stop();
+    }
+    expect(errors.some((e) => e.toLowerCase().includes("rate limit"))).toBe(true);
+    expect(sleepCalls).toContain(5000);
+  });
+
+  test("long-sleep gap triggers cursor pagination", async () => {
+    const INTERVAL = 60000;
+    const mockPag = await startMock({
+      inline: {
+        ...fixtures,
+        // Page 1: no new messages, but has_more with a next cursor
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          ok: true,
+          messages: [],
+          has_more: true,
+          response_metadata: { next_cursor: "cursor_nc1" },
+        },
+        // Page 2 (cursor pagination — key sorted: channel, cursor, limit)
+        "conversations.history__channel=C00000001&cursor=cursor_nc1&limit=20": {
+          ok: true,
+          messages: [{ ts: "1700000009.000000", user: "U00000001", text: "paginated message" }],
+          has_more: false,
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockPag.baseUrl}/api`;
+    const ac = new AbortController();
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+
+    // Simulate a long gap: lastPollEndTime=0, then on wake now=INTERVAL*6
+    let nowCalls = 0;
+    const nowSpy = vi.spyOn(_internals, "now").mockImplementation(() => {
+      // First call initialises lastPollEndTime=0; subsequent calls after sleep return INTERVAL*6
+      return nowCalls++ === 0 ? 0 : INTERVAL * 6;
+    });
+    let sleepCount = 0;
+    const sleepSpy = vi.spyOn(_internals, "sleep").mockImplementation(async () => {
+      sleepCount++;
+    });
+
+    try {
+      await cmdTail("xoxp-fake", "#general", { interval: INTERVAL }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      writeSpy.mockRestore();
+      nowSpy.mockRestore();
+      sleepSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockPag.stop();
+    }
+    expect(output.join("")).toContain("paginated message");
   });
 });
