@@ -167,7 +167,7 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 2 (existing app, user token) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["2", "1", "xoxp-fake", ""];
+    rlState.answers = ["2", "1", "xoxp-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxp-fake");
@@ -178,7 +178,7 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 2 (existing app, bot token) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["2", "2", "xoxb-fake", ""];
+    rlState.answers = ["2", "2", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxb-fake");
@@ -189,7 +189,7 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 3 (new user app) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["3", "xoxp-fake", "my-workspace"];
+    rlState.answers = ["3", "xoxp-fake", "my-workspace", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       const profile = listProfiles()[0];
@@ -202,7 +202,7 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 4 (new bot app) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["4", "xoxb-fake", ""];
+    rlState.answers = ["4", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxb-fake");
@@ -216,7 +216,7 @@ describe("auth.ts", () => {
       { token: "xoxc-desk", teamId: "T1", teamName: "Desk", url: "https://desk.slack.com/" },
     ]);
     setTTY(true);
-    rlState.answers = ["1"];
+    rlState.answers = ["1", "4"]; // "4" = save to profiles.json (no workspace name prompt — nameOverride passed)
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxc-desk");

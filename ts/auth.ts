@@ -1,6 +1,8 @@
 // Interactive auth setup: slack auth login / slack login
 import { createInterface, type Interface } from "node:readline/promises";
-import { addProfile, listProfiles, setCookie } from "./profiles.ts";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { addProfile, listProfiles, setCookie, saveToEnvFile } from "./profiles.ts";
 import { authTest } from "./slack.ts";
 import { extractSessions, discoverChromeCookies } from "./slack-app.ts";
 
@@ -50,7 +52,8 @@ async function ask(rl: Interface, q: string): Promise<string> {
   return (await rl.question(q)).trim();
 }
 
-async function saveToken(rl: Interface | null, token: string, nameOverride?: string): Promise<string> {
+
+async function saveToken(rl: Interface | null, token: string, nameOverride?: string, cookie?: string): Promise<string> {
   console.error("Verifying token...");
   const info = await authTest(token);
   const defaultName = slugify(info.team);
@@ -63,28 +66,67 @@ async function saveToken(rl: Interface | null, token: string, nameOverride?: str
   } else {
     name = defaultName;
   }
-  addProfile(name, { token, ...info });
-  console.log(`Saved workspace "${name}": ${info.team} (${info.user})`);
-  if (process.env.SLACK_MCP_XOXP_TOKEN) {
+
+  // Non-interactive: always save to profiles.json (predictable, backward-compatible for scripting).
+  // Interactive: ask where to save.
+  let filePath: string | null = null; // null = profiles.json
+  if (rl) {
     console.log("");
-    console.log("Warning: SLACK_MCP_XOXP_TOKEN is set in your environment - it conflicts with profiles.");
-    console.log("  Unset it so your new profile is used:");
-    console.log("    unset SLACK_MCP_XOXP_TOKEN");
-    console.log("  Also remove it from your shell config (~/.zshrc, ~/.bashrc, etc.)");
+    console.log("Where to save the token?");
+    console.log("  1) ./.env.local                  (current directory)  [default]");
+    console.log("  2) ./.slack-term/.env.local       (current directory, slack-specific)");
+    console.log("  3) ~/.slack-term/.env.local       (global, available everywhere)");
+    console.log("  4) profiles.json                  (multi-workspace: slack auth use)");
+    console.log("");
+    const choice = await ask(rl, "Choice [1/2/3/4, Enter=1]: ");
+    if (choice === "2") filePath = join(process.cwd(), ".slack-term", ".env.local");
+    else if (choice === "3") filePath = join(homedir(), ".slack-term", ".env.local");
+    else if (choice === "4") filePath = null;
+    else filePath = join(process.cwd(), ".env.local"); // 1 or Enter
+  }
+
+  if (filePath === null) {
+    addProfile(name, { token, ...info, ...(cookie ? { cookie } : {}) });
+    console.log(`Saved workspace "${name}" to profiles.json: ${info.team} (${info.user})`);
+    if (process.env.SLACK_MCP_XOXP_TOKEN) {
+      console.log("");
+      console.log("Warning: SLACK_MCP_XOXP_TOKEN is set — it conflicts with profiles.");
+      console.log("  Unset it: unset SLACK_MCP_XOXP_TOKEN  (and remove from ~/.zshrc / ~/.bashrc)");
+    } else {
+      console.log(`  Run: slack auth use -g ${name}`);
+    }
   } else {
-    console.log(`  Run: slack auth use -g ${name}`);
+    const updates: Record<string, string> = { SLACK_TOKEN: token };
+    if (cookie) updates.SLACK_COOKIE = cookie;
+    saveToEnvFile(filePath, updates);
+    console.log(`Saved token to ${filePath}`);
+    console.log(`  SLACK_TOKEN will be picked up automatically in this directory tree.`);
   }
   return name;
 }
 
 /** Shared logic for importing sessions from the Slack desktop app. */
-export async function importFromDesktop(): Promise<void> {
+export async function importFromDesktop(rl?: Interface): Promise<void> {
   console.error("Scanning Slack desktop app...");
   const sessions = await extractSessions();
   if (sessions.length === 0) {
     console.error("No sessions found. Make sure Slack is installed and you have signed in at least once.");
     process.exit(1);
   }
+
+  // Single workspace + interactive: offer save-destination choice
+  if (sessions.length === 1 && rl) {
+    const s = sessions[0]!;
+    const teamLabel = s.teamName ?? s.teamId;
+    console.log(`Found workspace: ${teamLabel}${s.cookie ? " (+ xoxd cookie)" : ""}`);
+    await saveToken(rl, s.token, slugify(teamLabel), s.cookie);
+    console.log("");
+    console.log("Note: desktop app tokens (xoxc-) are internal Slack tokens.");
+    console.log("If API calls fail, replace with an xoxp- token: slack auth login");
+    return;
+  }
+
+  // Multiple workspaces or non-interactive: save all to profiles.json
   for (const s of sessions) {
     const teamLabel = s.teamName ?? s.teamId;
     const name = slugify(teamLabel);
@@ -316,7 +358,7 @@ export async function cmdAuthLogin(opts: { token?: string; name?: string } = {})
     console.log("");
 
     if (choice === "1") {
-      await importFromDesktop();
+      await importFromDesktop(rl);
     } else if (choice === "2") {
       await loginExisting(rl);
     } else if (choice === "3") {
