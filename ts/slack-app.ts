@@ -2,8 +2,8 @@
 // Reads raw .ldb/.log files with regex — works even while Slack is running (no exclusive lock).
 // Also extracts the xoxd session cookie from the Slack Cookies SQLite database (macOS only).
 
-import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { readdirSync, readFileSync, existsSync, copyFileSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { pbkdf2Sync, createDecipheriv } from "node:crypto";
 import { execSync } from "node:child_process";
@@ -240,4 +240,75 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
     for (const s of result) s.cookie = xoxd;
   }
   return result;
+}
+
+/** Paths to Chrome browser Cookies SQLite files across all profiles (macOS only). */
+function chromeCookiesDbPaths(): string[] {
+  if (process.platform !== "darwin") return [];
+  const userDataDir = join(homedir(), "Library", "Application Support", "Google", "Chrome");
+  if (!existsSync(userDataDir)) return [];
+  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
+  return profileDirs.map((p) => join(userDataDir, p, "Cookies")).filter(existsSync);
+}
+
+/**
+ * Extract the xoxd session cookie from Chrome browser's Cookies SQLite (macOS only).
+ *
+ * Requires the Chrome Safe Storage key from the system keychain. When called from an
+ * interactive terminal, macOS will show a dialog asking for the login password.
+ * Returns undefined if the keychain key is unavailable or decryption fails.
+ */
+export function extractXoxdFromChrome(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+
+  let keychainPw: string;
+  try {
+    keychainPw = execSync(
+      `security find-generic-password -a Chrome -s "Chrome Safe Storage" -w`,
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trimEnd();
+  } catch {
+    return undefined;
+  }
+  if (!keychainPw) return undefined;
+
+  const aesKey = pbkdf2Sync(keychainPw, "saltysalt", 1003, 16, "sha1");
+
+  for (const dbPath of chromeCookiesDbPaths()) {
+    // Copy to a temp file to avoid WAL/exclusive-lock issues while Chrome is running.
+    const tmp = join(tmpdir(), `slack-chrome-cookies-${Date.now()}.db`);
+    try {
+      copyFileSync(dbPath, tmp);
+      const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+      const db = new Database(tmp, { readonly: true });
+      const row = db
+        .prepare("SELECT encrypted_value FROM cookies WHERE name='d' AND host_key LIKE '%slack%'")
+        .get() as { encrypted_value: Uint8Array } | null;
+      db.close();
+      if (!row) continue;
+
+      const enc = Buffer.from(row.encrypted_value);
+      const prefix = enc.slice(0, 3).toString();
+      if (prefix === "v10") {
+        // Standard Chrome v10: AES-128-CBC, IV = 16 spaces, ciphertext starts at byte 3.
+        const iv = Buffer.alloc(16, 32);
+        const decipher = createDecipheriv("aes-128-cbc", aesKey, iv);
+        decipher.setAutoPadding(true);
+        return Buffer.concat([decipher.update(enc.slice(3)), decipher.final()]).toString("utf8");
+      }
+      if (prefix === "v20") {
+        throw new Error(
+          `Chrome cookie uses v20 (app-bound AES-256-GCM) which is not supported yet. ` +
+          `Prefix found: ${enc.slice(0, 4).toString("hex")}`,
+        );
+      }
+      throw new Error(`Unknown cookie encryption prefix: ${enc.slice(0, 4).toString("hex")}`);
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes("app-bound")) throw e;
+      // Otherwise try next profile
+    } finally {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
+    }
+  }
+  return undefined;
 }

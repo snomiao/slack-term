@@ -1,8 +1,8 @@
 // Interactive auth setup: slack auth login / slack login
 import { createInterface, type Interface } from "node:readline/promises";
-import { addProfile, listProfiles } from "./profiles.ts";
+import { addProfile, listProfiles, setCookie } from "./profiles.ts";
 import { authTest } from "./slack.ts";
-import { extractSessions } from "./slack-app.ts";
+import { extractSessions, extractXoxdFromChrome } from "./slack-app.ts";
 
 const USER_SCOPES = [
   "search:read",
@@ -170,6 +170,84 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
     process.exit(1);
   }
   await saveToken(rl, token);
+}
+
+/**
+ * Attach the xoxd session cookie from Chrome browser to an existing workspace profile.
+ *
+ * When run interactively, macOS will show a system dialog asking for the login password
+ * to grant access to the "Chrome Safe Storage" keychain item — click Allow.
+ */
+export async function cmdAuthCookie(opts: { workspace?: string } = {}): Promise<void> {
+  if (process.platform !== "darwin") {
+    console.error("Chrome cookie extraction is only supported on macOS.");
+    process.exit(1);
+  }
+
+  const profiles = listProfiles();
+  if (profiles.length === 0) {
+    console.error("No workspaces configured. Run: slack auth login");
+    process.exit(1);
+  }
+
+  let profileName: string;
+  if (opts.workspace) {
+    const found = profiles.find((p) => p.name === opts.workspace);
+    if (!found) {
+      console.error(`Workspace "${opts.workspace}" not found. Available: ${profiles.map((p) => p.name).join(", ")}`);
+      process.exit(1);
+    }
+    profileName = opts.workspace;
+  } else if (profiles.length === 1) {
+    profileName = profiles[0]!.name;
+  } else {
+    // Multiple profiles — ask the user to pick
+    const current = profiles.find((p) => p.current);
+    if (current) {
+      profileName = current.name;
+      console.log(`Using active workspace: ${profileName}`);
+    } else {
+      console.log("Multiple workspaces found. Choose one:");
+      profiles.forEach((p, i) => console.log(`  ${i + 1}) ${p.name}  (${p.profile.team})`));
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const choice = (await rl.question("Choice: ")).trim();
+      rl.close();
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= profiles.length) {
+        console.error("Invalid choice.");
+        process.exit(1);
+      }
+      profileName = profiles[idx]!.name;
+    }
+  }
+
+  console.log(`Extracting Chrome xoxd cookie for workspace "${profileName}"...`);
+  console.log("macOS will show a dialog asking for your login password — click Allow.");
+
+  let cookie: string | undefined;
+  try {
+    cookie = extractXoxdFromChrome();
+  } catch (e: unknown) {
+    console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+    process.exit(1);
+  }
+
+  if (!cookie) {
+    console.error("Could not extract cookie. Possible reasons:");
+    console.error("  - You denied the keychain dialog (try running again and click Allow)");
+    console.error("  - Chrome is not installed or has no Slack session");
+    console.error("  - You're not logged in to Slack in Chrome");
+    process.exit(1);
+  }
+
+  if (!cookie.startsWith("xoxd-")) {
+    console.error(`Unexpected cookie value (expected xoxd- prefix): ${cookie.slice(0, 20)}...`);
+    process.exit(1);
+  }
+
+  setCookie(profileName, cookie);
+  console.log(`Saved xoxd cookie to workspace "${profileName}".`);
+  console.log(`RTM WebSocket mode is now available: slack tail @you`);
 }
 
 export async function cmdAuthLogin(opts: { token?: string; name?: string } = {}): Promise<void> {
