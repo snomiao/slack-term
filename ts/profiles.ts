@@ -209,26 +209,30 @@ export function resolveToken(workspaceFlag?: string): string {
     return profile.token;
   }
 
-  // process.env: SLACK_TOKEN and SLACK_BOT_TOKEN (official Slack SDK names)
+  // SLACK_TOKEN always wins — intended as an explicit per-project override.
   if (process.env.SLACK_TOKEN) return process.env.SLACK_TOKEN;
-  if (process.env.SLACK_BOT_TOKEN) return process.env.SLACK_BOT_TOKEN;
 
-  // Legacy: SLACK_MCP_XOXP_TOKEN — honour only when no profiles exist
-  const legacyToken = process.env.SLACK_MCP_XOXP_TOKEN;
-  if (legacyToken && names.length === 0) return legacyToken;
-  if (legacyToken && names.length > 0) {
-    if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
-      (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
-      console.error(
-        "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist — using profiles.\n" +
-        "  Migrate to SLACK_TOKEN=... or remove SLACK_MCP_XOXP_TOKEN from your shell config.",
-      );
+  // SLACK_BOT_TOKEN and SLACK_MCP_XOXP_TOKEN: only used when no profiles exist.
+  // Bot tokens in shell env or .env files must not shadow workspace profiles.
+  const legacyEnvToken = process.env.SLACK_BOT_TOKEN ?? process.env.SLACK_MCP_XOXP_TOKEN;
+  if (legacyEnvToken && names.length === 0) return legacyEnvToken;
+  if (legacyEnvToken && names.length > 0) {
+    // Warn only when the token differs from what's in .env.local (same value = not a real conflict)
+    const envFileToken = walkDirEnv(process.cwd(), ["SLACK_BOT_TOKEN", "SLACK_MCP_XOXP_TOKEN"]);
+    if (legacyEnvToken !== envFileToken) {
+      if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
+        (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
+        console.error(
+          "Warning: SLACK_MCP_XOXP_TOKEN / SLACK_BOT_TOKEN is set but workspace profiles exist — using profiles.\n" +
+          "  Migrate to SLACK_TOKEN=... or remove from your shell config.",
+        );
+      }
     }
   }
 
-  // Dir walk: .slack-term/.env.local → .env.local, cwd up to $HOME, then ~/.slack-term/.env.local
-  // (Only modern env-var names; legacy SLACK_MCP_XOXP_TOKEN stays process.env-only)
-  const walked = walkDirEnv(process.cwd(), ["SLACK_TOKEN", "SLACK_BOT_TOKEN"]);
+  // Dir walk: only SLACK_TOKEN from env files can override profiles.
+  // SLACK_BOT_TOKEN in .env files yields to profiles (same as shell env).
+  const walked = walkDirEnv(process.cwd(), ["SLACK_TOKEN"]);
   if (walked) return walked;
 
   // profiles.json via SLACK_WORKSPACE env var or lockfiles

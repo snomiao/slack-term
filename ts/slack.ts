@@ -326,6 +326,19 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
   const nameNorm = normName(rawName);
 
   if (isIm) {
+    // @you / @me → resolve to own DM using auth.test (no users:read scope needed)
+    if (nameNorm === "you" || nameNorm === "me") {
+      const info = (await get(token, "auth.test", {}, cookie)) as { user_id?: string };
+      const userId = info.user_id;
+      if (!userId) throw new Error("auth.test did not return user_id");
+      const dmResp = (await get(token, "conversations.list", { types: "im", limit: "200" }, cookie)) as {
+        channels?: Array<{ id?: string; user?: string }>;
+      };
+      const dm = (dmResp.channels ?? []).find((ch) => ch.user === userId);
+      if (dm?.id) return String(dm.id);
+      return openDm(token, userId);
+    }
+
     // Find user ID first via users.list (batch), then locate existing DM.
     let userId = "";
     let userCursor = "";
