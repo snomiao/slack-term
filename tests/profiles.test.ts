@@ -19,12 +19,20 @@ import {
 let tmpHome: string;
 let tmpCwd: string;
 let origCwd: string;
+let savedEnv: Record<string, string | undefined> = {};
+const MANAGED_ENV_VARS = [
+  "HOME", "SLACK_TOKEN", "SLACK_BOT_TOKEN", "SLACK_COOKIE",
+  "SLACK_MCP_XOXP_TOKEN", "SLACK_MCP_XOXD_COOKIE", "SLACK_WORKSPACE",
+];
 
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), "slack-cli-home-"));
   tmpCwd = mkdtempSync(join(tmpdir(), "slack-cli-cwd-"));
   origCwd = process.cwd();
+  savedEnv = Object.fromEntries(MANAGED_ENV_VARS.map((k) => [k, process.env[k]]));
   process.env.HOME = tmpHome;
+  // Clear all Slack env vars so shell config doesn't bleed into tests
+  for (const k of MANAGED_ENV_VARS.filter((k) => k !== "HOME")) delete process.env[k];
   process.chdir(tmpCwd);
   delete (globalThis as Record<string, unknown>).__slackEnvWarnShown;
 });
@@ -33,10 +41,10 @@ afterEach(() => {
   process.chdir(origCwd);
   rmSync(tmpHome, { recursive: true, force: true });
   rmSync(tmpCwd, { recursive: true, force: true });
-  delete process.env.HOME;
-  delete process.env.SLACK_MCP_XOXP_TOKEN;
-  delete process.env.SLACK_WORKSPACE;
-  delete process.env.SLACK_MCP_XOXD_COOKIE;
+  for (const k of MANAGED_ENV_VARS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
   delete (globalThis as Record<string, unknown>).__slackEnvWarnShown;
 });
 
@@ -172,8 +180,7 @@ describe("profiles", () => {
   });
 
   test("resolveToken throws when no profiles and no env var", () => {
-    delete process.env.SLACK_MCP_XOXP_TOKEN;
-    expect(() => resolveToken()).toThrow("No profiles configured");
+    expect(() => resolveToken()).toThrow("No Slack token found");
   });
 
   test("resolveToken throws when global lockfile points to missing profile", () => {

@@ -5,12 +5,20 @@
 //   Local (cwd):  .slack-cli/workspace   — set with: slack workspace use <name>
 //   Global (home): ~/.slack-cli/workspace — set with: slack workspace use -g <name>
 //
-// Resolution order:
-//   1. --workspace=<name> flag or SLACK_WORKSPACE env var
-//   2. Local lockfile  (.slack-cli/workspace in cwd)
-//   3. Global lockfile (~/.slack-cli/workspace)
-//   4. No profiles → fall back to SLACK_MCP_XOXP_TOKEN
-//   5. Otherwise → throw (no silent defaults)
+// Token resolution order (no --workspace flag):
+//   1. process.env SLACK_TOKEN or SLACK_BOT_TOKEN
+//   2. process.env SLACK_MCP_XOXP_TOKEN (legacy, yields to profiles if any exist)
+//   3. Dir walk from cwd→$HOME: .slack-term/.env.local, then .env.local (modern env-file names only)
+//      Note: cli.ts loadDotenvFiles() has already loaded cwd/.env.local into process.env (#1 catches
+//      that case), so the walk's extra value is finding .slack-term/ variants and parent-dir files.
+//   4. ~/.slack-term/.env.local (global slack-term config)
+//   5. profiles.json via SLACK_WORKSPACE / lockfiles
+//   6. throw with auth help
+//
+//  --workspace flag skips #2-4 and goes straight to profiles.json.
+//
+// Note: lockfiles and profiles.json use .slack-cli/ (older name); new per-dir token storage
+// uses .slack-term/ (current project name). Both coexist intentionally.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -71,6 +79,80 @@ function writeLockfile(path: string, name: string): void {
   writeFileSync(path, name + "\n");
 }
 
+function parseEnvVars(content: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const rawLine of content.split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq === -1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    result[key] = val;
+  }
+  return result;
+}
+
+function readEnvFile(filePath: string): Record<string, string> {
+  if (!existsSync(filePath)) return {};
+  try {
+    return parseEnvVars(readFileSync(filePath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+/** Walk from startDir up to $HOME checking .slack-term/.env.local then .env.local.
+ * Returns first value found for any of the given keys. */
+function walkDirEnv(startDir: string, keys: string[]): string | undefined {
+  const homeDir = home();
+  let dir = startDir;
+
+  while (true) {
+    for (const subdir of [join(dir, ".slack-term", ".env.local"), join(dir, ".env.local")]) {
+      const vars = readEnvFile(subdir);
+      for (const key of keys) {
+        if (vars[key]) return vars[key];
+      }
+    }
+    if (dir === homeDir) break;
+    const parent = dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+
+  // Global slack-term config — separate from the walk, checked after $HOME
+  const globalVars = readEnvFile(join(homeDir, ".slack-term", ".env.local"));
+  for (const key of keys) {
+    if (globalVars[key]) return globalVars[key];
+  }
+
+  return undefined;
+}
+
+/** Write or update KEY=VALUE entries in an env file (creates file and parent dirs as needed). */
+export function saveToEnvFile(filePath: string, updates: Record<string, string>): void {
+  mkdirSync(dirname(filePath), { recursive: true });
+  const content = existsSync(filePath) ? readFileSync(filePath, "utf8") : "";
+  const lines = content ? content.split("\n") : [];
+  for (const [key, value] of Object.entries(updates)) {
+    const idx = lines.findIndex((l) => {
+      const t = l.trim();
+      return t.startsWith(key + "=") || t.startsWith(key + " =");
+    });
+    const newLine = `${key}=${value}`;
+    if (idx !== -1) {
+      lines[idx] = newLine;
+    } else {
+      lines.push(newLine);
+    }
+  }
+  writeFileSync(filePath, lines.join("\n").trimEnd() + "\n");
+}
+
 export function listProfiles(): { name: string; profile: Profile; current: boolean }[] {
   const store = load();
   const local = readLockfile(localLockfilePath());
@@ -117,34 +199,48 @@ export function resolveToken(workspaceFlag?: string): string {
   const store = load();
   const profiles = store.profiles;
   const names = Object.keys(profiles);
-  const envToken = process.env.SLACK_MCP_XOXP_TOKEN;
 
-  // Conflict: env token and profiles are mutually exclusive — prefer profiles
-  if (envToken && names.length > 0) {
-    if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
-      (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
-      console.error(
-        "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist - using profiles.\n" +
-        "  Run: unset SLACK_MCP_XOXP_TOKEN  (and remove from ~/.zshrc or ~/.bashrc)",
-      );
-    }
-  } else if (envToken) {
-    return envToken;
-  }
-
-  // Explicit per-command selection
-  const selected = workspaceFlag ?? process.env.SLACK_WORKSPACE;
-  if (selected) {
-    const profile = profiles[selected];
+  // --workspace flag: skip env-file walk, go straight to profiles.json
+  if (workspaceFlag) {
+    const profile = profiles[workspaceFlag];
     if (!profile) {
-      throw new Error(
-        `Workspace "${selected}" not found. Available: ${names.join(", ") || "(none)"}`,
-      );
+      throw new Error(`Workspace "${workspaceFlag}" not found. Available: ${names.join(", ") || "(none)"}`);
     }
     return profile.token;
   }
 
-  // Local lockfile (cwd)
+  // process.env: SLACK_TOKEN and SLACK_BOT_TOKEN (official Slack SDK names)
+  if (process.env.SLACK_TOKEN) return process.env.SLACK_TOKEN;
+  if (process.env.SLACK_BOT_TOKEN) return process.env.SLACK_BOT_TOKEN;
+
+  // Legacy: SLACK_MCP_XOXP_TOKEN — honour only when no profiles exist
+  const legacyToken = process.env.SLACK_MCP_XOXP_TOKEN;
+  if (legacyToken && names.length === 0) return legacyToken;
+  if (legacyToken && names.length > 0) {
+    if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
+      (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
+      console.error(
+        "Warning: SLACK_MCP_XOXP_TOKEN is set but workspace profiles exist — using profiles.\n" +
+        "  Migrate to SLACK_TOKEN=... or remove SLACK_MCP_XOXP_TOKEN from your shell config.",
+      );
+    }
+  }
+
+  // Dir walk: .slack-term/.env.local → .env.local, cwd up to $HOME, then ~/.slack-term/.env.local
+  // (Only modern env-var names; legacy SLACK_MCP_XOXP_TOKEN stays process.env-only)
+  const walked = walkDirEnv(process.cwd(), ["SLACK_TOKEN", "SLACK_BOT_TOKEN"]);
+  if (walked) return walked;
+
+  // profiles.json via SLACK_WORKSPACE env var or lockfiles
+  const selected = process.env.SLACK_WORKSPACE;
+  if (selected) {
+    const profile = profiles[selected];
+    if (!profile) {
+      throw new Error(`Workspace "${selected}" not found. Available: ${names.join(", ") || "(none)"}`);
+    }
+    return profile.token;
+  }
+
   const localName = readLockfile(localLockfilePath());
   if (localName) {
     const profile = profiles[localName];
@@ -152,7 +248,6 @@ export function resolveToken(workspaceFlag?: string): string {
     return profile.token;
   }
 
-  // Global lockfile (~/.slack-cli/workspace)
   const globalName = readLockfile(globalLockfilePath());
   if (globalName) {
     const profile = profiles[globalName];
@@ -160,16 +255,21 @@ export function resolveToken(workspaceFlag?: string): string {
     return profile.token;
   }
 
-  // No profiles and no env token
-  if (names.length === 0) {
-    throw new Error("No profiles configured. Run: slack auth login");
+  if (names.length > 0) {
+    throw new Error(
+      `Workspace not selected (${names.join(", ")} available).\n` +
+      `  Select locally:  slack workspace use <name>          (writes .slack-cli/workspace)\n` +
+      `  Select globally: slack workspace use -g <name>       (writes ~/.slack-cli/workspace)`,
+    );
   }
 
-  // Profiles exist but none selected — never silently pick one
   throw new Error(
-    `Workspace not selected (${names.join(", ")} available).\n` +
-    `  Select locally:  slack workspace use <name>          (writes .slack-cli/workspace)\n` +
-    `  Select globally: slack workspace use -g <name>       (writes ~/.slack-cli/workspace)`,
+    "No Slack token found.\n" +
+    "  Run one of:\n" +
+    "    slack auth token    — paste an existing xoxp-/xoxb- token\n" +
+    "    slack auth chrome   — import from Chrome browser (macOS)\n" +
+    "    slack auth app      — guided Slack app creation\n" +
+    "  Or set SLACK_TOKEN=xoxp-... in .slack-term/.env.local",
   );
 }
 
@@ -177,12 +277,26 @@ export function resolveToken(workspaceFlag?: string): string {
 export function resolveCookie(workspaceFlag?: string): string | undefined {
   const store = load();
   const profiles = store.profiles;
-  const envToken = process.env.SLACK_MCP_XOXP_TOKEN;
 
-  // Env-only mode has no stored cookie
-  if (envToken) return process.env.SLACK_MCP_XOXD_COOKIE;
+  // --workspace flag: skip env-file walk, go straight to profiles.json
+  if (workspaceFlag) return profiles[workspaceFlag]?.cookie;
 
-  const selected = workspaceFlag ?? process.env.SLACK_WORKSPACE;
+  // process.env: SLACK_COOKIE (official extension), legacy SLACK_MCP_XOXD_COOKIE
+  if (process.env.SLACK_COOKIE) return process.env.SLACK_COOKIE;
+  if (process.env.SLACK_MCP_XOXD_COOKIE) return process.env.SLACK_MCP_XOXD_COOKIE;
+
+  // Legacy env-only mode (SLACK_MCP_XOXP_TOKEN set, no profiles)
+  const legacyToken = process.env.SLACK_MCP_XOXP_TOKEN;
+  if (legacyToken && Object.keys(profiles).length === 0) {
+    return process.env.SLACK_MCP_XOXD_COOKIE;
+  }
+
+  // Dir walk for SLACK_COOKIE
+  const walked = walkDirEnv(process.cwd(), ["SLACK_COOKIE"]);
+  if (walked) return walked;
+
+  // profiles.json via SLACK_WORKSPACE env var or lockfiles
+  const selected = process.env.SLACK_WORKSPACE;
   if (selected) return profiles[selected]?.cookie;
 
   const localName = readLockfile(localLockfilePath());
