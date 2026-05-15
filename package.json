@@ -3,7 +3,10 @@
   "version": "1.8.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/snomiao/slack-cli.git"
+    "url": "https://github.com/snomiao/slack-term.git"
+  },
+  "bugs": {
+    "url": "https://github.com/snomiao/slack-term/issues"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13",
@@ -32,7 +35,7 @@
     "SKILL.md",
     "LICENSE"
   ],
-  "homepage": "https://github.com/snomiao/slack-cli",
+  "homepage": "https://github.com/snomiao/slack-term",
   "keywords": [
     "slack",
     "cli",

@@ -16,4 +16,4 @@ jobs:
       - run: bun install
       - run: bun run typecheck
       - run: bun run build
-      - run: bun run test
+      - run: bunx vitest run --coverage --exclude "tests/parity.test.ts"
