@@ -96,20 +96,23 @@ function post(token: string, method: string, body: Record<string, Json>): Promis
   });
 }
 
-export async function authTest(token: string): Promise<{ team: string; teamId: string; url: string; user: string }> {
+export async function authTest(token: string): Promise<{ team: string; teamId: string; url: string; user: string; userId: string }> {
   const resp = (await get(token, "auth.test", {})) as {
-    team?: string; team_id?: string; url?: string; user?: string;
+    team?: string; team_id?: string; url?: string; user?: string; user_id?: string;
   };
   return {
     team: resp.team ?? "",
     teamId: resp.team_id ?? "",
     url: resp.url ?? "",
     user: resp.user ?? "",
+    userId: resp.user_id ?? "",
   };
 }
 
-export async function history(token: string, channel: string, limit = 20): Promise<Json> {
-  return get(token, "conversations.history", { channel, limit: String(limit) });
+export async function history(token: string, channel: string, limit = 20, oldest?: string): Promise<Json> {
+  const params: Record<string, string> = { channel, limit: String(limit) };
+  if (oldest !== undefined) params.oldest = oldest;
+  return get(token, "conversations.history", params);
 }
 
 export async function replies(

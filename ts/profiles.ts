@@ -29,8 +29,12 @@ type ProfileStore = {
   profiles: Record<string, Profile>;
 };
 
+function home(): string {
+  return process.env.HOME || homedir();
+}
+
 function profilesPath(): string {
-  return join(homedir(), ".config", "slack-cli", "profiles.json");
+  return join(home(), ".config", "slack-cli", "profiles.json");
 }
 
 function localLockfilePath(): string {
@@ -38,7 +42,7 @@ function localLockfilePath(): string {
 }
 
 function globalLockfilePath(): string {
-  return join(homedir(), ".slack-cli", "workspace");
+  return join(home(), ".slack-cli", "workspace");
 }
 
 function load(): ProfileStore {

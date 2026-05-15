@@ -10,6 +10,7 @@ import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
 import { cmdAuthLogin } from "./auth.ts";
+import { cmdTail } from "./tail.ts";
 
 import {
   authTestSession,
@@ -1254,6 +1255,27 @@ async function main(): Promise<void> {
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
+    )
+    .command(
+      "tail [target]",
+      "Stream new messages in real time (like tail -f)",
+      (y) => y
+        .positional("target", { type: "string", describe: "#channel or @user to follow" })
+        .option("since", { type: "string", describe: "Backfill from N ago (e.g. 10m, 2h, 1d)" })
+        .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
+        .option("me", { type: "boolean", default: false, describe: "Filter to messages that mention you" })
+        .option("interval", { type: "number", default: 3000, describe: "Poll interval in ms" }),
+      async (argv) => {
+        const token = tok(argv as W);
+        const signal = new AbortController();
+        process.on("SIGINT", () => { signal.abort(); process.exit(0); });
+        await cmdTail(token, argv.target, {
+          since: argv.since,
+          thread: argv.thread,
+          me: argv.me,
+          interval: argv.interval,
+        }, signal.signal);
+      },
     )
     .command("login", false as unknown as string, (y2) => y2
       .option("token", { type: "string" })

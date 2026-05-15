@@ -9,6 +9,7 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 
 - **News** — Activity feed showing recent mentions (`to:me`), grouped by day with human-readable timestamps
 - **Messages** — Browse recent messages across joined channels
+- **Tail** — Stream new messages from a channel in real time (like `tail -f`)
 - **Search** — Full-text search across the workspace
 - **Send** — Send messages to channels or DMs with a confirm-hash safety gate (prevents accidental sends)
 - **Dump** — Bulk-export channel history as markdown
@@ -62,7 +63,29 @@ slack send "#general" "Hello team" --confirm=<hash>
 
 # Bulk export channel history
 slack dump --days 7 --filter eng
+
+# Stream new messages in real time (Ctrl-C to stop)
+slack tail "#general"
+slack tail "#general" --since=10m   # backfill last 10 minutes first
+slack tail "#general" --thread=<ts> # follow a single thread
+slack tail "#general" --me          # only messages that mention you
 ```
+
+### tail — real-time message stream
+
+`slack tail` polls a channel every 3 seconds (configurable via `--interval`) and
+prints new messages as they arrive, in the same `[ts]  @handle:  text` format as
+the `read` command.
+
+```sh
+slack tail "#general"               # follow new messages from now
+slack tail "#general" --since=30m   # backfill 30 minutes, then stream
+slack tail "#general" --thread=1700000000.000100   # one thread only
+slack tail "#general" --me          # only messages mentioning you
+```
+
+**Note:** Cross-channel mention streaming (`--me` without a target) is not yet
+supported — a target channel is required.
 
 ## Configuration
 
@@ -112,6 +135,16 @@ bun run test:parity
 - [tokio](https://crates.io/crates/tokio) — async runtime
 - [chrono](https://crates.io/crates/chrono) — date/time formatting
 - [ring](https://crates.io/crates/ring) — SHA-256 for confirm hashes
+
+## Release notes
+
+### v0.x — 2026-05-15: `slack tail`
+
+New `tail` subcommand streams channel messages in real time using poll-based
+delivery (3-second interval). Supports `--since=<duration>` for backfill,
+`--thread=<ts>` to follow a single thread, and `--me` to filter for messages
+that mention you. Uses `conversations.history?oldest=<ts>` as a cursor so
+already-seen messages are never re-printed, even across reconnects.
 
 ## Related / prior art
 
