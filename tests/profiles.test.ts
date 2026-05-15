@@ -173,7 +173,8 @@ describe("profiles", () => {
     const { addProfile, resolveToken } = await getProfiles();
     addProfile("acme", fakeProfile);
     process.env.SLACK_MCP_XOXP_TOKEN = "xoxp-env-token";
-    expect(() => resolveToken()).toThrow("keep only one");
+    expect(() => resolveToken()).toThrow("Workspace not selected"); // shows warning
+    expect(() => resolveToken()).toThrow("Workspace not selected"); // skips warning (already shown)
     delete process.env.SLACK_MCP_XOXP_TOKEN;
   });
 
@@ -189,5 +190,97 @@ describe("profiles", () => {
     useProfile("acme", true); // global lockfile → "acme"
     removeProfile("acme");    // remove the profile but leave the lockfile
     expect(() => resolveToken()).toThrow("~/.slack-cli/workspace");
+  });
+
+  test("setCookie sets cookie on existing profile", async () => {
+    const { addProfile, setCookie, listProfiles } = await getProfiles();
+    addProfile("acme", fakeProfile);
+    setCookie("acme", "xoxd-test-cookie");
+    const profile = listProfiles().find((p: { name: string }) => p.name === "acme")?.profile;
+    expect(profile?.cookie).toBe("xoxd-test-cookie");
+  });
+
+  test("setCookie throws for unknown profile", async () => {
+    const { setCookie } = await getProfiles();
+    expect(() => setCookie("nope", "cookie")).toThrow("Profile not found: nope");
+  });
+
+  test("resolveCookie returns cookie from local-lockfile profile", async () => {
+    const { addProfile, useProfile, resolveCookie } = await getProfiles();
+    addProfile("acme", { ...fakeProfile, cookie: "xoxd-local" });
+    useProfile("acme");
+    expect(resolveCookie()).toBe("xoxd-local");
+  });
+
+  test("resolveCookie returns cookie from global-lockfile profile", async () => {
+    const { addProfile, useProfile, resolveCookie } = await getProfiles();
+    addProfile("acme", { ...fakeProfile, cookie: "xoxd-global" });
+    useProfile("acme", true);
+    expect(resolveCookie()).toBe("xoxd-global");
+  });
+
+  test("resolveCookie returns SLACK_MCP_XOXD_COOKIE when env token active", async () => {
+    const { resolveCookie } = await getProfiles();
+    process.env.SLACK_MCP_XOXP_TOKEN = "xoxp-env";
+    process.env.SLACK_MCP_XOXD_COOKIE = "xoxd-env-cookie";
+    expect(resolveCookie()).toBe("xoxd-env-cookie");
+    delete process.env.SLACK_MCP_XOXP_TOKEN;
+    delete process.env.SLACK_MCP_XOXD_COOKIE;
+  });
+
+  test("resolveCookie returns undefined for env token with no cookie var", async () => {
+    const { resolveCookie } = await getProfiles();
+    process.env.SLACK_MCP_XOXP_TOKEN = "xoxp-env";
+    delete process.env.SLACK_MCP_XOXD_COOKIE;
+    expect(resolveCookie()).toBeUndefined();
+    delete process.env.SLACK_MCP_XOXP_TOKEN;
+  });
+
+  test("resolveCookie returns cookie for --workspace flag", async () => {
+    const { addProfile, resolveCookie } = await getProfiles();
+    addProfile("acme", { ...fakeProfile, cookie: "xoxd-acme" });
+    expect(resolveCookie("acme")).toBe("xoxd-acme");
+  });
+
+  test("resolveCookie returns undefined when no lockfile", async () => {
+    const { resolveCookie } = await getProfiles();
+    expect(resolveCookie()).toBeUndefined();
+  });
+
+  test("useProfile second call skips writing gitignore when it already exists", async () => {
+    const { addProfile, useProfile, listProfiles } = await getProfiles();
+    addProfile("acme", fakeProfile);
+    useProfile("acme"); // writes .slack-cli/.gitignore
+    useProfile("acme"); // .gitignore already exists — skip write
+    const cur = listProfiles().find((p: { current: boolean }) => p.current);
+    expect(cur?.name).toBe("acme");
+  });
+
+  test("resolveToken throws when local lockfile points to missing profile", async () => {
+    const { addProfile, useProfile, removeProfile, resolveToken } = await getProfiles();
+    addProfile("acme", fakeProfile);
+    useProfile("acme", false); // local lockfile → "acme"
+    removeProfile("acme");     // remove the profile but leave the lockfile
+    expect(() => resolveToken()).toThrow(".slack-cli/workspace");
+  });
+
+  test("resolveToken uses SLACK_WORKSPACE env var", async () => {
+    const { addProfile, resolveToken } = await getProfiles();
+    addProfile("acme", fakeProfile);
+    process.env.SLACK_WORKSPACE = "acme";
+    expect(resolveToken()).toBe("xoxp-fake-001");
+    delete process.env.SLACK_WORKSPACE;
+  });
+
+  test("readLockfile returns undefined for empty-content lockfile", async () => {
+    const { addProfile, useProfile, resolveToken } = await getProfiles();
+    addProfile("acme", fakeProfile);
+    useProfile("acme");
+    // Overwrite the lockfile with whitespace only
+    const { writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    writeFileSync(join(process.cwd(), ".slack-cli", "workspace"), "   \n");
+    // Empty lockfile → falls through to "Workspace not selected"
+    expect(() => resolveToken()).toThrow("Workspace not selected");
   });
 });

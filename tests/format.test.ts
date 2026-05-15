@@ -12,6 +12,16 @@ describe("resolveDateMarkup", () => {
   test("leaves unrelated text untouched", () => {
     expect(resolveDateMarkup("hello world")).toBe("hello world");
   });
+
+  test("returns fallback for non-finite epoch", () => {
+    const out = resolveDateMarkup(`<!date^${"9".repeat(400)}^{date_pretty}|overflow-fallback>`);
+    expect(out).toBe("overflow-fallback");
+  });
+
+  test("returns 'date' when epoch is non-finite and no fallback provided", () => {
+    const out = resolveDateMarkup(`<!date^${"9".repeat(400)}^{date_pretty}>`);
+    expect(out).toBe("date");
+  });
 });
 
 describe("dayLabel", () => {
@@ -84,6 +94,20 @@ describe("resolveMentions", () => {
     const cache = new Map<string, string>();
     const out = await resolveMentions("xoxp-fake", "plain text", cache);
     expect(out).toBe("plain text");
+  });
+
+  test("ignores UID-like tag shorter than 9 chars (not a real Slack UID)", async () => {
+    const cache = new Map<string, string>();
+    // "<@U1234>" — uid = "U1234" (5 chars < 9) → skipped, not replaced
+    const out = await resolveMentions("xoxp-fake", "hi <@U1234>", cache);
+    expect(out).toBe("hi <@U1234>");
+  });
+
+  test("handles unclosed mention tag (no closing >)", async () => {
+    const cache = new Map<string, string>();
+    // "hi <@U00000001" — no closing > or |, endIdx === -1 → uid = rest = "U00000001"
+    const out = await resolveMentions("xoxp-fake", "hi <@U00000001", cache);
+    expect(typeof out).toBe("string");
   });
 });
 

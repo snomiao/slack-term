@@ -89,6 +89,31 @@ const fixtures = {
     channels: [{ id: "D00000001", user: "U00000002", is_im: true }],
     response_metadata: { next_cursor: "" },
   },
+
+  "chat.scheduledMessages.list": {
+    ok: true,
+    scheduled_messages: [{ id: "Q00000001", channel_id: "C00000001", post_at: 1700100000, text: "reminder" }],
+  },
+
+  "chat.scheduledMessages.list__channel=C00000001": {
+    ok: true,
+    scheduled_messages: [{ id: "Q00000001", channel_id: "C00000001", post_at: 1700100000, text: "reminder" }],
+  },
+
+  "conversations.info__channel=C00000001": {
+    ok: true,
+    channel: { id: "C00000001", name: "channel-01" },
+  },
+
+  "conversations.info": {
+    ok: true,
+    channel: { id: "C00000001", name: "channel-01" },
+  },
+
+  "drafts.list": { ok: true, drafts: [] },
+  "drafts.create": { ok: true, draft: { id: "D00000001" } },
+  "drafts.update": { ok: true },
+  "drafts.delete": { ok: true },
 };
 
 beforeAll(async () => {
@@ -268,5 +293,177 @@ describe("slack.ts", () => {
   test("call throws on API error response", async () => {
     // no fixture for this method → mock returns { ok: false, error: "no_fixture:..." }
     await expect(slack.history(token, "UNKNOWN", 1)).rejects.toThrow(/Slack error/);
+  });
+
+  test("scheduleMessage returns scheduled_message_id", async () => {
+    const id = await slack.scheduleMessage(token, "C00000001", "reminder", 1700100000);
+    expect(id).toBe("Q00000001");
+  });
+
+  test("scheduleMessage accepts threadTs", async () => {
+    const id = await slack.scheduleMessage(token, "C00000001", "reminder", 1700100000, "1700000000.000100");
+    expect(id).toBe("Q00000001");
+  });
+
+  test("listScheduledMessages returns list", async () => {
+    const resp = (await slack.listScheduledMessages(token)) as { scheduled_messages?: unknown[] };
+    expect(resp.scheduled_messages).toHaveLength(1);
+  });
+
+  test("listScheduledMessages filters by channel", async () => {
+    const resp = (await slack.listScheduledMessages(token, "C00000001")) as { scheduled_messages?: unknown[] };
+    expect(resp.scheduled_messages).toHaveLength(1);
+  });
+
+  test("deleteScheduledMessage resolves without error", async () => {
+    await expect(slack.deleteScheduledMessage(token, "C00000001", "Q00000001")).resolves.toBeUndefined();
+  });
+
+  test("listUsers returns all members", async () => {
+    const resp = (await slack.listUsers(token)) as { members?: unknown[] };
+    expect(resp.members).toHaveLength(2);
+  });
+
+  test("userInfo returns full user object", async () => {
+    const resp = (await slack.userInfo(token, "U00000001")) as { user?: { id?: string } };
+    expect(resp.user?.id).toBe("U00000001");
+  });
+
+  test("conversationInfo returns channel object", async () => {
+    const resp = (await slack.conversationInfo(token, "C00000001")) as { channel?: { id?: string } };
+    expect(resp.channel?.id).toBe("C00000001");
+  });
+
+  test("authTestSession returns userId and teamId", async () => {
+    const result = await slack.authTestSession(token);
+    expect(result.teamId).toBe("T00000001");
+    expect(result.userId).toBe("U00000001");
+  });
+
+  test("listDrafts returns drafts array", async () => {
+    const resp = (await slack.listDrafts(token)) as { drafts?: unknown[] };
+    expect(resp.drafts).toEqual([]);
+  });
+
+  test("createDraft returns draft id", async () => {
+    const resp = (await slack.createDraft(token, "C00000001", "hello")) as { draft?: { id?: string } };
+    expect(resp.draft?.id).toBe("D00000001");
+  });
+
+  test("updateDraft succeeds", async () => {
+    const resp = (await slack.updateDraft(token, "D00000001", "C00000001", "updated")) as { ok?: boolean };
+    expect(resp.ok).toBe(true);
+  });
+
+  test("deleteDraft succeeds", async () => {
+    const resp = (await slack.deleteDraft(token, "D00000001")) as { ok?: boolean };
+    expect(resp.ok).toBe(true);
+  });
+
+  test("conversationInfoSession returns channel via session API", async () => {
+    const resp = (await slack.conversationInfoSession(token, "C00000001")) as { channel?: { id?: string } };
+    expect(resp.channel?.id).toBe("C00000001");
+  });
+
+  test("uploadFile uploads and returns fileId and permalink", async () => {
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const tmpPath = "/tmp/slack-test-upload-" + Date.now() + ".txt";
+    writeFileSync(tmpPath, "hello upload");
+    try {
+      const result = await slack.uploadFile(token, "C00000001", tmpPath, { title: "test.txt" });
+      expect(result.fileId).toBe("F00000001");
+      expect(result.permalink).toMatch(/slack\.com/);
+    } finally {
+      unlinkSync(tmpPath);
+    }
+  });
+
+  test("uploadFile with threadTs and comment", async () => {
+    const { writeFileSync, unlinkSync } = await import("node:fs");
+    const tmpPath = "/tmp/slack-test-upload2-" + Date.now() + ".txt";
+    writeFileSync(tmpPath, "data");
+    try {
+      const result = await slack.uploadFile(token, "C00000001", tmpPath, {
+        threadTs: "1700000000.000100",
+        initialComment: "see attached",
+      });
+      expect(result.fileId).toBe("F00000001");
+    } finally {
+      unlinkSync(tmpPath);
+    }
+  });
+
+  test("resolveChannel throws when user found but no DM exists", async () => {
+    // alice (U00000001) is in users.list but has no DM in conversations.list (types=im)
+    await expect(slack.resolveChannel(token, "@alice")).rejects.toThrow(/No existing DM/);
+  });
+
+  test("searchAll respects max limit", async () => {
+    // max=1 with 1 match; all.length >= max triggers break
+    const resp = (await slack.searchAll(token, "deploy", 1)) as { messages?: { matches?: unknown[] } };
+    expect(resp.messages?.matches).toHaveLength(1);
+  });
+
+  test("call throws xoxc-specific error for desktop token on public API", async () => {
+    const errMock = await startMock({ inline: { "auth.test": { ok: false, error: "invalid_auth" } } });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
+    try {
+      await expect(slack.authTest("xoxc-fake")).rejects.toThrow("Desktop app token");
+    } finally {
+      await errMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("callSession throws hint for non-xoxc token on session API", async () => {
+    const errMock = await startMock({ inline: { "drafts.list": { ok: false, error: "not_authed" } } });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
+    try {
+      await expect(slack.listDrafts("xoxp-fake")).rejects.toThrow("requires a desktop app session token");
+    } finally {
+      await errMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("callSession throws cookie hint for xoxc token without cookie", async () => {
+    const errMock = await startMock({ inline: { "drafts.list": { ok: false, error: "invalid_auth" } } });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
+    try {
+      await expect(slack.listDrafts("xoxc-fake")).rejects.toThrow("xoxd session cookie");
+    } finally {
+      await errMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("callSession throws generic Slack error for non-auth errors", async () => {
+    const errMock = await startMock({ inline: { "drafts.list": { ok: false, error: "channel_not_found" } } });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
+    try {
+      await expect(slack.listDrafts("xoxc-fake", "xoxd-cookie")).rejects.toThrow("Slack error");
+    } finally {
+      await errMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("searchAll handles response missing messages key", async () => {
+    const noMsgMock = await startMock({ inline: { "search.messages": { ok: true } } });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${noMsgMock.baseUrl}/api`;
+    try {
+      const resp = (await slack.searchAll("xoxp-fake", "anything", 10)) as {
+        messages?: { matches?: unknown[] };
+      };
+      expect(resp.messages?.matches).toEqual([]);
+    } finally {
+      await noMsgMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
   });
 });

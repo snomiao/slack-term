@@ -80,8 +80,25 @@ export async function startMock(
           respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
           return;
         }
+        if (method === "chat.scheduleMessage") {
+          respond({ ok: true, scheduled_message_id: "Q00000001", channel: "C00000001", post_at: 1700100000 });
+          return;
+        }
+        if (method === "chat.deleteScheduledMessage") {
+          respond({ ok: true });
+          return;
+        }
         if (method === "conversations.open") {
           respond({ ok: true, channel: { id: "C00000099" } });
+          return;
+        }
+        if (method === "upload-slot") {
+          res.statusCode = 200;
+          res.end("uploaded");
+          return;
+        }
+        if (method === "files.completeUploadExternal") {
+          respond({ ok: true, files: [{ id: "F00000001", permalink: "https://acme.slack.com/files/U00000001/F00000001/test.txt" }] });
           return;
         }
         const key = safeName(fixtureKey(method, {}));
@@ -89,6 +106,12 @@ export async function startMock(
         if (fx) respond(fx);
         else respond({ ok: false, error: `no_fixture:${key}` }, 200);
       });
+      return;
+    }
+
+    // Special GET handlers that need dynamic content
+    if (method === "files.getUploadURLExternal") {
+      respond({ ok: true, upload_url: `http://${req.headers.host}/api/upload-slot`, file_id: "F00000001" });
       return;
     }
 

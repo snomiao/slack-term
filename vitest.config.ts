@@ -9,12 +9,11 @@ export default defineConfig({
       reporter: ["text", "lcov", "html"],
       include: ["ts/**/*.ts"],
       exclude: ["ts/cli.ts", "ts/slack-app.ts", "tests/**", "dist/**"],
-      // Low starting thresholds — raise as fixtures and tests grow.
       thresholds: {
-        lines: 90,
-        branches: 65,
-        functions: 90,
-        statements: 90,
+        lines: 99,
+        branches: 82,
+        functions: 100,
+        statements: 97,
       },
     },
   },
