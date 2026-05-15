@@ -293,11 +293,16 @@ function chromeProfileName(userDataDir: string, profileDir: string): string {
  * interactive terminal, macOS will show a dialog asking for the login password.
  * Throws on v20 (app-bound encryption). Returns [] if keychain is inaccessible.
  */
-export function discoverChromeCookies(): ChromeCookieCandidate[] {
-  if (process.platform !== "darwin") return [];
+export type ChromeDiscoveryResult = {
+  candidates: ChromeCookieCandidate[];
+  totalProfiles: number; // how many Chrome profile dirs were scanned
+};
+
+export function discoverChromeCookies(): ChromeDiscoveryResult {
+  if (process.platform !== "darwin") return { candidates: [], totalProfiles: 0 };
 
   const userDataDir = join(homedir(), "Library", "Application Support", "Google", "Chrome");
-  if (!existsSync(userDataDir)) return [];
+  if (!existsSync(userDataDir)) return { candidates: [], totalProfiles: 0 };
 
   let keychainPw: string;
   try {
@@ -306,9 +311,9 @@ export function discoverChromeCookies(): ChromeCookieCandidate[] {
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trimEnd();
   } catch {
-    return [];
+    return { candidates: [], totalProfiles: 0 };
   }
-  if (!keychainPw) return [];
+  if (!keychainPw) return { candidates: [], totalProfiles: 0 };
 
   const aesKey = pbkdf2Sync(keychainPw, "saltysalt", 1003, 16, "sha1");
 
@@ -354,7 +359,7 @@ export function discoverChromeCookies(): ChromeCookieCandidate[] {
       try { unlinkSync(tmp); } catch { /* ignore */ }
     }
   }
-  return candidates;
+  return { candidates, totalProfiles: profileDirs.length };
 }
 
 export type FirefoxCookieCandidate = {

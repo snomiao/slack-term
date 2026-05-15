@@ -266,16 +266,17 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
   console.log("Scanning Chrome profiles for Slack session...");
   console.log("macOS may show a dialog asking for your login password — click Allow.");
 
-  let candidates: Awaited<ReturnType<typeof discoverChromeCookies>>;
+  let candidates: import("./slack-app.ts").ChromeCookieCandidate[];
+  let totalProfiles: number;
   try {
-    candidates = discoverChromeCookies();
+    ({ candidates, totalProfiles } = discoverChromeCookies());
   } catch (e: unknown) {
     console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
   if (candidates.length === 0) {
-    console.error("No Slack session found in Chrome. Possible reasons:");
+    console.error(`No Slack session found in Chrome (scanned ${totalProfiles} profile${totalProfiles !== 1 ? "s" : ""}). Possible reasons:`);
     console.error("  - You denied the keychain dialog (try running again and click Allow)");
     console.error("  - Chrome is not installed or has no Slack session");
     console.error("  - You're not logged in to Slack in Chrome");
@@ -283,16 +284,22 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
   }
 
   let cookie: string;
-  if (candidates.length === 1) {
+  // Always prompt when multiple Chrome profiles exist, so users can confirm the right one.
+  if (candidates.length === 1 && totalProfiles <= 1) {
     cookie = candidates[0]!.cookie;
     console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
   } else {
-    console.log("Multiple Chrome profiles have a Slack session. Choose one:");
+    const label = candidates.length === 1
+      ? `Found 1 Slack session across ${totalProfiles} Chrome profiles:`
+      : `Found ${candidates.length} Slack sessions across ${totalProfiles} Chrome profiles:`;
+    console.log(label);
     candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
+    console.log("");
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const choice = (await rl.question("Choice: ")).trim();
+    const defaultChoice = candidates.length === 1 ? " [Enter=1]" : "";
+    const choice = (await rl.question(`Choice [1-${candidates.length}]${defaultChoice}: `)).trim();
     rl.close();
-    const idx = parseInt(choice, 10) - 1;
+    const idx = choice === "" && candidates.length === 1 ? 0 : parseInt(choice, 10) - 1;
     if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
       console.error("Invalid choice.");
       process.exit(1);
