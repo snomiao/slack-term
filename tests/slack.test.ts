@@ -7,7 +7,7 @@ import * as slack from "../ts/slack.ts";
 let mock: MockHandle;
 
 const fixtures = {
-  "auth.test": { ok: true, user_id: "U00000001", user: "alice", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+  "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
 
   "conversations.history__channel=C00000001&limit=20": {
     ok: true,
@@ -133,7 +133,7 @@ describe("slack.ts", () => {
     const info = await slack.authTest(token);
     expect(info.teamId).toBe("T00000001");
     expect(info.team).toBe("Acme");
-    expect(info.user).toBe("alice");
+    expect(info.user).toBe("user1");
   });
 
   test("history returns messages", async () => {
@@ -538,6 +538,7 @@ describe("slack.ts", () => {
   test("resolveChannel paginates users.list to find user on second page", async () => {
     const pagMock = await startMock({
       inline: {
+        "auth.test": { ok: true, user: "alice", user_id: "U00000001", team: "Test", team_id: "T00000001" },
         "users.list__limit=200": {
           ok: true,
           members: [
