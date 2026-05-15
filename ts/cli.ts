@@ -548,6 +548,20 @@ function splitRefTs(s: string): { ref: string; ts?: string } {
   return { ref: s };
 }
 
+/** Parse a send/upload target that may embed a thread_ts after `:`.
+ *  Accepts: `#chan:1700000000.000100`, `@user:ts`, `RAWID:ts`, Slack permalink with thread_ts, or plain ref. */
+function parseTargetThread(s: string): { ref: string; threadTs?: string } {
+  const url = parseSlackPermalink(s);
+  if (url) return url.threadTs ? { ref: url.channel, threadTs: url.threadTs } : { ref: url.channel };
+  const colon = s.indexOf(":");
+  if (colon > 0) {
+    const maybeTs = s.slice(colon + 1);
+    if (/^\d{10}\.\d{6}$/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: maybeTs };
+    if (/^\d{4}-\d{2}-\d{2}T/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: isoToSlackTs(maybeTs) };
+  }
+  return { ref: s };
+}
+
 // --- edit ---
 interface EditArgs {
   target: string;
@@ -595,22 +609,17 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
 interface SendArgs {
   target: string;
   message: string;
-  thread?: string;
   code?: string;
   channelId?: string;
   userId?: string;
 }
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
+  const { ref, threadTs } = parseTargetThread(args.target);
+
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
   else if (args.userId) channelId = await openDm(token, args.userId);
-  else if (args.target.startsWith("#") || args.target.startsWith("@")) {
-    channelId = await resolveChannel(token, args.target);
-  } else {
-    console.error(`Error: target must be #channel-name or @username (got: ${args.target})`);
-    console.error("Use --channel-id=<ID> or --user-id=<ID> to send by raw ID.");
-    process.exit(1);
-  }
+  else channelId = await resolveChannel(token, ref);
 
   // Fetch last 1 message for context hash
   const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
@@ -626,12 +635,12 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       `--- Last message in channel ------------------`,
       `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
       `--- Sending ----------------------------------`,
-      `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
+      `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
       `  Message: ${args.message}`,
       `--------------------------------────────────`,
     ]);
   }
-  const ts = await slackSend(token, channelId, args.message, args.thread);
+  const ts = await slackSend(token, channelId, args.message, threadTs);
   console.log(`✓ Sent (ts: ${ts})`);
 }
 
@@ -647,21 +656,17 @@ interface ScheduleSendArgs {
   target: string;
   message: string;
   at: string;
-  thread?: string;
   code?: string;
   channelId?: string;
   userId?: string;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
+  const { ref, threadTs } = parseTargetThread(args.target);
+
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
   else if (args.userId) channelId = await openDm(token, args.userId);
-  else if (args.target.startsWith("#") || args.target.startsWith("@")) {
-    channelId = await resolveChannel(token, args.target);
-  } else {
-    console.error(`Error: target must be #channel-name or @username (got: ${args.target})`);
-    process.exit(1);
-  }
+  else channelId = await resolveChannel(token, ref);
 
   const postAt = parsePostAt(args.at);
   const postAtDate = new Date(postAt * 1000).toISOString();
@@ -670,13 +675,13 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Scheduling message -----------------------`,
-      `  To:      ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`,
+      `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
       `  At:      ${postAtDate} (Unix: ${postAt})`,
       `  Message: ${args.message}`,
       `---------------------------------------------`,
     ]);
   }
-  const id = await scheduleMessage(token, channelId, args.message, postAt, args.thread);
+  const id = await scheduleMessage(token, channelId, args.message, postAt, threadTs);
   console.log(`✓ Scheduled (id: ${id}, at: ${postAtDate})`);
 }
 
@@ -727,7 +732,6 @@ interface UploadArgs {
   target: string;
   filePaths: string[];
   title?: string;
-  thread?: string;
   comment?: string;
   code?: string;
   channelId?: string;
@@ -744,15 +748,12 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     }
   }
 
+  const { ref, threadTs } = parseTargetThread(args.target);
+
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
   else if (args.userId) channelId = await openDm(token, args.userId);
-  else if (args.target.startsWith("#") || args.target.startsWith("@")) {
-    channelId = await resolveChannel(token, args.target);
-  } else {
-    console.error(`Error: target must be #channel-name or @username (got: ${args.target})`);
-    process.exit(1);
-  }
+  else channelId = await resolveChannel(token, ref);
 
   function fmtSize(n: number): string {
     return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
@@ -768,7 +769,7 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   // Safety code covers the full batch — single-file code is identical to the old formula.
   const code = safetyCode(channelId, ...files.flatMap((f) => [f.fp, f.title]));
   if (args.code !== code) {
-    const destLine = `  To:    ${args.target}${args.thread ? ` (thread ${args.thread})` : ""}`;
+    const destLine = `  To:    ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`;
     const lines = isBatch
       ? [
           `--- Uploading ${files.length} files ------------------------`,
@@ -791,7 +792,7 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   for (let i = 0; i < total; i++) {
     const f = files[i]!;
     const uploadOpts: { title?: string; threadTs?: string; initialComment?: string } = { title: f.title };
-    if (args.thread !== undefined) uploadOpts.threadTs = args.thread;
+    if (threadTs !== undefined) uploadOpts.threadTs = threadTs;
     if (args.comment !== undefined && i === 0) uploadOpts.initialComment = args.comment;
     const { fileId, permalink } = await uploadFile(token, channelId, f.fp, uploadOpts);
     const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
@@ -1019,15 +1020,13 @@ async function main(): Promise<void> {
       "send <target> <message>",
       "Send a message (confirm-hash safety gate)",
       (y) => y
-        .positional("target", { type: "string", demandOption: true })
+        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
         .positional("message", { type: "string", demandOption: true })
-        .option("thread", { type: "string", describe: "Thread timestamp" })
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
       async (argv) => {
         const args: SendArgs = { target: argv.target!, message: argv.message! };
-        if (argv.thread) args.thread = argv.thread;
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
@@ -1042,16 +1041,14 @@ async function main(): Promise<void> {
           "send <target> <message>",
           "Schedule a message for later delivery",
           (y2) => y2
-            .positional("target", { type: "string", demandOption: true })
+            .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
             .positional("message", { type: "string", demandOption: true })
             .option("at", { type: "string", demandOption: true, describe: "Delivery time (ISO datetime or Unix ts)" })
-            .option("thread", { type: "string", describe: "Thread timestamp" })
             .option("code", { type: "string", describe: "Safety hash to confirm" })
             .option("channel-id", { type: "string", describe: "Raw channel ID" })
             .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
           async (argv) => {
             const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
-            if (argv.thread) args.thread = argv.thread;
             if (argv.code) args.code = argv.code;
             if (argv["channel-id"]) args.channelId = argv["channel-id"];
             if (argv["user-id"]) args.userId = argv["user-id"];
@@ -1106,10 +1103,9 @@ async function main(): Promise<void> {
       "upload <target> <file..>",
       "Upload one or more files to a channel or DM",
       (y) => y
-        .positional("target", { type: "string", demandOption: true })
+        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
         .positional("file", { type: "string", array: true, demandOption: true, describe: "Path(s) to file(s)" })
         .option("title", { type: "string", describe: "Title (single file only)" })
-        .option("thread", { type: "string", describe: "Thread timestamp" })
         .option("comment", { type: "string", describe: "Initial comment (first file)" })
         .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
@@ -1117,7 +1113,6 @@ async function main(): Promise<void> {
       async (argv) => {
         const args: UploadArgs = { target: argv.target!, filePaths: argv.file as string[] };
         if (argv.title) args.title = argv.title;
-        if (argv.thread) args.thread = argv.thread;
         if (argv.comment) args.comment = argv.comment;
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
