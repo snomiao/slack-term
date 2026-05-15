@@ -2,7 +2,7 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { addProfile, listProfiles, setCookie } from "./profiles.ts";
 import { authTest } from "./slack.ts";
-import { extractSessions, extractXoxdFromChrome } from "./slack-app.ts";
+import { extractSessions, discoverChromeCookies } from "./slack-app.ts";
 
 const USER_SCOPES = [
   "search:read",
@@ -221,28 +221,41 @@ export async function cmdAuthCookie(opts: { workspace?: string } = {}): Promise<
     }
   }
 
-  console.log(`Extracting Chrome xoxd cookie for workspace "${profileName}"...`);
-  console.log("macOS will show a dialog asking for your login password — click Allow.");
+  console.log("Scanning Chrome profiles for Slack session...");
+  console.log("macOS may show a dialog asking for your login password — click Allow.");
 
-  let cookie: string | undefined;
+  let candidates: Awaited<ReturnType<typeof discoverChromeCookies>>;
   try {
-    cookie = extractXoxdFromChrome();
+    candidates = discoverChromeCookies();
   } catch (e: unknown) {
     console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
 
-  if (!cookie) {
-    console.error("Could not extract cookie. Possible reasons:");
+  if (candidates.length === 0) {
+    console.error("No Slack session found in Chrome. Possible reasons:");
     console.error("  - You denied the keychain dialog (try running again and click Allow)");
     console.error("  - Chrome is not installed or has no Slack session");
     console.error("  - You're not logged in to Slack in Chrome");
     process.exit(1);
   }
 
-  if (!cookie.startsWith("xoxd-")) {
-    console.error(`Unexpected cookie value (expected xoxd- prefix): ${cookie.slice(0, 20)}...`);
-    process.exit(1);
+  let cookie: string;
+  if (candidates.length === 1) {
+    cookie = candidates[0]!.cookie;
+    console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
+  } else {
+    console.log("Multiple Chrome profiles have a Slack session. Choose one:");
+    candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const choice = (await rl.question("Choice: ")).trim();
+    rl.close();
+    const idx = parseInt(choice, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
+      console.error("Invalid choice.");
+      process.exit(1);
+    }
+    cookie = candidates[idx]!.cookie;
   }
 
   setCookie(profileName, cookie);

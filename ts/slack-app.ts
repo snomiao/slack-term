@@ -242,24 +242,39 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
   return result;
 }
 
-/** Paths to Chrome browser Cookies SQLite files across all profiles (macOS only). */
-function chromeCookiesDbPaths(): string[] {
-  if (process.platform !== "darwin") return [];
-  const userDataDir = join(homedir(), "Library", "Application Support", "Google", "Chrome");
-  if (!existsSync(userDataDir)) return [];
-  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
-  return profileDirs.map((p) => join(userDataDir, p, "Cookies")).filter(existsSync);
+export type ChromeCookieCandidate = {
+  profileDir: string;  // "Default", "Profile 1", etc.
+  profileName: string; // display name from Chrome Preferences, e.g. email address
+  cookie: string;      // decrypted xoxd-...
+};
+
+/** Read the display name for a Chrome profile from its Preferences JSON. */
+function chromeProfileName(userDataDir: string, profileDir: string): string {
+  try {
+    const prefs = JSON.parse(
+      readFileSync(join(userDataDir, profileDir, "Preferences"), "utf8"),
+    ) as Record<string, unknown>;
+    const profile = prefs.profile as Record<string, unknown> | undefined;
+    const name = (profile?.name as string | undefined) ?? "";
+    const email = (profile?.user_name as string | undefined) ?? "";
+    return email ? `${name} (${email})` : name || profileDir;
+  } catch {
+    return profileDir;
+  }
 }
 
 /**
- * Extract the xoxd session cookie from Chrome browser's Cookies SQLite (macOS only).
+ * Discover all Chrome browser profiles that have a Slack xoxd cookie (macOS only).
  *
  * Requires the Chrome Safe Storage key from the system keychain. When called from an
  * interactive terminal, macOS will show a dialog asking for the login password.
- * Returns undefined if the keychain key is unavailable or decryption fails.
+ * Throws on v20 (app-bound encryption). Returns [] if keychain is inaccessible.
  */
-export function extractXoxdFromChrome(): string | undefined {
-  if (process.platform !== "darwin") return undefined;
+export function discoverChromeCookies(): ChromeCookieCandidate[] {
+  if (process.platform !== "darwin") return [];
+
+  const userDataDir = join(homedir(), "Library", "Application Support", "Google", "Chrome");
+  if (!existsSync(userDataDir)) return [];
 
   let keychainPw: string;
   try {
@@ -268,15 +283,20 @@ export function extractXoxdFromChrome(): string | undefined {
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trimEnd();
   } catch {
-    return undefined;
+    return [];
   }
-  if (!keychainPw) return undefined;
+  if (!keychainPw) return [];
 
   const aesKey = pbkdf2Sync(keychainPw, "saltysalt", 1003, 16, "sha1");
 
-  for (const dbPath of chromeCookiesDbPaths()) {
-    // Copy to a temp file to avoid WAL/exclusive-lock issues while Chrome is running.
-    const tmp = join(tmpdir(), `slack-chrome-cookies-${Date.now()}.db`);
+  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
+  const candidates: ChromeCookieCandidate[] = [];
+
+  for (const profileDir of profileDirs) {
+    const dbPath = join(userDataDir, profileDir, "Cookies");
+    if (!existsSync(dbPath)) continue;
+
+    const tmp = join(tmpdir(), `slack-chrome-cookies-${Date.now()}-${profileDir}.db`);
     try {
       copyFileSync(dbPath, tmp);
       const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
@@ -290,25 +310,26 @@ export function extractXoxdFromChrome(): string | undefined {
       const enc = Buffer.from(row.encrypted_value);
       const prefix = enc.slice(0, 3).toString();
       if (prefix === "v10") {
-        // Standard Chrome v10: AES-128-CBC, IV = 16 spaces, ciphertext starts at byte 3.
-        const iv = Buffer.alloc(16, 32);
-        const decipher = createDecipheriv("aes-128-cbc", aesKey, iv);
-        decipher.setAutoPadding(true);
-        return Buffer.concat([decipher.update(enc.slice(3)), decipher.final()]).toString("utf8");
-      }
-      if (prefix === "v20") {
+        // Try both AES-128-CBC variants used by different Chromium versions:
+        //   1. Standard (older Chrome):  IV = 16 spaces, ciphertext = enc[3:]
+        //   2. Embedded (newer Chrome/Electron): IV = enc[19:35], ciphertext = enc[35:]
+        const cookie = decryptV10Cookie(enc, aesKey);
+        if (!cookie) continue; // neither format produced a valid xoxd- value
+        candidates.push({ profileDir, profileName: chromeProfileName(userDataDir, profileDir), cookie });
+      } else if (prefix === "v20") {
         throw new Error(
           `Chrome cookie uses v20 (app-bound AES-256-GCM) which is not supported yet. ` +
           `Prefix found: ${enc.slice(0, 4).toString("hex")}`,
         );
+      } else {
+        throw new Error(`Unknown cookie encryption prefix: ${enc.slice(0, 4).toString("hex")}`);
       }
-      throw new Error(`Unknown cookie encryption prefix: ${enc.slice(0, 4).toString("hex")}`);
     } catch (e: unknown) {
-      if (e instanceof Error && e.message.includes("app-bound")) throw e;
-      // Otherwise try next profile
+      if (e instanceof Error && (e.message.includes("app-bound") || e.message.includes("Unknown cookie"))) throw e;
+      // Otherwise skip this profile
     } finally {
       try { unlinkSync(tmp); } catch { /* ignore */ }
     }
   }
-  return undefined;
+  return candidates;
 }
