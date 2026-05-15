@@ -285,19 +285,27 @@ function normName(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
 }
 
-/** Parse a Slack permalink, returning channel ID and (optional) message ts.
+/** Parse a Slack permalink, returning channel ID, optional message ts, and optional thread_ts.
  *  Supports both forms:
  *    https://app.slack.com/client/T.../C...[/p1700000000000100]
- *    https://<ws>.slack.com/archives/C...[/p1700000000000100][?thread_ts=...]
+ *    https://<ws>.slack.com/archives/C...[/p1700000000000100][?thread_ts=...][&cid=C...]
  */
-export function parseSlackPermalink(s: string): { channel: string; ts?: string } | undefined {
+export function parseSlackPermalink(s: string): { channel: string; ts?: string; threadTs?: string } | undefined {
   const m = s.match(
     /(?:app\.slack\.com\/client\/T[A-Za-z0-9]+|[A-Za-z0-9-]+\.slack\.com\/archives)\/([A-Za-z0-9]+)(?:\/p(\d{10})(\d{6}))?/,
   );
   if (!m) return undefined;
   const channel = m[1]!;
   const ts = m[2] && m[3] ? `${m[2]}.${m[3]}` : undefined;
-  return ts ? { channel, ts } : { channel };
+  const qsStart = s.indexOf("?");
+  const qs = qsStart >= 0 ? new URLSearchParams(s.slice(qsStart)) : undefined;
+  const threadTs = qs?.get("thread_ts") ?? undefined;
+  const cidFromQs = qs?.get("cid") ?? undefined;
+  const resolvedChannel = cidFromQs ?? channel;
+  const result: { channel: string; ts?: string; threadTs?: string } = { channel: resolvedChannel };
+  if (ts) result.ts = ts;
+  if (threadTs) result.threadTs = threadTs;
+  return result;
 }
 
 function parseSlackUrl(s: string): string | undefined {
@@ -560,6 +568,20 @@ export async function uploadFile(
   const plink = completeResp.files?.[0]?.permalink;
   if (plink) result.permalink = plink;
   return result;
+}
+
+// client.boot — internal endpoint that returns a WebSocket URL for RTM
+export async function clientBoot(token: string, cookie: string): Promise<{ wsUrl: string; selfId: string }> {
+  const resp = (await postSession(token, "client.boot", {}, cookie)) as Record<string, Json>;
+  const wsUrl = typeof resp.url === "string" ? resp.url : undefined;
+  if (!wsUrl) {
+    const keys = Object.keys(resp).join(", ");
+    throw new Error(`client.boot did not return a WebSocket URL. Keys: ${keys}`);
+  }
+  const self_ = resp.self && typeof resp.self === "object" && !Array.isArray(resp.self)
+    ? resp.self as Record<string, Json>
+    : {};
+  return { wsUrl, selfId: typeof self_.id === "string" ? self_.id : "" };
 }
 
 // Safe nested access

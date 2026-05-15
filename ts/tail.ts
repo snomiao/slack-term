@@ -1,5 +1,6 @@
 import { history, resolveChannel, userInfoPair, authTest, conversationInfo, RateLimitError, type Json } from "./slack.ts";
 import { resolveDateMarkup, resolveMentions } from "./format.ts";
+import { tailRTMImpl } from "./rtm.ts";
 
 export function parseSince(s: string): number {
   const m = s.match(/^(\d+(?:\.\d+)?)(s|m|h|d)$/);
@@ -17,6 +18,7 @@ export function parseSince(s: string): number {
 export const _internals = {
   sleep: (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms)),
   now: (): number => Date.now(),
+  tailRTM: tailRTMImpl,
 };
 
 function asRecord(v: Json | undefined): Record<string, Json> {
@@ -137,6 +139,8 @@ export type TailOpts = {
   thread?: string;
   me?: boolean;
   interval?: number;
+  cookie?: string;
+  noRtm?: boolean;
 };
 
 export async function cmdTail(
@@ -216,6 +220,13 @@ export async function cmdTail(
     ...(opts.me !== undefined ? { me: opts.me } : {}),
     ...(myUserId !== undefined ? { myUserId } : {}),
   };
+
+  // RTM path: xoxc token + cookie + no backfill requested
+  if (token.startsWith("xoxc-") && opts.cookie !== undefined && opts.noRtm !== true && opts.since === undefined) {
+    await _internals.tailRTM(token, opts.cookie, channelId, pollOpts, seen, cache, signal);
+    if (signal?.aborted) return;
+    console.error("RTM unavailable — switching to polling.");
+  }
 
   let isFirstPoll = true;
   let lastPollEndTime = _internals.now();

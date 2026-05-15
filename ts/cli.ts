@@ -175,12 +175,21 @@ async function formatMsgLine(
 
 // --- msgs <target> — channel/DM history with timestamps ---
 async function cmdMsgsTarget(token: string, target: string, limit: number): Promise<void> {
+  const parsed = parseSlackPermalink(target);
   const channelId = await resolveChannel(token, target);
-  const hist = (await history(token, channelId, limit)) as Record<string, Json>;
-  const msgs = asArray(hist.messages).map(asRecord);
   const cache = new Map<string, string>();
-  for (const m of msgs.reverse()) {
-    console.log(await formatMsgLine(token, m, cache));
+  if (parsed?.threadTs) {
+    const resp = (await replies(token, channelId, parsed.threadTs, limit)) as Record<string, Json>;
+    const msgs = asArray(resp.messages).map(asRecord);
+    for (const m of msgs) {
+      console.log(await formatMsgLine(token, m, cache));
+    }
+  } else {
+    const hist = (await history(token, channelId, limit)) as Record<string, Json>;
+    const msgs = asArray(hist.messages).map(asRecord);
+    for (const m of msgs.reverse()) {
+      console.log(await formatMsgLine(token, m, cache));
+    }
   }
 }
 
@@ -1267,9 +1276,11 @@ async function main(): Promise<void> {
         .option("since", { type: "string", describe: "Backfill from N ago (e.g. 10m, 2h, 1d)" })
         .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
         .option("me", { type: "boolean", default: false, describe: "Filter to messages that mention you" })
-        .option("interval", { type: "number", default: 60000, describe: "Poll interval in ms (default 60s; use --interval=3000 for near-real-time)" }),
+        .option("interval", { type: "number", default: 60000, describe: "Poll interval in ms (default 60s; use --interval=3000 for near-real-time)" })
+        .option("rtm", { type: "boolean", default: true, describe: "Use RTM WebSocket when available (xoxc + cookie); pass --no-rtm to force polling" }),
       async (argv) => {
         const token = tok(argv as W);
+        const cookie = ck(argv as W);
         const signal = new AbortController();
         process.on("SIGINT", () => { signal.abort(); process.exit(0); });
         await cmdTail(token, argv.target, {
@@ -1277,6 +1288,8 @@ async function main(): Promise<void> {
           ...(argv.thread !== undefined ? { thread: argv.thread } : {}),
           me: argv.me,
           interval: argv.interval,
+          ...(cookie !== undefined ? { cookie } : {}),
+          ...(argv.rtm === false ? { noRtm: true } : {}),
         }, signal.signal);
       },
     )

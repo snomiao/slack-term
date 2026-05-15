@@ -685,6 +685,126 @@ describe("cmdTail", () => {
     expect(output.join("")).toContain("paginated message");
   });
 
+  test("RTM path: calls tailRTM when xoxc token + cookie, no --since", async () => {
+    // Track call via local variable — mockRestore() clears mock.calls so we can't read it after.
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const ac = new AbortController();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+    expect(rtmCallCount).toBe(1);
+  });
+
+  test("RTM path: skips RTM when noRtm is true, goes straight to polling", async () => {
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const ac = new AbortController();
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+    try {
+      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", noRtm: true, interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+    }
+    expect(rtmCallCount).toBe(0);
+    expect(output.join("")).toContain("new message"); // polling ran
+  });
+
+  test("RTM path: skips RTM when token is not xoxc-", async () => {
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const ac = new AbortController();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
+    try {
+      await cmdTail("xoxp-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+    }
+    expect(rtmCallCount).toBe(0);
+  });
+
+  test("RTM path: skips RTM when --since is set", async () => {
+    const nowSpy = vi.spyOn(_internals, "now").mockReturnValue(1700000600000);
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const mockSince = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000000.000000": {
+          ok: true,
+          messages: [{ ts: "1700000003.000000", user: "U00000001", text: "since msg" }],
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockSince.baseUrl}/api`;
+    const ac = new AbortController();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
+    try {
+      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", since: "10m", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+      nowSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockSince.stop();
+    }
+    expect(rtmCallCount).toBe(0);
+  });
+
+  test("RTM path: falls back to polling when tailRTM returns without aborting", async () => {
+    const errMsgs: string[] = [];
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const ac = new AbortController();
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation((msg) => errMsgs.push(String(msg)));
+    try {
+      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+      errSpy.mockRestore();
+    }
+    // RTM returned without abort → "RTM unavailable" logged → polling ran → "new message" emitted
+    expect(rtmCallCount).toBe(1);
+    expect(errMsgs.join(" ")).toContain("RTM unavailable");
+    expect(output.join("")).toContain("new message");
+  });
+
   test("preflight: warns about archived channel but continues", async () => {
     const mockArch = await startMock({
       inline: {

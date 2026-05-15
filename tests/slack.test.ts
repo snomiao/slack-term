@@ -285,6 +285,20 @@ describe("slack.ts", () => {
     expect(slack.parseSlackPermalink("https://example.com/foo")).toBeUndefined();
   });
 
+  test("parseSlackPermalink extracts thread_ts from query params", () => {
+    const r = slack.parseSlackPermalink(
+      "https://acme.slack.com/archives/C12345678/p1700000000000100?thread_ts=1700000000.000100&cid=C12345678",
+    );
+    expect(r).toEqual({ channel: "C12345678", ts: "1700000000.000100", threadTs: "1700000000.000100" });
+  });
+
+  test("parseSlackPermalink uses cid query param as channel when present", () => {
+    const r = slack.parseSlackPermalink(
+      "https://acme.slack.com/archives/C12345678/p1700000000000200?thread_ts=1699000000.000100&cid=COTHER000",
+    );
+    expect(r).toEqual({ channel: "COTHER000", ts: "1700000000.000200", threadTs: "1699000000.000100" });
+  });
+
   test("openDm returns channel id", async () => {
     const id = await slack.openDm(token, "U00000002");
     expect(id).toBe("C00000099");
@@ -552,6 +566,54 @@ describe("slack.ts", () => {
       expect(id).toBe("D00000099");
     } finally {
       await pagMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("clientBoot returns wsUrl and selfId", async () => {
+    const bootMock = await startMock({
+      inline: {
+        "client.boot": { ok: true, url: "wss://rtm.slack.com/fake", self: { id: "U00000001" } },
+      },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${bootMock.baseUrl}/api`;
+    try {
+      const result = await slack.clientBoot("xoxc-fake", "xoxd-cookie");
+      expect(result.wsUrl).toBe("wss://rtm.slack.com/fake");
+      expect(result.selfId).toBe("U00000001");
+    } finally {
+      await bootMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("clientBoot throws when response has no url", async () => {
+    const bootMock = await startMock({
+      inline: { "client.boot": { ok: true } },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${bootMock.baseUrl}/api`;
+    try {
+      await expect(slack.clientBoot("xoxc-fake", "xoxd-cookie")).rejects.toThrow("WebSocket URL");
+    } finally {
+      await bootMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("clientBoot handles missing self field", async () => {
+    const bootMock = await startMock({
+      inline: { "client.boot": { ok: true, url: "wss://rtm.slack.com/fake" } },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${bootMock.baseUrl}/api`;
+    try {
+      const result = await slack.clientBoot("xoxc-fake", "xoxd-cookie");
+      expect(result.wsUrl).toBe("wss://rtm.slack.com/fake");
+      expect(result.selfId).toBe("");
+    } finally {
+      await bootMock.stop();
       process.env.SLACK_API_BASE = originalBase;
     }
   });
