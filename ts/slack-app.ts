@@ -242,6 +242,29 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
   return result;
 }
 
+/**
+ * Try both AES-128-CBC variants used across Chromium versions to decrypt a v10 cookie.
+ * Returns the decrypted string if it starts with "xoxd-", otherwise undefined.
+ *
+ * Variant A (older Chrome):      IV = 16 spaces, ciphertext = enc[3:]
+ * Variant B (newer Chrome 127+): IV = enc[19:35], ciphertext = enc[35:]
+ */
+function decryptV10Cookie(enc: Buffer, aesKey: Buffer): string | undefined {
+  const tryDecrypt = (iv: Buffer, ciphertext: Buffer): string | undefined => {
+    try {
+      const decipher = createDecipheriv("aes-128-cbc", aesKey, iv);
+      decipher.setAutoPadding(true);
+      const result = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+      return result.startsWith("xoxd-") ? result : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  return tryDecrypt(Buffer.alloc(16, 32), enc.slice(3))
+    ?? (enc.length >= 35 ? tryDecrypt(enc.slice(19, 35), enc.slice(35)) : undefined);
+}
+
 export type ChromeCookieCandidate = {
   profileDir: string;  // "Default", "Profile 1", etc.
   profileName: string; // display name from Chrome Preferences, e.g. email address
