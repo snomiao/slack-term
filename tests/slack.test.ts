@@ -466,4 +466,93 @@ describe("slack.ts", () => {
       process.env.SLACK_API_BASE = originalBase;
     }
   });
+
+  test("callSession throws RateLimitError on HTTP 429 with Retry-After header", async () => {
+    const rlMock = await startMock({
+      inline: {
+        "drafts.list": { __status: 429, __retryAfter: 5, ok: false, error: "ratelimited" },
+      },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${rlMock.baseUrl}/api`;
+    try {
+      await expect(slack.listDrafts("xoxc-fake", "xoxd-cookie")).rejects.toSatisfy(
+        (e: unknown) => e instanceof slack.RateLimitError && (e as slack.RateLimitError).retryAfter === 5,
+      );
+    } finally {
+      await rlMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("searchAll paginates across multiple pages", async () => {
+    const page2Mock = await startMock({
+      inline: {
+        "search.messages__count=100&page=1&query=multi&sort=timestamp&sort_dir=desc": {
+          ok: true,
+          messages: {
+            matches: [
+              { user: "U00000001", text: "page1msg", ts: "1700000001.000000", channel: { id: "C00000001", name: "ch" } },
+            ],
+            paging: { count: 100, total: 2, page: 1, pages: 2 },
+          },
+        },
+        "search.messages__count=100&page=2&query=multi&sort=timestamp&sort_dir=desc": {
+          ok: true,
+          messages: {
+            matches: [
+              { user: "U00000001", text: "page2msg", ts: "1700000002.000000", channel: { id: "C00000001", name: "ch" } },
+            ],
+            paging: { count: 100, total: 2, page: 2, pages: 2 },
+          },
+        },
+      },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${page2Mock.baseUrl}/api`;
+    try {
+      const resp = (await slack.searchAll("xoxp-fake", "multi", 100)) as {
+        messages?: { matches?: Array<{ text: string }> };
+      };
+      expect(resp.messages?.matches?.map((m) => m.text)).toEqual(["page1msg", "page2msg"]);
+    } finally {
+      await page2Mock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
+
+  test("resolveChannel paginates users.list to find user on second page", async () => {
+    const pagMock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            { id: "U00000001", name: "alice", real_name: "Alice", profile: { display_name: "" } },
+          ],
+          response_metadata: { next_cursor: "cursor-page2" },
+        },
+        "users.list__cursor=cursor-page2&limit=200": {
+          ok: true,
+          members: [
+            { id: "U00000099", name: "carol", real_name: "Carol", profile: { display_name: "" } },
+          ],
+          response_metadata: { next_cursor: "" },
+        },
+        "conversations.list__limit=200&types=im": {
+          ok: true,
+          channels: [{ id: "D00000099", user: "U00000099" }],
+          response_metadata: { next_cursor: "" },
+        },
+      },
+    });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${pagMock.baseUrl}/api`;
+    try {
+      const id = await slack.resolveChannel("xoxp-fake", "@carol");
+      expect(id).toBe("D00000099");
+    } finally {
+      await pagMock.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  });
 });

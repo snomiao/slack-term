@@ -684,4 +684,121 @@ describe("cmdTail", () => {
     }
     expect(output.join("")).toContain("paginated message");
   });
+
+  test("preflight: warns about archived channel but continues", async () => {
+    const mockArch = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.info__channel=C00000001": {
+          ok: true,
+          channel: { id: "C00000001", name: "general", is_member: true, is_archived: true },
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockArch.baseUrl}/api`;
+    const ac = new AbortController();
+    const errors: string[] = [];
+    const errSpy = vi.spyOn(console, "error").mockImplementation((msg) => {
+      errors.push(String(msg));
+    });
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      errSpy.mockRestore();
+      writeSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockArch.stop();
+    }
+    expect(errors.some((e) => e.includes("archived"))).toBe(true);
+    // cmdTail continued (did not exit) — it emitted a message
+    expect(output.join("")).toContain("new message");
+  });
+
+  test("preflight: exits on channel_not_found error", async () => {
+    const mockPF3 = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.info__channel=C00000001": { ok: false, error: "channel_not_found" },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockPF3.baseUrl}/api`;
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("channel not found");
+    } finally {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockPF3.stop();
+    }
+  });
+
+  test("preflight: warns and continues on generic error", async () => {
+    const mockPF4 = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.info__channel=C00000001": { ok: false, error: "some_transient_error" },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockPF4.baseUrl}/api`;
+    const ac = new AbortController();
+    const errors: string[] = [];
+    const errSpy = vi.spyOn(console, "error").mockImplementation((msg) => {
+      errors.push(String(msg));
+    });
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      errSpy.mockRestore();
+      writeSpy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockPF4.stop();
+    }
+    expect(errors.some((e) => e.includes("preflight check failed"))).toBe(true);
+    // continued despite error
+    expect(output.join("")).toContain("new message");
+  });
+
+  test("poll loop rethrows non-RateLimitError", async () => {
+    const mockRethrow = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          ok: false,
+          error: "fatal_error",
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockRethrow.baseUrl}/api`;
+    try {
+      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow(/Slack error/);
+    } finally {
+      process.env.SLACK_API_BASE = origBase;
+      await mockRethrow.stop();
+    }
+  });
 });
