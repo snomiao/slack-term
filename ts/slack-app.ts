@@ -356,3 +356,87 @@ export function discoverChromeCookies(): ChromeCookieCandidate[] {
   }
   return candidates;
 }
+
+export type FirefoxCookieCandidate = {
+  profileDir: string;  // e.g. "abc123.default-release"
+  profileName: string; // display name from profiles.ini, or the dir name
+  cookie: string;      // plaintext xoxd-... (Firefox stores cookies unencrypted)
+};
+
+function firefoxProfilesDir(): string {
+  const home = homedir();
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Firefox", "Profiles");
+  if (process.platform === "linux") return join(home, ".mozilla", "firefox");
+  if (process.platform === "win32") {
+    return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles");
+  }
+  return "";
+}
+
+/** Read Firefox profiles.ini to map profile dir names to display names. */
+function firefoxProfileNames(profilesDir: string): Record<string, string> {
+  const iniPath = join(dirname(profilesDir), "profiles.ini");
+  const map: Record<string, string> = {};
+  if (!existsSync(iniPath)) return map;
+  try {
+    const text = readFileSync(iniPath, "utf8");
+    let currentName = "";
+    let currentPath = "";
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (t.startsWith("[")) { currentName = ""; currentPath = ""; continue; }
+      const eq = t.indexOf("=");
+      if (eq === -1) continue;
+      const key = t.slice(0, eq).trim().toLowerCase();
+      const val = t.slice(eq + 1).trim();
+      if (key === "name") currentName = val;
+      if (key === "path") currentPath = val.split(/[\\/]/).pop() ?? val;
+      if (currentName && currentPath) { map[currentPath] = currentName; currentName = ""; currentPath = ""; }
+    }
+  } catch { /* ignore */ }
+  return map;
+}
+
+/**
+ * Discover all Firefox profiles that have a Slack xoxd cookie.
+ * Firefox stores cookies in plaintext — no keychain or decryption needed.
+ * Returns [] if Firefox is not installed or has no Slack session.
+ */
+export function discoverFirefoxCookies(): FirefoxCookieCandidate[] {
+  const profilesDir = firefoxProfilesDir();
+  if (!profilesDir || !existsSync(profilesDir)) return [];
+
+  const nameMap = firefoxProfileNames(profilesDir);
+  const candidates: FirefoxCookieCandidate[] = [];
+
+  let profileDirs: string[];
+  try {
+    profileDirs = readdirSync(profilesDir);
+  } catch {
+    return [];
+  }
+
+  for (const profileDir of profileDirs) {
+    const dbPath = join(profilesDir, profileDir, "cookies.sqlite");
+    if (!existsSync(dbPath)) continue;
+
+    const tmp = join(tmpdir(), `slack-firefox-cookies-${Date.now()}-${profileDir}.db`);
+    try {
+      copyFileSync(dbPath, tmp);
+      const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+      const db = new Database(tmp, { readonly: true });
+      const row = db
+        .prepare("SELECT value FROM moz_cookies WHERE name='d' AND host LIKE '%slack%' LIMIT 1")
+        .get() as { value: string } | null;
+      db.close();
+      if (!row?.value || !row.value.startsWith("xoxd-")) continue;
+      const profileName = nameMap[profileDir] ?? profileDir;
+      candidates.push({ profileDir, profileName, cookie: row.value });
+    } catch {
+      // skip this profile
+    } finally {
+      try { unlinkSync(tmp); } catch { /* ignore */ }
+    }
+  }
+  return candidates;
+}

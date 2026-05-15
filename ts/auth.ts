@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { addProfile, listProfiles, setCookie, saveToEnvFile } from "./profiles.ts";
 import { authTest } from "./slack.ts";
-import { extractSessions, discoverChromeCookies } from "./slack-app.ts";
+import { extractSessions, discoverChromeCookies, discoverFirefoxCookies } from "./slack-app.ts";
 
 const USER_SCOPES = [
   "search:read",
@@ -288,6 +288,80 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
     console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
   } else {
     console.log("Multiple Chrome profiles have a Slack session. Choose one:");
+    candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const choice = (await rl.question("Choice: ")).trim();
+    rl.close();
+    const idx = parseInt(choice, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
+      console.error("Invalid choice.");
+      process.exit(1);
+    }
+    cookie = candidates[idx]!.cookie;
+  }
+
+  setCookie(profileName, cookie);
+  console.log(`Saved xoxd cookie to workspace "${profileName}".`);
+  console.log(`RTM WebSocket mode is now available: slack tail @you`);
+}
+
+/**
+ * Attach the xoxd session cookie from Firefox browser to an existing workspace profile.
+ * Firefox stores cookies in plaintext — no keychain access needed.
+ */
+export async function cmdAuthFirefox(opts: { workspace?: string } = {}): Promise<void> {
+  const profiles = listProfiles();
+  if (profiles.length === 0) {
+    console.error("No workspaces configured. Run: slack auth token");
+    process.exit(1);
+  }
+
+  let profileName: string;
+  if (opts.workspace) {
+    const found = profiles.find((p) => p.name === opts.workspace);
+    if (!found) {
+      console.error(`Workspace "${opts.workspace}" not found. Available: ${profiles.map((p) => p.name).join(", ")}`);
+      process.exit(1);
+    }
+    profileName = opts.workspace;
+  } else if (profiles.length === 1) {
+    profileName = profiles[0]!.name;
+  } else {
+    const current = profiles.find((p) => p.current);
+    if (current) {
+      profileName = current.name;
+      console.log(`Using active workspace: ${profileName}`);
+    } else {
+      console.log("Multiple workspaces found. Choose one:");
+      profiles.forEach((p, i) => console.log(`  ${i + 1}) ${p.name}  (${p.profile.team})`));
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const choice = (await rl.question("Choice: ")).trim();
+      rl.close();
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= profiles.length) {
+        console.error("Invalid choice.");
+        process.exit(1);
+      }
+      profileName = profiles[idx]!.name;
+    }
+  }
+
+  console.log("Scanning Firefox profiles for Slack session...");
+  const candidates = discoverFirefoxCookies();
+
+  if (candidates.length === 0) {
+    console.error("No Slack session found in Firefox. Possible reasons:");
+    console.error("  - Firefox is not installed");
+    console.error("  - You are not logged in to Slack in Firefox");
+    process.exit(1);
+  }
+
+  let cookie: string;
+  if (candidates.length === 1) {
+    cookie = candidates[0]!.cookie;
+    console.log(`Found session in Firefox profile: ${candidates[0]!.profileName}`);
+  } else {
+    console.log("Multiple Firefox profiles have a Slack session. Choose one:");
     candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const choice = (await rl.question("Choice: ")).trim();

@@ -9,7 +9,7 @@ import { join } from "node:path";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
-import { cmdAuthLogin, cmdAuthChrome, cmdAuthToken, cmdAuthApp } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
@@ -1289,6 +1289,15 @@ async function main(): Promise<void> {
             .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
           async (argv) => {
             await cmdAuthChrome({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
+          },
+        )
+        .command(
+          "firefox",
+          "Attach Firefox browser xoxd cookie to a workspace (all platforms)",
+          (y2) => y2
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
+          async (argv) => {
+            await cmdAuthFirefox({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
