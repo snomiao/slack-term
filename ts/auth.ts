@@ -178,7 +178,7 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
  * When run interactively, macOS will show a system dialog asking for the login password
  * to grant access to the "Chrome Safe Storage" keychain item — click Allow.
  */
-export async function cmdAuthCookie(opts: { workspace?: string } = {}): Promise<void> {
+export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<void> {
   if (process.platform !== "darwin") {
     console.error("Chrome cookie extraction is only supported on macOS.");
     process.exit(1);

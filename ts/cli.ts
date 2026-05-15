@@ -9,7 +9,7 @@ import { join } from "node:path";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
-import { cmdAuthLogin, cmdAuthCookie } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthChrome } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
@@ -1253,7 +1253,7 @@ async function main(): Promise<void> {
           },
         )
         .command(
-          ["rm <name>", "remove <name>"],
+          ["logout <name>", "rm <name>", "remove <name>"],
           "Remove a workspace",
           (y2) => y2.positional("name", { type: "string", demandOption: true }),
           (argv) => {
@@ -1262,12 +1262,12 @@ async function main(): Promise<void> {
           },
         )
         .command(
-          "cookie",
+          ["chrome", "cookie"],
           "Attach Chrome browser xoxd cookie to a workspace (macOS, interactive)",
           (y2) => y2
             .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
           async (argv) => {
-            await cmdAuthCookie({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
+            await cmdAuthChrome({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
