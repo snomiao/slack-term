@@ -61,8 +61,16 @@ export async function startMock(
     for (const [k, v] of url.searchParams) params[k] = v;
 
     const respond = (body: unknown, status = 200): void => {
-      res.statusCode = status;
+      let s = status;
+      let retryAfterHdr: string | null = null;
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        const b = body as Record<string, unknown>;
+        if (typeof b.__status === "number") s = b.__status;
+        if (b.__retryAfter !== undefined) retryAfterHdr = String(b.__retryAfter);
+      }
+      res.statusCode = s;
       res.setHeader("Content-Type", "application/json");
+      if (retryAfterHdr !== null) res.setHeader("retry-after", retryAfterHdr);
       res.end(JSON.stringify(body));
     };
 

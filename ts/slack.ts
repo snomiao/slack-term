@@ -1,5 +1,14 @@
 // Slack Web API client (user token, Authorization: Bearer)
 
+export class RateLimitError extends Error {
+  retryAfter: number;
+  constructor(retryAfter: number) {
+    super(`Slack rate limited — retry after ${retryAfter}s`);
+    this.name = "RateLimitError";
+    this.retryAfter = retryAfter;
+  }
+}
+
 export type Json =
   | string
   | number
@@ -23,9 +32,14 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
       ...extraHeaders,
     },
   });
+  if (res.status === 429) {
+    const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+  }
   const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
   if (body.ok !== true) {
     const err = body.error ?? "unknown";
+    if (err === "ratelimited") throw new RateLimitError(60);
     if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
       throw new Error(
         `Desktop app token (xoxc-) is not accepted by the public Slack API.\n` +
@@ -52,9 +66,14 @@ async function callSession(token: string, method: string, init: RequestInit, coo
       ...extraHeaders,
     },
   });
+  if (res.status === 429) {
+    const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+  }
   const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
   if (body.ok !== true) {
     const err = body.error ?? "unknown";
+    if (err === "ratelimited") throw new RateLimitError(60);
     if ((err === "invalid_auth" || err === "not_authed") && !token.startsWith("xoxc-")) {
       throw new Error(
         `The draft API requires a desktop app session token (xoxc-).\n` +
@@ -109,9 +128,10 @@ export async function authTest(token: string): Promise<{ team: string; teamId: s
   };
 }
 
-export async function history(token: string, channel: string, limit = 20, oldest?: string): Promise<Json> {
+export async function history(token: string, channel: string, limit = 20, oldest?: string, cursor?: string): Promise<Json> {
   const params: Record<string, string> = { channel, limit: String(limit) };
   if (oldest !== undefined) params.oldest = oldest;
+  if (cursor !== undefined) params.cursor = cursor;
   return get(token, "conversations.history", params);
 }
 
