@@ -529,7 +529,9 @@ describe("tailRTMImpl", () => {
       text: "hello",
       ts: "1700000088.000000",
     });
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait long enough for the async message handler to complete its HTTP
+    // round-trip to the in-process mock server before we abort and check results.
+    await new Promise((r) => setTimeout(r, 100));
     ac.abort();
     await rtmPromise;
     writeSpy.mockRestore();

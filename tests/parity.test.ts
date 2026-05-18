@@ -4,7 +4,7 @@
 // `cargo build --release --manifest-path rs/Cargo.toml` first to enable.
 
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -46,51 +46,50 @@ function cleanEnv(extra: Record<string, string>): Record<string, string> {
   return { ...rest, HOME: tmpHome, ...extra };
 }
 
-function runTs(args: string[], env: Record<string, string>): string {
-  const r = spawnSync("bun", ["run", TS_ENTRY, ...args], {
-    cwd: ROOT,
-    env: cleanEnv(env),
-    encoding: "utf8",
-    timeout: 20_000,
+// Async spawn wrapper — spawnSync blocks the event loop, preventing the
+// in-process mock HTTP server from handling requests.
+function runProcess(cmd: string, args: string[], env: Record<string, string>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { cwd: ROOT, env: cleanEnv(env), encoding: "utf8" } as Parameters<typeof spawn>[2]);
+    let stdout = "";
+    let stderr = "";
+    child.stdout!.on("data", (d: Buffer) => { stdout += String(d); });
+    child.stderr!.on("data", (d: Buffer) => { stderr += String(d); });
+    child.on("close", (code: number | null) => {
+      if (code !== 0) reject(new Error(`exited ${code}: ${stderr}`));
+      else resolve(stdout);
+    });
+    child.on("error", reject);
   });
-  if (r.status !== 0) {
-    throw new Error(`ts exited ${r.status}: ${r.stderr}`);
-  }
-  return r.stdout;
 }
 
-function runRust(args: string[], env: Record<string, string>): string {
-  const r = spawnSync(RUST_BIN, args, {
-    cwd: ROOT,
-    env: cleanEnv(env),
-    encoding: "utf8",
-    timeout: 20_000,
-  });
-  if (r.status !== 0) {
-    throw new Error(`rust exited ${r.status}: ${r.stderr}`);
-  }
-  return r.stdout;
+function runTs(args: string[], env: Record<string, string>): Promise<string> {
+  return runProcess("bun", ["run", TS_ENTRY, ...args], env);
+}
+
+function runRust(args: string[], env: Record<string, string>): Promise<string> {
+  return runProcess(RUST_BIN, args, env);
 }
 
 describe.skipIf(!hasFixtures).each(cases)("parity: $name", ({ args }) => {
-  test("TS runs without error", { timeout: 60_000 }, () => {
+  test("TS runs without error", { timeout: 60_000 }, async () => {
     if (!mock) throw new Error("mock not started");
     const env = {
       SLACK_API_BASE: `${mock.baseUrl}/api`,
       SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
     };
-    const out = runTs(args, env);
+    const out = await runTs(args, env);
     expect(out).toBeTypeOf("string");
   });
 
-  test.skipIf(!existsSync(RUST_BIN))("TS and Rust produce identical output", { timeout: 60_000 }, () => {
+  test.skipIf(!existsSync(RUST_BIN))("TS and Rust produce identical output", { timeout: 60_000 }, async () => {
     if (!mock) throw new Error("mock not started");
     const env = {
       SLACK_API_BASE: `${mock.baseUrl}/api`,
       SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
     };
-    const tsOut = runTs(args, env);
-    const rustOut = runRust(args, env);
+    const tsOut = await runTs(args, env);
+    const rustOut = await runRust(args, env);
     expect(tsOut).toEqual(rustOut);
   });
 });

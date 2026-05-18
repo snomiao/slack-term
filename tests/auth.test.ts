@@ -38,12 +38,14 @@ const mockExtractSessions = extractSessions as unknown as MockFn<typeof extractS
 let tmpHome: string;
 let tmpCwd: string;
 let origCwd: string;
+let origHome: string | undefined;
 let mock: MockHandle;
 
 beforeEach(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), "slack-auth-test-"));
   tmpCwd = mkdtempSync(join(tmpdir(), "slack-auth-cwd-"));
   origCwd = process.cwd();
+  origHome = process.env.HOME;
   process.env.HOME = tmpHome;
   process.chdir(tmpCwd);
   mock = await startMock({
@@ -67,7 +69,7 @@ afterEach(async () => {
   process.chdir(origCwd);
   await mock.stop();
   delete process.env.SLACK_API_BASE;
-  delete process.env.HOME;
+  if (origHome === undefined) delete process.env.HOME; else process.env.HOME = origHome;
   delete process.env.SLACK_MCP_XOXP_TOKEN;
   delete process.env.SLACK_MCP_XOXD_COOKIE;
   rmSync(tmpHome, { recursive: true, force: true });
