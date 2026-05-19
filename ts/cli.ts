@@ -170,7 +170,17 @@ async function formatMsgLine(
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map(l => `  ${l}`).join("\n") : "");
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
-  return `${stamp}  ${who}:  ${body}`;
+  const reactions = asArray(m.reactions)
+    .map(asRecord)
+    .map((r) => {
+      const name = typeof r.name === "string" ? r.name : "";
+      const count = Number(r.count ?? asArray(r.users).length ?? 0);
+      return name ? `:${name}:×${count}` : "";
+    })
+    .filter(Boolean)
+    .join(" ");
+  const tail = reactions ? `\n   ${reactions}` : "";
+  return `${stamp}  ${who}:  ${body}${tail}`;
 }
 
 // --- msgs <target> — channel/DM history with timestamps ---
