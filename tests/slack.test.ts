@@ -90,6 +90,18 @@ const fixtures = {
     response_metadata: { next_cursor: "" },
   },
 
+  "chat.getPermalink__channel=C00000001&message_ts=1700000000.000100": {
+    ok: true,
+    channel: "C00000001",
+    permalink: "https://acme.slack.com/archives/C00000001/p1700000000000100",
+  },
+
+  "chat.getPermalink__channel=C00000001&message_ts=1700000000.000200": {
+    ok: true,
+    channel: "C00000001",
+    permalink: "https://acme.slack.com/archives/C00000001/p1700000000000200?thread_ts=1699000000.000100&cid=C00000001",
+  },
+
   "chat.scheduledMessages.list": {
     ok: true,
     scheduled_messages: [{ id: "Q00000001", channel_id: "C00000001", post_at: 1700100000, text: "reminder" }],
@@ -262,6 +274,36 @@ describe("slack.ts", () => {
   test("send accepts threadTs", async () => {
     const ts = await slack.send(token, "C00000001", "hi", "1700000000.000100");
     expect(ts).toBe("1700000000.000100");
+  });
+
+  test("getPermalink returns archive URL for a top-level message", async () => {
+    const url = await slack.getPermalink(token, "C00000001", "1700000000.000100");
+    expect(url).toBe("https://acme.slack.com/archives/C00000001/p1700000000000100");
+  });
+
+  test("getPermalink returns URL with thread_ts/cid for a thread reply", async () => {
+    const url = await slack.getPermalink(token, "C00000001", "1700000000.000200");
+    expect(url).toContain("thread_ts=1699000000.000100");
+    expect(url).toContain("cid=C00000001");
+  });
+
+  test("getPermalink throws on Slack API error (caller fail-soft)", async () => {
+    const errMock = await startMock({
+      inline: {
+        "chat.getPermalink__channel=C00000001&message_ts=1700000000.000100": {
+          ok: false,
+          error: "message_not_found",
+        },
+      },
+    });
+    const prev = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
+    try {
+      await expect(slack.getPermalink(token, "C00000001", "1700000000.000100")).rejects.toThrow(/Slack error/);
+    } finally {
+      process.env.SLACK_API_BASE = prev;
+      await errMock.stop();
+    }
   });
 
   test("editMessage posts chat.update and returns ts", async () => {
