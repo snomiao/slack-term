@@ -238,6 +238,18 @@ export async function deleteScheduledMessage(
   });
 }
 
+export async function getPermalink(
+  token: string,
+  channel: string,
+  messageTs: string,
+): Promise<string> {
+  const resp = (await get(token, "chat.getPermalink", {
+    channel,
+    message_ts: messageTs,
+  })) as { permalink?: string };
+  return resp.permalink ?? "";
+}
+
 export async function editMessage(
   token: string,
   channel: string,

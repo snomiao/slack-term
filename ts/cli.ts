@@ -32,6 +32,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  getPermalink,
   scheduleMessage,
   listScheduledMessages,
   deleteScheduledMessage,
@@ -651,7 +652,18 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     ]);
   }
   const ts = await slackSend(token, channelId, args.message, threadTs);
-  console.log(`✓ Sent (ts: ${ts})`);
+  let permalink = "";
+  try {
+    permalink = await getPermalink(token, channelId, ts);
+  } catch {
+    // fail-soft: getPermalink failure (rate limit, network, etc.) should not
+    // mask send success — fall back to ts-only output below.
+  }
+  if (permalink) {
+    console.log(`✓ Sent: ${permalink}`);
+  } else {
+    console.log(`✓ Sent (ts: ${ts})`);
+  }
 }
 
 // --- schedule ---
