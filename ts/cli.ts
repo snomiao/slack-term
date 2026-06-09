@@ -637,7 +637,14 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const lastMsg = asArray(ctx.messages).map(asRecord)
     .filter((m) => m.subtype === undefined || m.subtype === null)[0];
   const lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
-  const lastUser = typeof lastMsg?.user === "string" ? lastMsg.user : "?";
+  // Resolve the author's user ID to a display name for the preview; fall back to
+  // the bot username, then the raw ID. userName() is fail-soft (returns the ID
+  // on error), so a lookup failure never blocks the safety preview.
+  const lastUser = typeof lastMsg?.user === "string"
+    ? await userName(token, lastMsg.user)
+    : typeof lastMsg?.username === "string"
+    ? lastMsg.username
+    : "?";
 
   const code = safetyCode(lastText, args.message);
 
