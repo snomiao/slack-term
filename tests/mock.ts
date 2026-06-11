@@ -39,8 +39,17 @@ async function loadFixtures(): Promise<Fixtures> {
   return map;
 }
 
+export type RecordedRequest = {
+  method: string;
+  httpMethod: string;
+  params: Record<string, string>;
+  body: string;
+};
+
 export type MockHandle = {
   baseUrl: string;
+  /** Every request the mock served, in order — lets tests assert on POST bodies. */
+  requests: RecordedRequest[];
   stop: () => Promise<void>;
 };
 
@@ -53,6 +62,8 @@ export async function startMock(
   const fixtures: Fixtures = inline
     ? new Map(Object.entries(inline))
     : await loadFixtures();
+
+  const requests: RecordedRequest[] = [];
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -78,6 +89,7 @@ export async function startMock(
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
+        requests.push({ method, httpMethod: "POST", params, body });
         // Best-effort lookup: ignore body for fixture lookup. POST endpoints
         // we fake: chat.postMessage, conversations.open.
         if (method === "chat.postMessage") {
@@ -85,6 +97,10 @@ export async function startMock(
           return;
         }
         if (method === "chat.update") {
+          respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
+          return;
+        }
+        if (method === "chat.delete") {
           respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
           return;
         }
@@ -117,6 +133,8 @@ export async function startMock(
       return;
     }
 
+    requests.push({ method, httpMethod: "GET", params, body: "" });
+
     // Special GET handlers that need dynamic content
     if (method === "files.getUploadURLExternal") {
       respond({ ok: true, upload_url: `http://${req.headers.host}/api/upload-slot`, file_id: "F00000001" });
@@ -146,6 +164,7 @@ export async function startMock(
 
   return {
     baseUrl,
+    requests,
     stop: () =>
       new Promise<void>((resolve, reject) =>
         server.close((err) => (err ? reject(err) : resolve())),

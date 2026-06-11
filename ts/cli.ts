@@ -19,6 +19,7 @@ import {
   deleteDraft,
   updateDraft,
   editMessage,
+  deleteMessage,
   history,
   listConversations,
   listDrafts,
@@ -560,10 +561,15 @@ function splitRefTs(s: string): { ref: string; ts?: string } {
 }
 
 /** Parse a send/upload target that may embed a thread_ts after `:`.
- *  Accepts: `#chan:1700000000.000100`, `@user:ts`, `RAWID:ts`, Slack permalink with thread_ts, or plain ref. */
+ *  Accepts: `#chan:1700000000.000100`, `@user:ts`, `RAWID:ts`, Slack permalink, or plain ref.
+ *  A message permalink targets that message's thread — `?thread_ts=` (the parent) wins when
+ *  present, otherwise the message's own ts. A channel-only permalink stays top-level. */
 function parseTargetThread(s: string): { ref: string; threadTs?: string } {
   const url = parseSlackPermalink(s);
-  if (url) return url.threadTs ? { ref: url.channel, threadTs: url.threadTs } : { ref: url.channel };
+  if (url) {
+    const threadTs = url.threadTs ?? url.ts;
+    return threadTs ? { ref: url.channel, threadTs } : { ref: url.channel };
+  }
   const colon = s.indexOf(":");
   if (colon > 0) {
     const maybeTs = s.slice(colon + 1);
@@ -571,6 +577,50 @@ function parseTargetThread(s: string): { ref: string; threadTs?: string } {
     if (/^\d{4}-\d{2}-\d{2}T/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: isoToSlackTs(maybeTs) };
   }
   return { ref: s };
+}
+
+/** Human-readable destination label for confirm gates, e.g. "#symval (C0B0L6SSAMD)".
+ *  When ref is already a #channel/@user label, keep it; otherwise resolve the channel
+ *  name via conversations.info (fail-soft: a raw ID is still unambiguous). */
+async function destLabel(token: string, channelId: string, ref: string): Promise<string> {
+  let name = ref;
+  if (!ref.startsWith("#") && !ref.startsWith("@")) {
+    try {
+      const info = asRecord((await conversationInfo(token, channelId)) as Json);
+      const ch = asRecord(info.channel);
+      if (ch.is_im === true) {
+        const uid = typeof ch.user === "string" ? ch.user : "";
+        name = uid ? `@${await userName(token, uid)}` : channelId;
+      } else {
+        name = typeof ch.name === "string" ? `#${ch.name}` : channelId;
+      }
+    } catch {
+      name = channelId;
+    }
+  }
+  return name === channelId ? channelId : `${name} (${channelId})`;
+}
+
+/** One-line thread-parent description for confirm gates: "2026-06-11 08:05 @handle: head…".
+ *  Fail-soft: returns the raw ts if the parent cannot be fetched. */
+async function threadParentLine(token: string, channelId: string, threadTs: string): Promise<string> {
+  try {
+    const resp = (await replies(token, channelId, threadTs, 1)) as Record<string, Json>;
+    const msgs = asArray(resp.messages).map(asRecord);
+    const parent = msgs.find((m) => String(m.ts) === threadTs) ?? msgs[0];
+    if (!parent) return threadTs;
+    const author = typeof parent.user === "string"
+      ? await userName(token, parent.user)
+      : typeof parent.username === "string"
+      ? parent.username
+      : "?";
+    const head = (typeof parent.text === "string" ? parent.text : "").split("\n")[0] ?? "";
+    const headShort = head.length > 40 ? `${head.slice(0, 40)}…` : head;
+    const stamp = slackTsToIso(threadTs).slice(0, 16).replace("T", " ");
+    return `${stamp} @${author}${headShort ? `: ${headShort}` : ""}`;
+  } catch {
+    return threadTs;
+  }
 }
 
 // --- edit ---
@@ -616,6 +666,48 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   console.log(`✓ Edited (ts: ${newTs})`);
 }
 
+// --- delete ---
+interface DeleteArgs {
+  target: string;
+  code?: string;
+  channelId?: string;
+}
+async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
+  const { ref, ts } = splitRefTs(args.target);
+  if (!ts) {
+    console.error("Error: target must embed a message ts (e.g. #chan:2026-05-11T06:01:04.000100 or a Slack permalink URL)");
+    process.exit(2);
+  }
+
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else channelId = await resolveChannel(token, ref);
+
+  // Fetch the message to display what is being deleted and compute the safety hash.
+  const resp = (await replies(token, channelId, ts, 1)) as Record<string, Json>;
+  const msgs = asArray(resp.messages).map(asRecord);
+  const original = msgs.find((m) => String(m.ts) === ts);
+  if (!original) {
+    console.error(`Message not found at ts=${ts} in channel ${channelId}`);
+    process.exit(1);
+  }
+  const originalText = typeof original.text === "string" ? original.text : "";
+
+  const code = safetyCode(channelId, ts, originalText);
+  if (args.code !== code) {
+    const dest = await destLabel(token, channelId, ref);
+    requireCode(args.code, code, [
+      `--- Deleting message -------------------------`,
+      `  → ${dest} at ${slackTsToIso(ts)}`,
+      ...originalText.split("\n").map((l) => `  ${l}`),
+      `---------------------------------------------`,
+    ]);
+  }
+
+  await deleteMessage(token, channelId, ts);
+  console.log(`✓ Deleted (ts: ${ts})`);
+}
+
 // --- send ---
 interface SendArgs {
   target: string;
@@ -646,14 +738,20 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     ? lastMsg.username
     : "?";
 
-  const code = safetyCode(lastText, args.message);
+  // Hash covers the destination too — a code minted for one channel/thread
+  // cannot confirm a send to another.
+  const code = safetyCode(channelId, threadTs ?? "", lastText, args.message);
 
   if (args.code !== code) {
+    const dest = await destLabel(token, channelId, ref);
+    const destLine = threadTs
+      ? `  → ${dest} thread of ${await threadParentLine(token, channelId, threadTs)} — THREAD REPLY`
+      : `  → ${dest} — NEW top-level message`;
     requireCode(args.code, code, [
       `--- Last message in channel ------------------`,
       `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
       `--- Sending ----------------------------------`,
-      `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
+      destLine,
       `  Message: ${args.message}`,
       `--------------------------------────────────`,
     ]);
@@ -1049,7 +1147,7 @@ async function main(): Promise<void> {
       "send <target> <message>",
       "Send a message (confirm-hash safety gate)",
       (y) => y
-        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
+        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink (a message permalink replies in its thread)" })
         .positional("message", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
@@ -1070,7 +1168,7 @@ async function main(): Promise<void> {
           "send <target> <message>",
           "Schedule a message for later delivery",
           (y2) => y2
-            .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
+            .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink (a message permalink replies in its thread)" })
             .positional("message", { type: "string", demandOption: true })
             .option("at", { type: "string", demandOption: true, describe: "Delivery time (ISO datetime or Unix ts)" })
             .option("code", { type: "string", describe: "Safety hash to confirm" })
@@ -1129,10 +1227,24 @@ async function main(): Promise<void> {
       },
     )
     .command(
+      "delete <target>",
+      "Delete a sent message (confirm-hash safety gate)",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
+        .option("code", { type: "string", describe: "Safety hash to confirm delete" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+      async (argv) => {
+        const args: DeleteArgs = { target: argv.target! };
+        if (argv.code) args.code = argv.code;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        await cmdDelete(tok(argv as W), args);
+      },
+    )
+    .command(
       "upload <target> <file..>",
       "Upload one or more files to a channel or DM",
       (y) => y
-        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
+        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink (a message permalink replies in its thread)" })
         .positional("file", { type: "string", array: true, demandOption: true, describe: "Path(s) to file(s)" })
         .option("title", { type: "string", describe: "Title (single file only)" })
         .option("comment", { type: "string", describe: "Initial comment (first file)" })

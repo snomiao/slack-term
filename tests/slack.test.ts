@@ -311,6 +311,13 @@ describe("slack.ts", () => {
     expect(ts).toBe("1700000000.000100");
   });
 
+  test("deleteMessage posts chat.delete and resolves", async () => {
+    await expect(slack.deleteMessage(token, "C00000001", "1700000000.000100")).resolves.toBeUndefined();
+    const del = mock.requests.filter((r) => r.method === "chat.delete");
+    expect(del).toHaveLength(1);
+    expect(JSON.parse(del[0]!.body)).toEqual({ channel: "C00000001", ts: "1700000000.000100" });
+  });
+
   test("parseSlackPermalink extracts channel from app.slack.com URL", () => {
     const r = slack.parseSlackPermalink("https://app.slack.com/client/T00000001/C12345678");
     expect(r).toEqual({ channel: "C12345678" });

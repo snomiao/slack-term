@@ -11,7 +11,8 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 - **Messages** — Browse recent messages across joined channels
 - **Tail** — Stream new messages from a channel in real time (like `tail -f`)
 - **Search** — Full-text search across the workspace
-- **Send** — Send messages to channels or DMs with a confirm-hash safety gate (prevents accidental sends)
+- **Send** — Send messages to channels, DMs, or threads with a confirm-hash safety gate (prevents accidental sends); targeting a message permalink replies in that message's thread
+- **Edit / Delete** — Rewrite or remove a sent message, guarded by the same confirm-hash gate
 - **Dump** — Bulk-export channel history as markdown
 
 ### Output formatting
@@ -58,8 +59,16 @@ slack search "deploy" --count 50
 
 # Send a message (two-step confirm — quote #channel)
 slack send "#general" "Hello team"
-# Prints preview + confirm hash; rerun with --confirm=<hash> to actually send
-slack send "#general" "Hello team" --confirm=<hash>
+# Prints a destination preview + confirm code; rerun with --code=<code> to actually send
+slack send "#general" "Hello team" --code=<code>
+
+# Reply in a thread — #chan:<thread_ts>, or just paste a message permalink
+slack send "#general:1700000000.000100" "Replying in thread"
+slack send "https://acme.slack.com/archives/C0123456789/p1700000000000100" "Replying in thread"
+
+# Edit or delete a sent message (same confirm-code gate)
+slack edit "<permalink>" "fixed wording"
+slack delete "<permalink>"
 
 # Bulk export channel history
 slack dump --days 7 --filter eng
