@@ -265,6 +265,14 @@ export async function editMessage(
   return resp.ts ?? ts;
 }
 
+export async function deleteMessage(
+  token: string,
+  channel: string,
+  ts: string,
+): Promise<void> {
+  await post(token, "chat.delete", { channel, ts });
+}
+
 export async function listConversations(token: string): Promise<Json> {
   const allChannels: Json[] = [];
   let cursor = "";

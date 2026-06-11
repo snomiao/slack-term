@@ -55,14 +55,25 @@ slack read @username
 
 # Send a message (two-step confirm)
 slack send "#general" "Hello team"
-# Prints preview + a confirm hash. Re-run with --confirm=<hash> to actually send:
-slack send "#general" "Hello team" --confirm=<hash>
+# Prints a destination preview + a confirm code. Re-run with --code=<code> to actually send:
+slack send "#general" "Hello team" --code=<code>
+
+# Reply in a thread — #chan:<thread_ts>, or paste a message permalink:
+slack send "#general:1700000000.000100" "Replying in thread"
+slack send "https://acme.slack.com/archives/C0123456789/p1700000000000100" "Replying in thread"
+
+# Edit or delete a sent message (same confirm-code gate)
+slack edit "<permalink>" "fixed wording"
+slack delete "<permalink>"
 
 # Bulk export a channel's history
 slack dump "#channel-name"
 ```
 
-Targets for `send` must be `#channel` or `@user` — raw IDs are rejected by design.
+Targets for `send` are `#channel`, `@user`, `#channel:<thread_ts>`, or a Slack URL —
+a message permalink replies in that message's thread; a channel-only URL posts top-level.
+The confirm preview prints the resolved destination (`→ ... — THREAD REPLY` or
+`→ ... — NEW top-level message`); verify it before re-running with `--code`.
 
 ## Output formatting
 
@@ -122,7 +133,7 @@ slack news --limit 1
 - **`token_revoked`** — app uninstalled; reinstall from the app page.
 - **Token starts with `xoxb-`** — that's a Bot Token. Add scopes under **User Token Scopes** instead, reinstall, and copy the **User OAuth Token**.
 - **Send is rejected with "use #channel or @user"** — the CLI enforces human-readable targets. Use `#channel-name` or `@display-name`, not raw IDs.
-- **Confirm hash mismatch on `send`** — the message text changed between preview and confirm. Re-run without `--confirm` to get a fresh hash.
+- **Confirm code mismatch on `send`** — the message text or destination changed between preview and confirm. Re-run without `--code` for a fresh preview, and re-check the `→` destination line (THREAD REPLY vs NEW top-level message).
 - **Enterprise Grid / admin-locked workspace** — custom app installation may need admin approval or be disabled outright.
 
 ## Safety
