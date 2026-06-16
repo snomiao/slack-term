@@ -1452,6 +1452,8 @@ async function main(): Promise<void> {
         .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
         .option("me", { type: "boolean", default: false, describe: "Filter to messages that mention you" })
         .option("interval", { type: "number", default: 60000, describe: "Poll interval in ms (default 60s; use --interval=3000 for near-real-time)" })
+        .option("timeout", { type: "string", describe: "Auto-stop after this long (e.g. 30m, 2h). Exit code 0 even if nothing arrived." })
+        .option("exit-on-message", { type: "boolean", default: false, describe: "Stop as soon as the first new message from someone else arrives (wait-for-reply)" })
         .option("rtm", { type: "boolean", default: true, describe: "Use RTM WebSocket when available (xoxc + cookie); pass --no-rtm to force polling" }),
       async (argv) => {
         const token = tok(argv as W);
@@ -1463,6 +1465,8 @@ async function main(): Promise<void> {
           ...(argv.thread !== undefined ? { thread: argv.thread } : {}),
           me: argv.me,
           interval: argv.interval,
+          ...(argv.timeout !== undefined ? { timeout: argv.timeout } : {}),
+          ...(argv["exit-on-message"] === true ? { exitOnMessage: true } : {}),
           ...(cookie !== undefined ? { cookie } : {}),
           ...(argv.rtm === false ? { noRtm: true } : {}),
         }, signal.signal);

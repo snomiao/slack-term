@@ -439,6 +439,93 @@ describe("cmdTail", () => {
     expect(joined).not.toContain("unrelated");
   });
 
+  test("--timeout stops on its own after the deadline (no abort needed)", async () => {
+    // First now() call computes the deadline; every later call jumps far past it
+    // so the loop returns without hanging.
+    let calls = 0;
+    const nowSpy = vi.spyOn(_internals, "now").mockImplementation(() => {
+      calls++;
+      return calls <= 1 ? 1700000000000 : 1700000000000 + 999999;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#symval", { timeout: "1s", interval: 0 });
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(calls).toBeGreaterThan(1); // resolved via deadline, did not hang
+  });
+
+  test("--exit-on-message returns when someone else replies", async () => {
+    const mockR = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          ok: true,
+          messages: [{ ts: "1700000006.000000", user: "U00000002", text: "matsuda reply" }],
+        },
+        "users.info__user=U00000002": {
+          ok: true,
+          user: { id: "U00000002", name: "matsuda", profile: { display_name: "Matsuda" } },
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockR.baseUrl}/api`;
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      // No abort signal: must return on its own once the reply arrives.
+      await cmdTail("xoxp-fake", "#symval", { exitOnMessage: true, interval: 0 });
+    } finally {
+      spy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockR.stop();
+    }
+    expect(output.join("")).toContain("matsuda reply");
+  });
+
+  test("--exit-on-message ignores my own posts, exits on someone else's", async () => {
+    const mockS = await startMock({
+      inline: {
+        ...fixtures,
+        // cycle 1 after seed: my own message — must NOT trigger exit
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          ok: true,
+          messages: [{ ts: "1700000006.000000", user: "U00000001", text: "my own followup" }],
+        },
+        // cycle 2: someone else — triggers exit
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000006.000000": {
+          ok: true,
+          messages: [{ ts: "1700000007.000000", user: "U00000002", text: "their reply" }],
+        },
+        "users.info__user=U00000002": {
+          ok: true,
+          user: { id: "U00000002", name: "bob", profile: { display_name: "Bob" } },
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockS.baseUrl}/api`;
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#symval", { exitOnMessage: true, interval: 0 });
+    } finally {
+      spy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockS.stop();
+    }
+    const joined = output.join("");
+    expect(joined).toContain("my own followup"); // printed, but did not exit
+    expect(joined).toContain("their reply");      // printed, and triggered exit
+  });
+
   test("errors when --me given without target", async () => {
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit");
