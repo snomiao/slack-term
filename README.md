@@ -78,6 +78,7 @@ slack tail "#general"
 slack tail "#general" --since=10m   # backfill last 10 minutes first
 slack tail "#general" --thread=<ts> # follow a single thread
 slack tail "#general" --me          # only messages that mention you
+slack tail "@bob" --exit-on-message --timeout 30m   # wait for a reply, then exit
 ```
 
 ### tail — real-time message stream
@@ -91,6 +92,15 @@ slack tail "#general"               # follow new messages from now
 slack tail "#general" --since=30m   # backfill 30 minutes, then stream
 slack tail "#general" --thread=1700000000.000100   # one thread only
 slack tail "#general" --me          # only messages mentioning you
+```
+
+For automation, `--exit-on-message` stops as soon as the first message from
+**someone else** arrives (your own posts are ignored), and `--timeout <dur>`
+(e.g. `30m`, `2h`) auto-stops after the deadline with exit code 0. Together they
+make a "wait for a reply, then act" primitive that won't hang:
+
+```sh
+slack tail "@yamada" --exit-on-message --timeout 30m --interval 15000
 ```
 
 **Note:** Cross-channel mention streaming (`--me` without a target) is not yet

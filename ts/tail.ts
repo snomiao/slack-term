@@ -84,7 +84,7 @@ export async function pollCycle(
   seen: Set<string>,
   cache: Map<string, string>,
   pageCursor?: string,
-): Promise<{ newCursor: string; lines: string[]; hasMore: boolean; nextPageCursor: string | undefined }> {
+): Promise<{ newCursor: string; lines: string[]; hasMore: boolean; nextPageCursor: string | undefined; emittedOther: boolean }> {
   const histResp = asRecord((await history(
     token,
     channelId,
@@ -102,6 +102,7 @@ export async function pollCycle(
 
   const lines: string[] = [];
   let newCursor = cursor;
+  let emittedOther = false;
 
   for (const m of msgs) {
     const ts = typeof m.ts === "string" ? m.ts : "";
@@ -129,9 +130,13 @@ export async function pollCycle(
 
     lines.push(await formatTailLine(token, m, cache));
     newCursor = ts;
+    // Track whether a message from someone *other than me* arrived, so
+    // --exit-on-message can wait for an actual reply (not my own posts).
+    const u = typeof m.user === "string" ? m.user : "";
+    if (!opts.myUserId || u !== opts.myUserId) emittedOther = true;
   }
 
-  return { newCursor, lines, hasMore: histResp.has_more === true, nextPageCursor };
+  return { newCursor, lines, hasMore: histResp.has_more === true, nextPageCursor, emittedOther };
 }
 
 export type TailOpts = {
@@ -139,6 +144,8 @@ export type TailOpts = {
   thread?: string;
   me?: boolean;
   interval?: number;
+  timeout?: string;
+  exitOnMessage?: boolean;
   cookie?: string;
   noRtm?: boolean;
 };
@@ -165,6 +172,8 @@ export async function cmdTail(
 
   const channelId = await resolveChannel(token, target);
   const interval = opts.interval ?? 60000;
+  // Optional auto-stop deadline (e.g. wait at most 30m for a reply).
+  const deadline = opts.timeout ? _internals.now() + parseSince(opts.timeout) * 1000 : Infinity;
   const cache = new Map<string, string>();
   const seen = new Set<string>();
 
@@ -210,7 +219,7 @@ export async function cmdTail(
   }
 
   let myUserId: string | undefined;
-  if (opts.me) {
+  if (opts.me || opts.exitOnMessage) {
     const info = await authTest(token);
     myUserId = info.userId || undefined;
   }
@@ -221,8 +230,12 @@ export async function cmdTail(
     ...(myUserId !== undefined ? { myUserId } : {}),
   };
 
-  // RTM path: xoxc token + cookie + no backfill requested
-  if (token.startsWith("xoxc-") && opts.cookie !== undefined && opts.noRtm !== true && opts.since === undefined) {
+  // RTM path: xoxc token + cookie + no backfill requested. Skipped when a
+  // deadline or exit-on-message is set so that logic stays in the poll loop.
+  if (
+    token.startsWith("xoxc-") && opts.cookie !== undefined && opts.noRtm !== true &&
+    opts.since === undefined && opts.timeout === undefined && opts.exitOnMessage !== true
+  ) {
     await _internals.tailRTM(token, opts.cookie, channelId, pollOpts, seen, cache, signal);
     if (signal?.aborted) return;
     console.error("RTM unavailable — switching to polling.");
@@ -232,6 +245,9 @@ export async function cmdTail(
   let lastPollEndTime = _internals.now();
 
   while (!signal?.aborted) {
+    if (_internals.now() >= deadline) return; // --timeout reached
+
+    let sawOther = false;
     try {
       const now = _internals.now();
       const elapsed = now - lastPollEndTime;
@@ -243,7 +259,7 @@ export async function cmdTail(
       let isFirstPage = true;
 
       do {
-        const { newCursor, lines, nextPageCursor } = await pollCycle(
+        const { newCursor, lines, nextPageCursor, emittedOther } = await pollCycle(
           token,
           channelId,
           cursor,
@@ -260,6 +276,7 @@ export async function cmdTail(
         isFirstPage = false;
 
         for (const line of lines) process.stdout.write(line + "\n");
+        if (emittedOther) sawOther = true;
         pageCursor = shouldPaginate ? nextPageCursor : undefined;
       } while (pageCursor);
 
@@ -273,7 +290,13 @@ export async function cmdTail(
       throw e;
     }
 
+    // Stop as soon as a reply from someone else arrives.
+    if (opts.exitOnMessage && sawOther) return;
+
     lastPollEndTime = _internals.now();
-    await _internals.sleep(interval);
+    // Sleep the poll interval, but never past the deadline.
+    const remaining = deadline - _internals.now();
+    if (remaining <= 0) return;
+    await _internals.sleep(Math.min(interval, remaining));
   }
 }
