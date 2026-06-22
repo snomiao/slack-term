@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
-import { parseSince, pollCycle, cmdTail, _internals } from "../ts/tail.ts";
+import { parseSince, pollCycle, cmdTail, resolveThreadTs, _internals } from "../ts/tail.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 
 // ──────────────────────────────────────────────────────────
@@ -20,6 +20,34 @@ describe("parseSince", () => {
   // Cover the actual sleep implementation (called before any mock is installed)
   test("_internals.sleep resolves immediately when called with 0ms", async () => {
     await _internals.sleep(0);
+  });
+});
+
+// ──────────────────────────────────────────────────────────
+// resolveThreadTs — pure function
+// ──────────────────────────────────────────────────────────
+
+describe("resolveThreadTs", () => {
+  test("passes through a dotted ts", () => {
+    expect(resolveThreadTs("1782115333.349709")).toBe("1782115333.349709");
+  });
+  test("converts a compact 16-digit ts (no dot)", () => {
+    expect(resolveThreadTs("1782115333349709")).toBe("1782115333.349709");
+  });
+  test("extracts ts from a permalink", () => {
+    expect(resolveThreadTs("https://acme.slack.com/archives/C00000001/p1782115333349709"))
+      .toBe("1782115333.349709");
+  });
+  test("prefers thread_ts query param from a permalink", () => {
+    expect(resolveThreadTs("https://acme.slack.com/archives/C00000001/p1782115333349800?thread_ts=1782115333.349709"))
+      .toBe("1782115333.349709");
+  });
+  test("throws on a permalink without a timestamp", () => {
+    expect(() => resolveThreadTs("https://acme.slack.com/archives/C00000001"))
+      .toThrow("could not extract a timestamp");
+  });
+  test("throws on garbage input", () => {
+    expect(() => resolveThreadTs("not-a-ts")).toThrow("not a valid ts or permalink");
   });
 });
 
@@ -150,6 +178,60 @@ describe("pollCycle", () => {
     } finally {
       process.env.SLACK_API_BASE = origBase;
       await mock2.stop();
+    }
+  });
+
+  test("watch-thread merges channel top-level with thread replies, drops parent dup and other threads", async () => {
+    const seen = new Set<string>();
+    const cache = new Map<string, string>();
+    const mockWT = await startMock({
+      inline: {
+        ...baseFixtures,
+        "users.info__user=U00000002": {
+          ok: true,
+          user: { id: "U00000002", name: "bob", profile: { display_name: "Bob" } },
+        },
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000000.000000": {
+          ok: true,
+          messages: [
+            { ts: "1700000005.000000", user: "U00000002", text: "fresh top-level" },
+            { ts: "1700000004.000000", user: "U00000002", text: "other broadcast", thread_ts: "1700000888.000000" },
+            { ts: "1700000001.000000", user: "U00000001", text: "root post", thread_ts: "1700000001.000000" },
+          ],
+        },
+        "conversations.replies__channel=C00000001&limit=50&ts=1700000001.000000": {
+          ok: true,
+          messages: [
+            { ts: "1700000001.000000", user: "U00000001", text: "root post", thread_ts: "1700000001.000000" },
+            { ts: "1700000003.000000", user: "U00000002", text: "thread reply A", thread_ts: "1700000001.000000" },
+          ],
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockWT.baseUrl}/api`;
+    try {
+      const { lines } = await pollCycle(
+        "xoxp-fake",
+        "C00000001",
+        "1700000000.000000",
+        { watchThread: "1700000001.000000" },
+        seen,
+        cache,
+      );
+      // root post, thread reply A, fresh top-level — sorted ascending by ts
+      expect(lines).toHaveLength(3);
+      expect(lines[0]).toContain("root post");
+      expect(lines[1]).toContain("thread reply A");
+      expect(lines[1]).toContain("↳"); // reply annotation
+      expect(lines[2]).toContain("fresh top-level");
+      // parent appears once (not duplicated by the replies fetch)
+      expect(lines.filter((l) => l.includes("root post"))).toHaveLength(1);
+      // a broadcast from a different thread is dropped
+      expect(lines.some((l) => l.includes("other broadcast"))).toBe(false);
+    } finally {
+      process.env.SLACK_API_BASE = origBase;
+      await mockWT.stop();
     }
   });
 
@@ -524,6 +606,59 @@ describe("cmdTail", () => {
     const joined = output.join("");
     expect(joined).toContain("my own followup"); // printed, but did not exit
     expect(joined).toContain("their reply");      // printed, and triggered exit
+  });
+
+  test("--watch-thread merges replies through the poll loop", async () => {
+    const mockWT = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
+          ok: true,
+          messages: [{ ts: "1700000006.000000", user: "U00000001", text: "new message" }],
+        },
+        "conversations.replies__channel=C00000001&limit=50&ts=1700000005.000000": {
+          ok: true,
+          messages: [
+            { ts: "1700000005.000000", user: "U00000001", text: "seed", thread_ts: "1700000005.000000" },
+            { ts: "1700000007.000000", user: "U00000001", text: "watched thread reply", thread_ts: "1700000005.000000" },
+          ],
+        },
+      },
+    });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockWT.baseUrl}/api`;
+    const ac = new AbortController();
+    const output: string[] = [];
+    const spy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      ac.abort();
+      return true;
+    });
+    try {
+      await cmdTail("xoxp-fake", "#general", { watchThread: "1700000005.000000", interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      spy.mockRestore();
+      process.env.SLACK_API_BASE = origBase;
+      await mockWT.stop();
+    }
+    expect(output.join("")).toContain("watched thread reply");
+  });
+
+  test("--watch-thread exits on an invalid ts/permalink", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(cmdTail("xoxp-fake", "#general", { watchThread: "garbage", interval: 0 }))
+        .rejects.toThrow("process.exit");
+      expect(errSpy.mock.calls.flat().join(" ")).toContain("not a valid ts or permalink");
+    } finally {
+      exitSpy.mockRestore();
+      errSpy.mockRestore();
+    }
   });
 
   test("errors when --me given without target", async () => {

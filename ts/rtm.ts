@@ -3,9 +3,18 @@ import { resolveDateMarkup, resolveMentions } from "./format.ts";
 
 export type RtmPollOpts = {
   thread?: string;
+  watchThread?: string;
   me?: boolean;
   myUserId?: string;
 };
+
+// A message is a thread reply (not a root/broadcast) when it carries a
+// thread_ts that differs from its own ts.
+function isThreadReply(m: Record<string, Json>): boolean {
+  const ts = typeof m.ts === "string" ? m.ts : "";
+  const tts = typeof m.thread_ts === "string" ? m.thread_ts : "";
+  return tts !== "" && tts !== ts;
+}
 
 // Minimal WebSocket interface — avoids requiring DOM lib in tsconfig
 interface WsLike {
@@ -53,7 +62,8 @@ async function formatRtmLine(
   const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map((l) => `  ${l}`).join("\n") : "");
-  return `${stamp}  @${handle}:  ${body}`;
+  const mark = isThreadReply(m) ? "↳ " : "";
+  return `${stamp}  ${mark}@${handle}:  ${body}`;
 }
 
 async function connectAndStream(
@@ -115,6 +125,13 @@ async function connectAndStream(
           if (opts.thread) {
             const parentTs = typeof data.thread_ts === "string" ? data.thread_ts : ts;
             if (parentTs !== opts.thread && ts !== opts.thread) return;
+          }
+
+          // --watch-thread: keep all top-level posts plus the watched thread's
+          // replies; drop replies addressed to other threads.
+          if (opts.watchThread && isThreadReply(data)) {
+            const tts = typeof data.thread_ts === "string" ? data.thread_ts : "";
+            if (tts !== opts.watchThread) return;
           }
 
           if (opts.me && opts.myUserId) {
