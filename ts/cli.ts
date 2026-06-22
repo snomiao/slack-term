@@ -1450,6 +1450,7 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", describe: "#channel or @user to follow" })
         .option("since", { type: "string", describe: "Backfill from N ago (e.g. 10m, 2h, 1d)" })
         .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
+        .option("watch-thread", { type: "string", describe: "Watch the channel's top-level timeline AND one thread's replies together (ts or permalink)" })
         .option("me", { type: "boolean", default: false, describe: "Filter to messages that mention you" })
         .option("interval", { type: "number", default: 60000, describe: "Poll interval in ms (default 60s; use --interval=3000 for near-real-time)" })
         .option("timeout", { type: "string", describe: "Auto-stop after this long (e.g. 30m, 2h). Exit code 0 even if nothing arrived." })
@@ -1463,6 +1464,7 @@ async function main(): Promise<void> {
         await cmdTail(token, argv.target, {
           ...(argv.since !== undefined ? { since: argv.since } : {}),
           ...(argv.thread !== undefined ? { thread: argv.thread } : {}),
+          ...(argv["watch-thread"] !== undefined ? { watchThread: argv["watch-thread"] as string } : {}),
           me: argv.me,
           interval: argv.interval,
           ...(argv.timeout !== undefined ? { timeout: argv.timeout } : {}),

@@ -404,6 +404,87 @@ describe("tailRTMImpl", () => {
     expect(output.join("")).not.toContain("wrong thread reply");
   });
 
+  test("watch-thread passes top-level posts and the watched thread's replies (annotated)", async () => {
+    const [WS, getInstance] = makeWsClass();
+    const ac = new AbortController();
+    vi.spyOn(_internals, "getWebSocket").mockReturnValue(WS as never);
+    vi.spyOn(_internals, "clientBoot").mockResolvedValue({ wsUrl: "ws://watch-test", selfId: "" });
+
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+
+    const rtmPromise = tailRTMImpl(
+      "xoxc-fake", "xoxd-cookie", "C00000001",
+      { watchThread: "1700000000.000000" },
+      new Set(), new Map(), ac.signal,
+    );
+    await Promise.resolve();
+    // A brand new top-level post (no thread_ts) must pass.
+    getInstance()!.simulateMessage({
+      type: "message",
+      channel: "C00000001",
+      user: "U00000001",
+      text: "new top level post",
+      ts: "1700000020.000000",
+    });
+    await Promise.resolve();
+    // A reply to the watched thread must pass and be annotated.
+    getInstance()!.simulateMessage({
+      type: "message",
+      channel: "C00000001",
+      user: "U00000002",
+      text: "watched reply",
+      ts: "1700000021.000000",
+      thread_ts: "1700000000.000000",
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    await rtmPromise;
+    writeSpy.mockRestore();
+
+    const joined = output.join("");
+    expect(joined).toContain("new top level post");
+    expect(joined).toContain("watched reply");
+    expect(joined).toContain("↳"); // reply annotation
+  });
+
+  test("watch-thread blocks replies to other threads", async () => {
+    const [WS, getInstance] = makeWsClass();
+    const ac = new AbortController();
+    vi.spyOn(_internals, "getWebSocket").mockReturnValue(WS as never);
+    vi.spyOn(_internals, "clientBoot").mockResolvedValue({ wsUrl: "ws://watch-block-test", selfId: "" });
+
+    const output: string[] = [];
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      output.push(String(chunk));
+      return true;
+    });
+
+    const rtmPromise = tailRTMImpl(
+      "xoxc-fake", "xoxd-cookie", "C00000001",
+      { watchThread: "1700000000.000000" },
+      new Set(), new Map(), ac.signal,
+    );
+    await Promise.resolve();
+    getInstance()!.simulateMessage({
+      type: "message",
+      channel: "C00000001",
+      user: "U00000002",
+      text: "other thread reply",
+      ts: "1700000022.000000",
+      thread_ts: "1700000999.000000", // different thread
+    });
+    await Promise.resolve();
+    ac.abort();
+    await rtmPromise;
+    writeSpy.mockRestore();
+
+    expect(output.join("")).not.toContain("other thread reply");
+  });
+
   test("me filter passes messages mentioning myUserId", async () => {
     const [WS, getInstance] = makeWsClass();
     const ac = new AbortController();

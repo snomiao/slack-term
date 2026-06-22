@@ -1,4 +1,4 @@
-import { history, resolveChannel, userInfoPair, authTest, conversationInfo, RateLimitError, type Json } from "./slack.ts";
+import { history, replies, resolveChannel, parseSlackPermalink, userInfoPair, authTest, conversationInfo, RateLimitError, type Json } from "./slack.ts";
 import { resolveDateMarkup, resolveMentions } from "./format.ts";
 import { tailRTMImpl } from "./rtm.ts";
 
@@ -27,6 +27,21 @@ function asRecord(v: Json | undefined): Record<string, Json> {
 
 function asArray(v: Json | undefined): Json[] {
   return Array.isArray(v) ? v : [];
+}
+
+// Numeric comparison of Slack ts strings ("1700000001.000000"). ts is a
+// per-channel-unique, monotonically increasing message id, so this gives a
+// total order for merging history (top-level) with replies (thread) streams.
+function tsNum(ts: string): number {
+  return Number(ts) || 0;
+}
+
+// A message is a thread reply (not a root/broadcast) when it carries a
+// thread_ts that differs from its own ts.
+function isThreadReply(m: Record<string, Json>): boolean {
+  const ts = typeof m.ts === "string" ? m.ts : "";
+  const tts = typeof m.thread_ts === "string" ? m.thread_ts : "";
+  return tts !== "" && tts !== ts;
 }
 
 function slackTsToIso(tsRaw: string): string {
@@ -66,12 +81,18 @@ async function formatTailLine(
   const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map((l) => `  ${l}`).join("\n") : "");
+  // Annotate thread replies so a merged channel+thread stream stays readable.
+  const mark = isThreadReply(m) ? "↳ " : "";
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
-  return `${stamp}  ${who}:  ${body}`;
+  return `${stamp}  ${mark}${who}:  ${body}`;
 }
 
 type PollOpts = {
   thread?: string;
+  // Watch one thread AND the channel's top-level timeline in a single stream.
+  // history() never returns non-broadcast thread replies, so we additionally
+  // pull conversations.replies(watchThread) each cycle and merge.
+  watchThread?: string;
   me?: boolean;
   myUserId?: string;
 };
@@ -93,18 +114,37 @@ export async function pollCycle(
     pageCursor,
   )) as Json);
   // history returns newest-first; reverse to emit oldest-first
-  const msgs = asArray(histResp.messages).map(asRecord).reverse();
+  const histMsgs = asArray(histResp.messages).map(asRecord).reverse();
 
   const meta = asRecord(histResp.response_metadata as Json | undefined);
   const nextPageCursor = (histResp.has_more === true && typeof meta.next_cursor === "string")
     ? meta.next_cursor
     : undefined;
 
+  // --watch-thread: history omits non-broadcast thread replies, so pull the
+  // watched thread separately and merge it into the channel timeline. Only on
+  // the first (non-paginated) page so we fetch it once per cycle. The parent
+  // (ts === watchThread) is also returned by replies() but already lives in
+  // history — drop it to avoid double-emit.
+  let replyMsgs: Record<string, Json>[] = [];
+  if (opts.watchThread && !pageCursor) {
+    const repResp = asRecord((await replies(token, channelId, opts.watchThread, 50)) as Json);
+    replyMsgs = asArray(repResp.messages).map(asRecord)
+      .filter((m) => (typeof m.ts === "string" ? m.ts : "") !== opts.watchThread);
+  }
+
+  // Merge and sort ascending by ts (a total order across both streams).
+  type Entry = { m: Record<string, Json>; fromHistory: boolean };
+  const entries: Entry[] = [
+    ...histMsgs.map((m) => ({ m, fromHistory: true })),
+    ...replyMsgs.map((m) => ({ m, fromHistory: false })),
+  ].sort((a, b) => tsNum(typeof a.m.ts === "string" ? a.m.ts : "") - tsNum(typeof b.m.ts === "string" ? b.m.ts : ""));
+
   const lines: string[] = [];
   let newCursor = cursor;
   let emittedOther = false;
 
-  for (const m of msgs) {
+  for (const { m, fromHistory } of entries) {
     const ts = typeof m.ts === "string" ? m.ts : "";
     if (!ts || seen.has(ts)) continue;
 
@@ -115,6 +155,14 @@ export async function pollCycle(
     if (opts.thread) {
       const parentTs = typeof m.thread_ts === "string" ? m.thread_ts : ts;
       if (parentTs !== opts.thread && ts !== opts.thread) continue;
+    }
+
+    // --watch-thread shows all top-level posts plus the watched thread's
+    // replies; drop replies belonging to *other* threads (e.g. a stray
+    // reply_broadcast surfaced by history).
+    if (opts.watchThread && isThreadReply(m)) {
+      const tts = typeof m.thread_ts === "string" ? m.thread_ts : "";
+      if (tts !== opts.watchThread) continue;
     }
 
     if (opts.me && opts.myUserId) {
@@ -129,7 +177,9 @@ export async function pollCycle(
     }
 
     lines.push(await formatTailLine(token, m, cache));
-    newCursor = ts;
+    // Advance the history cursor only on top-level messages — thread replies
+    // are never returned by history(), so their ts must not move `oldest`.
+    if (fromHistory) newCursor = ts;
     // Track whether a message from someone *other than me* arrived, so
     // --exit-on-message can wait for an actual reply (not my own posts).
     const u = typeof m.user === "string" ? m.user : "";
@@ -142,6 +192,7 @@ export async function pollCycle(
 export type TailOpts = {
   since?: string;
   thread?: string;
+  watchThread?: string;
   me?: boolean;
   interval?: number;
   timeout?: string;
@@ -149,6 +200,20 @@ export type TailOpts = {
   cookie?: string;
   noRtm?: boolean;
 };
+
+// Normalize a --watch-thread argument into a Slack ts ("1700000000.000000").
+// Accepts a raw dotted ts, a compact 16-digit ts (no dot), or a permalink.
+export function resolveThreadTs(ref: string): string {
+  if (ref.includes("slack.com")) {
+    const parsed = parseSlackPermalink(ref);
+    const ts = parsed?.threadTs ?? parsed?.ts;
+    if (ts) return ts;
+    throw new Error(`--watch-thread: could not extract a timestamp from "${ref}"`);
+  }
+  if (/^\d{10}\.\d{6}$/.test(ref)) return ref;
+  if (/^\d{16}$/.test(ref)) return `${ref.slice(0, 10)}.${ref.slice(10)}`;
+  throw new Error(`--watch-thread: "${ref}" is not a valid ts or permalink`);
+}
 
 export async function cmdTail(
   token: string,
@@ -224,8 +289,19 @@ export async function cmdTail(
     myUserId = info.userId || undefined;
   }
 
+  let watchThreadTs: string | undefined;
+  if (opts.watchThread !== undefined) {
+    try {
+      watchThreadTs = resolveThreadTs(opts.watchThread);
+    } catch (e: unknown) {
+      console.error(e instanceof Error ? e.message : String(e));
+      process.exit(1);
+    }
+  }
+
   const pollOpts: PollOpts = {
     ...(opts.thread !== undefined ? { thread: opts.thread } : {}),
+    ...(watchThreadTs !== undefined ? { watchThread: watchThreadTs } : {}),
     ...(opts.me !== undefined ? { me: opts.me } : {}),
     ...(myUserId !== undefined ? { myUserId } : {}),
   };
