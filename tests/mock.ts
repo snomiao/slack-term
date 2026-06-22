@@ -74,14 +74,19 @@ export async function startMock(
     const respond = (body: unknown, status = 200): void => {
       let s = status;
       let retryAfterHdr: string | null = null;
+      let extraHeaders: Record<string, string> = {};
       if (body && typeof body === "object" && !Array.isArray(body)) {
         const b = body as Record<string, unknown>;
         if (typeof b.__status === "number") s = b.__status;
         if (b.__retryAfter !== undefined) retryAfterHdr = String(b.__retryAfter);
+        if (b.__headers && typeof b.__headers === "object") {
+          extraHeaders = b.__headers as Record<string, string>;
+        }
       }
       res.statusCode = s;
       res.setHeader("Content-Type", "application/json");
       if (retryAfterHdr !== null) res.setHeader("retry-after", retryAfterHdr);
+      for (const [hk, hv] of Object.entries(extraHeaders)) res.setHeader(hk, String(hv));
       res.end(JSON.stringify(body));
     };
 

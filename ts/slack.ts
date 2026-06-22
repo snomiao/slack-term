@@ -128,6 +128,43 @@ export async function authTest(token: string): Promise<{ team: string; teamId: s
   };
 }
 
+// auth.test plus the token's granted scopes. Slack returns the granted bot/user
+// scopes in the `X-OAuth-Scopes` response header on every Web API call, which is
+// the only way to learn what a token can do without probing each endpoint.
+export async function authScopes(token: string): Promise<{
+  userId: string; botId: string; team: string; url: string; scopes: string[];
+}> {
+  const res = await fetch(`${base()}/auth.test`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 429) {
+    const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+  }
+  const scopesHeader = res.headers.get("x-oauth-scopes") ?? "";
+  const body = (await res.json()) as {
+    ok?: boolean; error?: string; user_id?: string; bot_id?: string; team?: string; url?: string;
+  };
+  if (body.ok !== true) throw new Error(`Slack error on auth.test: ${body.error ?? "unknown"}`);
+  return {
+    userId: body.user_id ?? "",
+    botId: body.bot_id ?? "",
+    team: body.team ?? "",
+    url: body.url ?? "",
+    scopes: scopesHeader.split(",").map((s) => s.trim()).filter(Boolean),
+  };
+}
+
+// Resolve a bot's app_id (and bot user id) from its bot_id — needed to build the
+// app-settings deep link in messaging diagnostics.
+export async function botsInfo(token: string, botId: string): Promise<{ appId: string; userId: string }> {
+  const resp = (await get(token, "bots.info", { bot: botId })) as {
+    bot?: { app_id?: string; user_id?: string };
+  };
+  return { appId: resp.bot?.app_id ?? "", userId: resp.bot?.user_id ?? "" };
+}
+
 export async function history(token: string, channel: string, limit = 20, oldest?: string, cursor?: string): Promise<Json> {
   const params: Record<string, string> = { channel, limit: String(limit) };
   if (oldest !== undefined) params.oldest = oldest;

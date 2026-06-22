@@ -74,13 +74,18 @@ afterAll(async () => {
 type RunResult = { exitCode: number; stdout: string; stderr: string };
 
 // Isolated home + explicit fake token so no real profiles/tokens bleed in.
-function run(args: string[]): Promise<RunResult> {
-  const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, HOME: _h, ...rest } = process.env as Record<string, string>;
+// `extra` overrides/augments env (e.g. SLACK_BOT_TOKEN) and the mock base URL.
+function run(
+  args: string[],
+  extra: { env?: Record<string, string>; baseUrl?: string } = {},
+): Promise<RunResult> {
+  const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, ...rest } = process.env as Record<string, string>;
   const env = {
     ...rest,
     HOME: tmpHome,
-    SLACK_API_BASE: `${mock.baseUrl}/api`,
+    SLACK_API_BASE: `${extra.baseUrl ?? mock.baseUrl}/api`,
     SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
+    ...(extra.env ?? {}),
   };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env });
@@ -193,5 +198,121 @@ describe("delete (CLI)", { timeout: 60_000 }, () => {
     const r = await run(["delete", "#channel-01:1700000000.000100"]);
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toContain("hello world");
+  });
+});
+
+// Bot-token DM path + scope/messaging diagnostics.
+describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
+  // auth.test served with bot scopes via X-OAuth-Scopes; bots.info for app_id.
+  function botFixtures(scopes: string) {
+    return {
+      "auth.test": {
+        ok: true, user_id: "U00000BOT", bot_id: "B00000001", team: "Acme",
+        url: "https://acme.slack.com/", __headers: { "x-oauth-scopes": scopes },
+      },
+      "bots.info__bot=B00000001": { ok: true, bot: { app_id: "A00000001", user_id: "U00000BOT" } },
+      // DM channel context for the send confirm gate
+      "conversations.history__channel=D00000001&limit=1": {
+        ok: true, messages: [{ type: "message", user: "U00000BOT", text: "prev", ts: "1700000100.000200" }],
+      },
+      "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", name: "" } },
+      "chat.getPermalink__channel=D00000001&message_ts=1700000000.000100": {
+        ok: true, channel: "D00000001", permalink: "https://acme.slack.com/archives/D00000001/p1700000000000100",
+      },
+    };
+  }
+
+  test("doctor: complete scopes → two-way note, exit 0", async () => {
+    const m = await startMock({ inline: botFixtures("chat:write,im:write,im:history,im:read") });
+    try {
+      const r = await run(["doctor"], { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("scopes are complete");
+      expect(r.stdout).toContain("Messages Tab");
+      expect(r.stdout).toContain("https://api.slack.com/apps/A00000001");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("doctor: missing reply scopes → guidance, exit 1", async () => {
+    const m = await startMock({ inline: botFixtures("chat:write,im:write") });
+    try {
+      const r = await run(["doctor"], { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toContain("replies will NOT be readable");
+      expect(r.stdout).toContain("im:history, im:read");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("doctor: no bot token → error, exit 1", async () => {
+    const r = await run(["doctor"]); // no SLACK_BOT_TOKEN
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("no xoxb- token");
+  });
+
+  test("send --as-bot without a bot token → error, exit 1", async () => {
+    const r = await run(["send", "@bob", "hi", "--as-bot"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("--as-bot needs a bot token");
+  });
+
+  test("send --as-bot to a DM runs post-send diagnosis (missing scopes warn)", async () => {
+    const m = await startMock({ inline: botFixtures("chat:write,im:write") });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const dry = await run(["send", "@bob", "escalation", "--as-bot", "--channel-id", "D00000001"], { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1); // confirm gate
+      const r = await run(
+        ["send", "@bob", "escalation", "--as-bot", "--channel-id", "D00000001", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Sent");
+      // post-send diagnosis fired because scopes are incomplete
+      expect(r.stderr).toContain("replies will NOT be readable");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("send --as-bot to a DM with complete scopes → Messages Tab note only", async () => {
+    const m = await startMock({ inline: botFixtures("chat:write,im:write,im:history,im:read") });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const dry = await run(["send", "@bob", "escalation", "--as-bot", "--channel-id", "D00000001"], { baseUrl: m.baseUrl, env });
+      const r = await run(
+        ["send", "@bob", "escalation", "--as-bot", "--channel-id", "D00000001", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toContain("enable Messages Tab");
+      expect(r.stderr).not.toContain("replies will NOT be readable");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("self-DM without --as-bot warns about no self-notification", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        "conversations.list__limit=200&types=im": { ok: true, channels: [{ id: "D00000001", user: "U00000001" }] },
+        "conversations.history__channel=D00000001&limit=1": {
+          ok: true, messages: [{ type: "message", user: "U00000001", text: "prev", ts: "1700000100.000200" }],
+        },
+        "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", name: "" } },
+      },
+    });
+    try {
+      const r = await run(["send", "@me", "note to self"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1); // stops at confirm gate
+      expect(r.stderr).toContain("DM to yourself");
+      expect(r.stderr).toContain("--as-bot");
+    } finally {
+      await m.stop();
+    }
   });
 });
