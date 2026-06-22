@@ -32,6 +32,7 @@ import {
   parseSlackPermalink,
   replies,
   resolveChannel,
+  resolveUserId,
   search,
   searchAll,
   send as slackSend,
@@ -754,19 +755,26 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   else if (args.userId) channelId = await openDm(token, args.userId);
   else channelId = await resolveChannel(token, ref);
 
-  // Fetch last 1 message for context hash
-  const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
-  const lastMsg = asArray(ctx.messages).map(asRecord)
-    .filter((m) => m.subtype === undefined || m.subtype === null)[0];
-  const lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
-  // Resolve the author's user ID to a display name for the preview; fall back to
-  // the bot username, then the raw ID. userName() is fail-soft (returns the ID
-  // on error), so a lookup failure never blocks the safety preview.
-  const lastUser = typeof lastMsg?.user === "string"
-    ? await userName(token, lastMsg.user)
-    : typeof lastMsg?.username === "string"
-    ? lastMsg.username
-    : "?";
+  // Fetch last 1 message for context hash. Fail-soft: a bot token without
+  // im:history (or channels:history) can still send — only the preview of the
+  // prior message is lost, so default to empty rather than blocking the send.
+  let lastText = "";
+  let lastUser = "?";
+  try {
+    const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
+    const lastMsg = asArray(ctx.messages).map(asRecord)
+      .filter((m) => m.subtype === undefined || m.subtype === null)[0];
+    lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+    // Resolve the author's user ID to a display name for the preview; fall back
+    // to the bot username, then the raw ID. userName() is fail-soft.
+    lastUser = typeof lastMsg?.user === "string"
+      ? await userName(token, lastMsg.user)
+      : typeof lastMsg?.username === "string"
+      ? lastMsg.username
+      : "?";
+  } catch {
+    // best-effort preview only
+  }
 
   // Hash covers the destination too — a code minted for one channel/thread
   // cannot confirm a send to another.
@@ -1225,12 +1233,36 @@ async function main(): Promise<void> {
             );
             process.exit(1);
           }
+          // Resolve @user → user_id with the *user* token (has users:read), then
+          // let cmdSend open the DM with the bot token (im:write). This avoids
+          // requiring users:read on the bot and guarantees the DM is bot↔user
+          // (not the user's own self-DM).
+          if (!args.channelId && !args.userId && args.target.startsWith("@")) {
+            try {
+              args.userId = await resolveUserId(tok(argv as W), args.target);
+            } catch (e: unknown) {
+              console.error(
+                `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
+                `  ${e instanceof Error ? e.message : String(e)}\n` +
+                `  Tip: pass --user-id <Uxxxx> to skip the lookup.`,
+              );
+              process.exit(1);
+            }
+          }
           sendToken = botToken;
           args.asBot = true;
         } else {
           sendToken = tok(argv as W);
         }
-        await cmdSend(sendToken, args);
+        // Print a clean error instead of yargs' usage dump when a send fails at
+        // runtime (e.g. missing scope, channel not found). The confirm gate
+        // exits via process.exit, so it is unaffected.
+        try {
+          await cmdSend(sendToken, args);
+        } catch (e: unknown) {
+          console.error(e instanceof Error ? e.message : String(e));
+          process.exit(1);
+        }
       },
     )
     .command(

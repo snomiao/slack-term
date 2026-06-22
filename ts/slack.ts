@@ -342,6 +342,42 @@ function normName(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
 }
 
+/**
+ * Resolve `@name` (or a raw U…/W… id) to a user ID. Used when DMing as a bot:
+ * the lookup runs on a *user* token (which has users:read), then the caller
+ * opens the DM with the bot token — so the bot never needs users:read.
+ */
+export async function resolveUserId(token: string, ref: string, cookie?: string): Promise<string> {
+  if (!ref.startsWith("@")) {
+    if (/^[UW][A-Za-z0-9]{6,}$/.test(ref)) return ref;
+    throw new Error(`Expected @user or a user ID, got: ${ref}`);
+  }
+  const nameNorm = normName(ref.slice(1));
+  const selfInfo = (await get(token, "auth.test", {}, cookie)) as { user_id?: string; user?: string };
+  if (nameNorm === "you" || nameNorm === "me" || normName(selfInfo.user ?? "") === nameNorm) {
+    if (!selfInfo.user_id) throw new Error("auth.test did not return user_id");
+    return selfInfo.user_id;
+  }
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.list", params, cookie)) as {
+      members?: Array<{ id?: string; name?: string; real_name?: string; profile?: { display_name?: string } }>;
+      response_metadata?: { next_cursor?: string };
+    };
+    for (const u of resp.members ?? []) {
+      const n = normName(u.name ?? "");
+      const rn = normName(u.real_name ?? "");
+      const dn = normName(u.profile?.display_name ?? "");
+      if (n === nameNorm || rn === nameNorm || (dn && dn === nameNorm)) return u.id ?? "";
+    }
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  throw new Error(`User not found: ${ref}`);
+}
+
 /** Parse a Slack permalink, returning channel ID, optional message ts, and optional thread_ts.
  *  Supports both forms:
  *    https://app.slack.com/client/T.../C...[/p1700000000000100]
