@@ -8,11 +8,13 @@ import { join } from "node:path";
 
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { listProfiles, removeProfile, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
+import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
+import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
+  authTest,
   authTestSession,
   conversationInfoSession,
   createDraft,
@@ -715,9 +717,37 @@ interface SendArgs {
   code?: string;
   channelId?: string;
   userId?: string;
+  asBot?: boolean;
 }
+
+// Detect the silent-failure footgun: DMing yourself with your own user token.
+// Slack does not notify you about messages you sent to yourself, so an
+// escalation DM via `send @me` (or @your-own-handle) is delivered but never
+// surfaces. Returns true when ref names the token's own user.
+async function isSelfDm(token: string, ref: string): Promise<boolean> {
+  if (!ref.startsWith("@")) return false;
+  const name = ref.slice(1).toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (name === "me" || name === "you") return true;
+  try {
+    const self = await authTest(token);
+    const selfName = (self.user ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    return selfName !== "" && selfName === name;
+  } catch {
+    return false;
+  }
+}
+
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
+
+  // Guard the self-DM footgun before doing anything else, unless sending as the
+  // bot (which delivers a notifiable DM from a different identity).
+  if (!args.asBot && !args.channelId && !args.userId && await isSelfDm(token, ref)) {
+    console.error(
+      `Warning: "${ref}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
+      `  To reach yourself with a notification, send as the bot:  slack send '${ref}' '...' --as-bot`,
+    );
+  }
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
@@ -769,6 +799,33 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   } else {
     console.log(`✓ Sent (ts: ${ts})`);
   }
+
+  // After a bot DM, check the app can actually carry a two-way conversation —
+  // an escalation the user can't reply to (Messages Tab off / missing scopes)
+  // is worse than useless. Non-fatal: the send already succeeded.
+  if (args.asBot && channelId.startsWith("D")) {
+    try {
+      const diag = await diagnoseBotMessaging(token);
+      if (!diag.ok) {
+        for (const line of formatDiagnosis(diag, true)) console.error(line);
+      } else {
+        // Scopes are fine, but the Messages Tab toggle isn't API-detectable.
+        const appUrl = diag.appId ? `https://api.slack.com/apps/${diag.appId}` : "https://api.slack.com/apps";
+        console.error(
+          `Note: if ${args.target} can't reply (app messaging may be off), ` +
+          `enable Messages Tab: ${appUrl} → App Home.`,
+        );
+      }
+    } catch {
+      // diagnosis is best-effort; never turn a successful send into a failure.
+    }
+  }
+}
+
+async function cmdDoctor(token: string): Promise<void> {
+  const diag = await diagnoseBotMessaging(token);
+  for (const line of formatDiagnosis(diag, false)) console.log(line);
+  if (!diag.ok) process.exit(1);
 }
 
 // --- schedule ---
@@ -1151,13 +1208,45 @@ async function main(): Promise<void> {
         .positional("message", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
-        .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
+        .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" }),
       async (argv) => {
         const args: SendArgs = { target: argv.target!, message: argv.message! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
-        await cmdSend(tok(argv as W), args);
+        let sendToken: string;
+        if (argv["as-bot"]) {
+          const botToken = resolveBotToken();
+          if (!botToken) {
+            console.error(
+              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+            );
+            process.exit(1);
+          }
+          sendToken = botToken;
+          args.asBot = true;
+        } else {
+          sendToken = tok(argv as W);
+        }
+        await cmdSend(sendToken, args);
+      },
+    )
+    .command(
+      "doctor",
+      "Check the bot token (xoxb) can carry a two-way DM (scopes + Messages Tab)",
+      (y) => y,
+      async () => {
+        const botToken = resolveBotToken();
+        if (!botToken) {
+          console.error(
+            "Error: slack doctor checks the bot token, but no xoxb- token was found.\n" +
+            "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+          );
+          process.exit(1);
+        }
+        await cmdDoctor(botToken);
       },
     )
     .command(

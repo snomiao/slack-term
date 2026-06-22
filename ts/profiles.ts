@@ -277,6 +277,17 @@ export function resolveToken(workspaceFlag?: string): string {
   );
 }
 
+/**
+ * Resolve a bot user token (xoxb-) for sending as the app rather than as the
+ * user. Reads SLACK_BOT_TOKEN from the environment — cli.ts loadDotenvFiles()
+ * has already sourced ~/.config/slack-cli/.env, so a bot token configured there
+ * is available here. Returns undefined when no xoxb- token is set.
+ */
+export function resolveBotToken(): string | undefined {
+  const t = process.env.SLACK_BOT_TOKEN;
+  return t && t.startsWith("xoxb-") ? t : undefined;
+}
+
 /** Resolve the xoxd session cookie for the active workspace (best-effort). */
 export function resolveCookie(workspaceFlag?: string): string | undefined {
   const store = load();
