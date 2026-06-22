@@ -295,6 +295,79 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  test("--as-bot @user resolves the user via the user token, DMs via the bot", async () => {
+    const m = await startMock({
+      inline: {
+        // user-token lookup: auth.test (self=user1, not bob) then users.list finds bob
+        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        "users.list__limit=200": { ok: true, members: [{ id: "U00000BOB", name: "bob", real_name: "Bob" }] },
+        // bot opens DM (conversations.open POST → built-in C00000099); gate context fail-soft
+        "chat.getPermalink__channel=C00000099&message_ts=1700000000.000100": {
+          ok: true, channel: "C00000099", permalink: "https://acme.slack.com/archives/C00000099/p1700000000000100",
+        },
+      },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const dry = await run(["send", "@bob", "ping", "--as-bot"], { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).not.toContain("slack send <target>"); // clean gate, not a usage dump
+      const before = m.requests.length;
+      const r = await run(["send", "@bob", "ping", "--as-bot", `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Sent");
+      const reqs = m.requests.slice(before);
+      // bot opened the DM with the resolved user id …
+      const open = reqs.find((q) => q.method === "conversations.open");
+      expect(open && JSON.parse(open.body).users).toBe("U00000BOB");
+      // … and posted to the opened DM channel
+      const post = reqs.find((q) => q.method === "chat.postMessage");
+      expect(post && JSON.parse(post.body).channel).toBe("C00000099");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--as-bot with an unknown @user errors cleanly (no usage dump)", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        "users.list__limit=200": { ok: true, members: [{ id: "U00000099", name: "someone-else" }] },
+      },
+    });
+    try {
+      const r = await run(["send", "@ghost", "hi", "--as-bot"], { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("could not resolve @ghost");
+      expect(r.stdout).not.toContain("slack send <target>"); // not a yargs usage dump
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--as-bot send survives a bot lacking im:history (fail-soft preview)", async () => {
+    const m = await startMock({
+      inline: {
+        ...botFixtures("chat:write,im:write,im:history,im:read"),
+        // gate context fetch denied — must not block the send
+        "conversations.history__channel=D00000001&limit=1": { ok: false, error: "missing_scope" },
+      },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const dry = await run(["send", "@bob", "msg", "--as-bot", "--channel-id", "D00000001"], { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1); // still reaches the confirm gate
+      const r = await run(
+        ["send", "@bob", "msg", "--as-bot", "--channel-id", "D00000001", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Sent");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("self-DM without --as-bot warns about no self-notification", async () => {
     const m = await startMock({
       inline: {
