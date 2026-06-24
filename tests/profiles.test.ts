@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Profile } from "../ts/profiles.ts";
@@ -9,6 +9,8 @@ import {
   removeProfile,
   useProfile,
   resolveToken,
+  resolveBotToken,
+  saveToEnvFile,
   setCookie,
   resolveCookie,
 } from "../ts/profiles.ts";
@@ -237,6 +239,19 @@ describe("profiles", () => {
     expect(resolveCookie()).toBeUndefined();
   });
 
+  test("resolveCookie returns SLACK_COOKIE env var directly", () => {
+    process.env.SLACK_COOKIE = "xoxd-env-direct";
+    expect(resolveCookie()).toBe("xoxd-env-direct");
+    delete process.env.SLACK_COOKIE;
+  });
+
+  test("resolveCookie returns the cookie for the SLACK_WORKSPACE-selected profile", () => {
+    addProfile("acme", { ...fakeProfile, cookie: "xoxd-ws" });
+    process.env.SLACK_WORKSPACE = "acme";
+    expect(resolveCookie()).toBe("xoxd-ws");
+    delete process.env.SLACK_WORKSPACE;
+  });
+
   test("useProfile second call skips writing gitignore when it already exists", () => {
     addProfile("acme", fakeProfile);
     useProfile("acme"); // writes .slack-cli/.gitignore
@@ -266,5 +281,75 @@ describe("profiles", () => {
     writeFileSync(join(process.cwd(), ".slack-cli", "workspace"), "   \n");
     // Empty lockfile → falls through to "Workspace not selected"
     expect(() => resolveToken()).toThrow("Workspace not selected");
+  });
+
+  test("resolveToken throws when SLACK_WORKSPACE names an unknown profile", () => {
+    addProfile("acme", fakeProfile);
+    process.env.SLACK_WORKSPACE = "ghost";
+    expect(() => resolveToken()).toThrow(/Workspace "ghost" not found/);
+    delete process.env.SLACK_WORKSPACE;
+  });
+
+  test("resolveBotToken returns an xoxb- token from the environment", () => {
+    process.env.SLACK_BOT_TOKEN = "xoxb-bot-123";
+    expect(resolveBotToken()).toBe("xoxb-bot-123");
+  });
+
+  test("resolveBotToken ignores non-xoxb tokens and returns undefined when unset", () => {
+    process.env.SLACK_BOT_TOKEN = "xoxp-not-a-bot";
+    expect(resolveBotToken()).toBeUndefined();
+    delete process.env.SLACK_BOT_TOKEN;
+    expect(resolveBotToken()).toBeUndefined();
+  });
+
+  test("resolveToken reads SLACK_TOKEN from a walked .env.local (parses quotes/comments)", () => {
+    // No profiles, no env vars → resolveToken walks up from cwd for .env.local.
+    writeFileSync(
+      join(process.cwd(), ".env.local"),
+      "# comment line\n\nNO_EQUALS_LINE\nSLACK_TOKEN=\"xoxp-from-file\"\n",
+    );
+    expect(resolveToken()).toBe("xoxp-from-file");
+  });
+
+  test("resolveToken tolerates an unreadable .env.local (readEnvFile swallows errors)", () => {
+    // A directory at the .env.local path makes readFileSync throw → readEnvFile returns {}.
+    mkdirSync(join(process.cwd(), ".env.local"));
+    expect(() => resolveToken()).toThrow(/No Slack token found/);
+  });
+
+  test("resolveToken reads from the global ~/.slack-term/.env.local", () => {
+    // Place the env file under $HOME so the walk falls through to the global check.
+    const dir = join(process.env.HOME!, ".slack-term");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, ".env.local"), "SLACK_TOKEN='xoxp-global'\n");
+    expect(resolveToken()).toBe("xoxp-global");
+  });
+
+  describe("saveToEnvFile", () => {
+    test("creates the file (and parent dirs) with the given entries", () => {
+      const p = join(process.cwd(), "nested", "dir", ".env.local");
+      saveToEnvFile(p, { SLACK_TOKEN: "xoxp-1", SLACK_COOKIE: "xoxd-2" });
+      expect(readFileSync(p, "utf8")).toBe("SLACK_TOKEN=xoxp-1\nSLACK_COOKIE=xoxd-2\n");
+    });
+
+    test("updates an existing key in place and appends a new one", () => {
+      const p = join(process.cwd(), ".env.local");
+      writeFileSync(p, "# header\nSLACK_TOKEN=old\nOTHER=keep\n");
+      saveToEnvFile(p, { SLACK_TOKEN: "new", SLACK_COOKIE: "xoxd-9" });
+      const out = readFileSync(p, "utf8");
+      expect(out).toContain("SLACK_TOKEN=new");
+      expect(out).not.toContain("SLACK_TOKEN=old");
+      expect(out).toContain("OTHER=keep");
+      expect(out).toContain("SLACK_COOKIE=xoxd-9");
+    });
+
+    test("matches keys written with spaces around the equals sign", () => {
+      const p = join(process.cwd(), ".env.spaced");
+      writeFileSync(p, "SLACK_TOKEN = old\n");
+      saveToEnvFile(p, { SLACK_TOKEN: "new" });
+      const out = readFileSync(p, "utf8");
+      expect(out).toContain("SLACK_TOKEN=new");
+      expect(out).not.toContain("old");
+    });
   });
 });
