@@ -4,7 +4,7 @@
 
 import { readdirSync, readFileSync, existsSync, copyFileSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { pbkdf2Sync, createDecipheriv } from "node:crypto";
 import { execSync } from "node:child_process";
 
