@@ -253,6 +253,55 @@ describe("slack.ts", () => {
     await expect(slack.resolveChannel(token, "#nonexistent")).rejects.toThrow(/not found/);
   });
 
+  test("resolveChannel opens a fresh DM when @me has no existing IM", async () => {
+    // auth.test → self (U00000001); no im in conversations.list matches → openDm.
+    const id = await slack.resolveChannel(token, "@me");
+    expect(id).toBe("C00000099");
+  });
+
+  test("resolveChannel throws when a named user has no existing DM", async () => {
+    // alice (U00000001) exists in users.list but has no im channel.
+    await expect(slack.resolveChannel(token, "@alice")).rejects.toThrow(/No existing DM/);
+  });
+
+  test("resolveUserId returns a raw user ID unchanged", async () => {
+    expect(await slack.resolveUserId(token, "U99999999")).toBe("U99999999");
+  });
+
+  test("resolveUserId rejects a non-@ non-ID ref", async () => {
+    await expect(slack.resolveUserId(token, "plainname")).rejects.toThrow(/Expected @user or a user ID/);
+  });
+
+  test("resolveUserId resolves @me to the authed user via auth.test", async () => {
+    expect(await slack.resolveUserId(token, "@me")).toBe("U00000001");
+  });
+
+  test("resolveUserId resolves a @handle via users.list", async () => {
+    expect(await slack.resolveUserId(token, "@bob")).toBe("U00000002");
+  });
+
+  test("resolveUserId throws when the @handle is unknown", async () => {
+    await expect(slack.resolveUserId(token, "@nobody")).rejects.toThrow(/User not found/);
+  });
+
+  test("openDm returns the opened DM channel id", async () => {
+    expect(await slack.openDm(token, "U00000002")).toBe("C00000099");
+  });
+
+  test("authScopes surfaces a RateLimitError on HTTP 429", async () => {
+    const rlMock = await startMock({
+      inline: { "auth.test": { __status: 429, __retryAfter: "30" } },
+    });
+    const prev = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${rlMock.baseUrl}/api`;
+    try {
+      await expect(slack.authScopes(token)).rejects.toMatchObject({ retryAfter: 30 });
+    } finally {
+      if (prev) process.env.SLACK_API_BASE = prev;
+      await rlMock.stop();
+    }
+  });
+
   test("getPath walks nested objects and arrays", () => {
     const obj = { a: { b: [{ c: "hit" }] } };
     expect(slack.getPath(obj, ["a", "b", 0, "c"])).toBe("hit");
@@ -274,6 +323,18 @@ describe("slack.ts", () => {
   test("send accepts threadTs", async () => {
     const ts = await slack.send(token, "C00000001", "hi", "1700000000.000100");
     expect(ts).toBe("1700000000.000100");
+  });
+
+  test("send sets reply_broadcast on a threaded reply when requested", async () => {
+    await slack.send(token, "C00000001", "hi", "1700000000.000100", true);
+    const last = mock.requests.filter((r) => r.method === "chat.postMessage").at(-1);
+    expect(JSON.parse(last!.body)).toMatchObject({ thread_ts: "1700000000.000100", reply_broadcast: true });
+  });
+
+  test("send ignores reply_broadcast on a top-level message", async () => {
+    await slack.send(token, "C00000001", "hi", undefined, true);
+    const last = mock.requests.filter((r) => r.method === "chat.postMessage").at(-1);
+    expect(JSON.parse(last!.body).reply_broadcast).toBeUndefined();
   });
 
   test("getPermalink returns archive URL for a top-level message", async () => {
