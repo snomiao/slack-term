@@ -226,6 +226,7 @@ export async function send(
   channel: string,
   text: string,
   threadTs?: string,
+  replyBroadcast?: boolean,
 ): Promise<string> {
   const body: Record<string, Json> = {
     channel,
@@ -233,6 +234,9 @@ export async function send(
     blocks: [{ type: "markdown", text }],
   };
   if (threadTs !== undefined) body.thread_ts = threadTs;
+  // "Also send to channel": broadcast a threaded reply back to the channel.
+  // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
+  if (replyBroadcast && threadTs !== undefined) body.reply_broadcast = true;
   const resp = (await post(token, "chat.postMessage", body)) as { ts?: string };
   return resp.ts ?? "";
 }
