@@ -719,6 +719,7 @@ interface SendArgs {
   channelId?: string;
   userId?: string;
   asBot?: boolean;
+  broadcast?: boolean;
 }
 
 // Detect the silent-failure footgun: DMing yourself with your own user token.
@@ -794,7 +795,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       `--------------------------------────────────`,
     ]);
   }
-  const ts = await slackSend(token, channelId, args.message, threadTs);
+  const ts = await slackSend(token, channelId, args.message, threadTs, args.broadcast);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts);
@@ -1217,12 +1218,14 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
-        .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" }),
+        .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
+        .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." }),
       async (argv) => {
         const args: SendArgs = { target: argv.target!, message: argv.message! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
+        if (argv.broadcast) args.broadcast = true;
         let sendToken: string;
         if (argv["as-bot"]) {
           const botToken = resolveBotToken();
