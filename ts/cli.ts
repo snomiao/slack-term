@@ -1264,14 +1264,17 @@ async function main(): Promise<void> {
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
-        .option("mentions", { type: "boolean", default: false, describe: "Convert @handle tokens in the message to real <@USERID> mentions (resolves via users.list, then channel members for Slack Connect guests; unresolved handles stay as plain text)" }),
+        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." }),
       async (argv) => {
         const args: SendArgs = { target: argv.target!, message: argv.message! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
         if (argv.broadcast) args.broadcast = true;
-        if (argv.mentions) {
+        // Mentions on by default; `--no-mentions` (yargs negation) sets it false.
+        // A message with no `@token` short-circuits inside encodeMentions, so the
+        // common case pays no extra API call.
+        if (argv.mentions !== false) {
           args.mentions = true;
           // Resolve mentions with the user token (has users:read) even when the
           // message itself is sent via the bot token.
@@ -1394,12 +1397,12 @@ async function main(): Promise<void> {
         .positional("newText", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
-        .option("mentions", { type: "boolean", default: false, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (unresolved handles stay as plain text)" }),
+        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." }),
       async (argv) => {
         const args: EditArgs = { target: argv.target!, newText: argv.newText! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        if (argv.mentions) args.mentions = true;
+        if (argv.mentions !== false) args.mentions = true;
         await cmdEdit(tok(argv as W), args);
       },
     )
