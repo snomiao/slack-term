@@ -558,6 +558,26 @@ export async function listUsers(token: string): Promise<Json> {
   return { members: allMembers };
 }
 
+/** List the member user IDs of a channel/DM (paginated).
+ *  Used by mention encoding to reach members — including Slack Connect guests —
+ *  who do not appear in the workspace-wide users.list. */
+export async function listConversationMembers(token: string, channel: string): Promise<string[]> {
+  const all: string[] = [];
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { channel, limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "conversations.members", params)) as {
+      members?: string[];
+      response_metadata?: { next_cursor?: string };
+    };
+    all.push(...(resp.members ?? []));
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return all;
+}
+
 // Draft API (internal — requires xoxc session token + xoxd cookie)
 export async function listDrafts(token: string, cookie?: string): Promise<Json> {
   return postSession(token, "drafts.list", {}, cookie);
