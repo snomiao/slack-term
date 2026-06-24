@@ -188,31 +188,52 @@ async function formatMsgLine(
   return `${stamp}  ${who}:  ${body}${tail}`;
 }
 
+// Slim a raw message down to the fields a script actually needs. Keeps the
+// author's user ID (incl. external / Slack-Connect guests that never appear in
+// users.list) so callers can resolve mentions without scraping history by hand.
+function slimMsg(m: Record<string, Json>): Record<string, Json> {
+  return {
+    ts: m.ts ?? null,
+    user: m.user ?? null,
+    username: m.username ?? null,
+    bot_id: m.bot_id ?? null,
+    thread_ts: m.thread_ts ?? null,
+    text: typeof m.text === "string" ? m.text : "",
+  };
+}
+
 // --- msgs <target> — channel/DM history with timestamps ---
-async function cmdMsgsTarget(token: string, target: string, limit: number): Promise<void> {
+async function cmdMsgsTarget(token: string, target: string, limit: number, format: "text" | "jsonl" = "text"): Promise<void> {
   const parsed = parseSlackPermalink(target);
   const channelId = await resolveChannel(token, target);
   const cache = new Map<string, string>();
-  if (parsed?.threadTs) {
-    const resp = (await replies(token, channelId, parsed.threadTs, limit)) as Record<string, Json>;
-    const msgs = asArray(resp.messages).map(asRecord);
-    for (const m of msgs) {
-      console.log(await formatMsgLine(token, m, cache));
+  const fetchMsgs = async (): Promise<Record<string, Json>[]> => {
+    if (parsed?.threadTs) {
+      const resp = (await replies(token, channelId, parsed.threadTs, limit)) as Record<string, Json>;
+      return asArray(resp.messages).map(asRecord);
     }
-  } else {
     const hist = (await history(token, channelId, limit)) as Record<string, Json>;
-    const msgs = asArray(hist.messages).map(asRecord);
-    for (const m of msgs.reverse()) {
-      console.log(await formatMsgLine(token, m, cache));
-    }
+    return asArray(hist.messages).map(asRecord).reverse();
+  };
+  const msgs = await fetchMsgs();
+  if (format === "jsonl") {
+    for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
+    return;
+  }
+  for (const m of msgs) {
+    console.log(await formatMsgLine(token, m, cache));
   }
 }
 
 // --- thread ---
-async function cmdThread(token: string, target: string, ts: string, limit: number): Promise<void> {
+async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" = "text"): Promise<void> {
   const channelId = await resolveChannel(token, target);
   const resp = (await replies(token, channelId, parseInputTs(ts), limit)) as Record<string, Json>;
   const msgs = asArray(resp.messages).map(asRecord);
+  if (format === "jsonl") {
+    for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
+    return;
+  }
   const cache = new Map<string, string>();
   for (const m of msgs) {
     console.log(await formatMsgLine(token, m, cache));
@@ -1025,10 +1046,13 @@ async function main(): Promise<void> {
       "Browse messages",
       (y) => y
         .positional("target", { type: "string", describe: "#channel, @user, or URL" })
-        .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" }),
+        .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" })
+        .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
       async (argv) => {
         const token = tok(argv as W);
-        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit);
+        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
+        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format);
         else await cmdMsgs(token);
       },
     )
@@ -1038,9 +1062,12 @@ async function main(): Promise<void> {
       (y) => y
         .positional("target", { type: "string", demandOption: true })
         .positional("ts", { type: "string", demandOption: true })
-        .option("limit", { alias: "n", type: "number", default: 100 }),
+        .option("limit", { alias: "n", type: "number", default: 100 })
+        .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
       async (argv) => {
-        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit);
+        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
+        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format);
       },
     )
     .command(
