@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
-import { resolveMentions } from "../ts/format.ts";
+import { encodeMentions, resolveMentions } from "../ts/format.ts";
 
 describe("resolveDateMarkup", () => {
   test("replaces <!date^...> with formatted date", () => {
@@ -108,6 +108,108 @@ describe("resolveMentions", () => {
     // "hi <@U00000001" — no closing > or |, endIdx === -1 → uid = rest = "U00000001"
     const out = await resolveMentions("xoxp-fake", "hi <@U00000001", cache);
     expect(typeof out).toBe("string");
+  });
+});
+
+describe("encodeMentions", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        // Workspace users.list (step 1): alice (by name/display), and a user
+        // whose only match is the profile email (exercises the email branch).
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            { id: "U_ALICE", name: "alice", real_name: "Alice Anderson", profile: { display_name: "Alice A" } },
+            { id: "U_MAIL", name: "obscure", real_name: "", profile: { display_name: "", email: "specialhandle" } },
+          ],
+        },
+        // Channel members (step 2) — a Slack Connect guest NOT in users.list.
+        "conversations.members__channel=C_TEST&limit=200": {
+          ok: true,
+          members: ["U_GUEST"],
+        },
+        "users.info__user=U_GUEST": {
+          ok: true,
+          user: { id: "U_GUEST", name: "t.matsuda19790127", profile: { display_name: "Matsuda" } },
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("replaces a workspace handle (by name) with <@USERID>", async () => {
+    const warnings: string[] = [];
+    const out = await encodeMentions("xoxp-fake", "hi @alice!", "C_TEST", { warn: (m) => warnings.push(m) });
+    expect(out).toBe("hi <@U_ALICE>!");
+    expect(warnings).toEqual([]);
+  });
+
+  test("matches by display name (normalized)", async () => {
+    // "@Alice-A" normalizes to "alicea" == display_name "Alice A"
+    const out = await encodeMentions("xoxp-fake", "yo @Alice-A", "C_TEST");
+    expect(out).toBe("yo <@U_ALICE>");
+  });
+
+  test("matches by profile email when name/display do not", async () => {
+    const out = await encodeMentions("xoxp-fake", "ping @specialhandle here", "C_TEST");
+    expect(out).toBe("ping <@U_MAIL> here");
+  });
+
+  test("resolves a Slack Connect guest via channel members", async () => {
+    // Not in users.list — only reachable through conversations.members.
+    const out = await encodeMentions("xoxp-fake", "cc @t.matsuda19790127", "C_TEST");
+    expect(out).toBe("cc <@U_GUEST>");
+  });
+
+  test("leaves unresolved handles as text and warns", async () => {
+    const warnings: string[] = [];
+    const out = await encodeMentions("xoxp-fake", "hey @nobody there", "C_TEST", { warn: (m) => warnings.push(m) });
+    expect(out).toBe("hey @nobody there");
+    expect(warnings).toEqual(["warn: unresolved mention @nobody (left as text)"]);
+  });
+
+  test("handles multiple mentions in one message", async () => {
+    const out = await encodeMentions("xoxp-fake", "@alice and @t.matsuda19790127 and @nobody", "C_TEST");
+    expect(out).toBe("<@U_ALICE> and <@U_GUEST> and @nobody");
+  });
+
+  test("returns text unchanged when there are no @ mentions", async () => {
+    const out = await encodeMentions("xoxp-fake", "plain text, no mentions", "C_TEST");
+    expect(out).toBe("plain text, no mentions");
+  });
+
+  test("does not treat the @ inside an email address as a mention", async () => {
+    const out = await encodeMentions("xoxp-fake", "mail me at alice@example.com", "C_TEST");
+    expect(out).toBe("mail me at alice@example.com");
+  });
+
+  test("skips channel-member lookup when no channelId is given", async () => {
+    const warnings: string[] = [];
+    // Guest is only resolvable via channel members; without a channel it stays text.
+    const out = await encodeMentions("xoxp-fake", "@t.matsuda19790127 @alice", undefined, { warn: (m) => warnings.push(m) });
+    expect(out).toBe("@t.matsuda19790127 <@U_ALICE>");
+    expect(warnings).toEqual(["warn: unresolved mention @t.matsuda19790127 (left as text)"]);
+  });
+
+  test("default warn writes to stderr without throwing", async () => {
+    const orig = process.stderr.write.bind(process.stderr);
+    const captured: string[] = [];
+    process.stderr.write = ((chunk: unknown) => { captured.push(String(chunk)); return true; }) as typeof process.stderr.write;
+    try {
+      const out = await encodeMentions("xoxp-fake", "@ghost", "C_TEST");
+      expect(out).toBe("@ghost");
+    } finally {
+      process.stderr.write = orig;
+    }
+    expect(captured.join("")).toContain("unresolved mention @ghost");
   });
 });
 

@@ -122,6 +122,12 @@ const fixtures = {
     channel: { id: "C00000001", name: "channel-01" },
   },
 
+  "conversations.members__channel=C00000001&limit=200": {
+    ok: true,
+    members: ["U00000001", "U00000002"],
+    response_metadata: { next_cursor: "" },
+  },
+
   "drafts.list": { ok: true, drafts: [] },
   "drafts.create": { ok: true, draft: { id: "D00000001" } },
   "drafts.update": { ok: true },
@@ -446,6 +452,11 @@ describe("slack.ts", () => {
   test("listUsers returns all members", async () => {
     const resp = (await slack.listUsers(token)) as { members?: unknown[] };
     expect(resp.members).toHaveLength(2);
+  });
+
+  test("listConversationMembers returns member IDs", async () => {
+    const members = await slack.listConversationMembers(token, "C00000001");
+    expect(members).toEqual(["U00000001", "U00000002"]);
   });
 
   test("userInfo returns full user object", async () => {

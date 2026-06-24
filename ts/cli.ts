@@ -46,7 +46,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
-import { dayLabel, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
+import { dayLabel, encodeMentions, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -653,6 +653,7 @@ interface EditArgs {
   newText: string;
   code?: string;
   channelId?: string;
+  mentions?: boolean;
 }
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const { ref, ts } = splitRefTs(args.target);
@@ -675,18 +676,23 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
   const originalText = typeof original.text === "string" ? original.text : "";
 
-  const code = safetyCode(originalText, args.newText);
+  // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
+  const newText = args.mentions
+    ? await encodeMentions(token, args.newText, channelId)
+    : args.newText;
+
+  const code = safetyCode(originalText, newText);
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Original message -------------------------`,
       ...originalText.split("\n").map((l) => `  ${l}`),
       `--- Replacing with ---------------------------`,
-      ...args.newText.split("\n").map((l) => `  ${l}`),
+      ...newText.split("\n").map((l) => `  ${l}`),
       `--------------------------------────────────`,
     ]);
   }
 
-  const newTs = await editMessage(token, channelId, ts, args.newText);
+  const newTs = await editMessage(token, channelId, ts, newText);
   console.log(`✓ Edited (ts: ${newTs})`);
 }
 
@@ -741,6 +747,11 @@ interface SendArgs {
   userId?: string;
   asBot?: boolean;
   broadcast?: boolean;
+  mentions?: boolean;
+  // Token used to resolve @handle mentions (needs users:read). Defaults to the
+  // send token; set to the user token when sending --as-bot so the bot token
+  // need not carry users:read.
+  mentionToken?: string;
 }
 
 // Detect the silent-failure footgun: DMing yourself with your own user token.
@@ -777,6 +788,12 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   else if (args.userId) channelId = await openDm(token, args.userId);
   else channelId = await resolveChannel(token, ref);
 
+  // Convert @handle tokens to <@USERID> before hashing/sending so the safety
+  // gate covers exactly what will be posted. Unresolved handles stay as text.
+  const message = args.mentions
+    ? await encodeMentions(args.mentionToken ?? token, args.message, channelId)
+    : args.message;
+
   // Fetch last 1 message for context hash. Fail-soft: a bot token without
   // im:history (or channels:history) can still send — only the preview of the
   // prior message is lost, so default to empty rather than blocking the send.
@@ -800,7 +817,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 
   // Hash covers the destination too — a code minted for one channel/thread
   // cannot confirm a send to another.
-  const code = safetyCode(channelId, threadTs ?? "", lastText, args.message);
+  const code = safetyCode(channelId, threadTs ?? "", lastText, message);
 
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref);
@@ -812,11 +829,11 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
       `--- Sending ----------------------------------`,
       destLine,
-      `  Message: ${args.message}`,
+      `  Message: ${message}`,
       `--------------------------------────────────`,
     ]);
   }
-  const ts = await slackSend(token, channelId, args.message, threadTs, args.broadcast);
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts);
@@ -1246,13 +1263,20 @@ async function main(): Promise<void> {
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
-        .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." }),
+        .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
+        .option("mentions", { type: "boolean", default: false, describe: "Convert @handle tokens in the message to real <@USERID> mentions (resolves via users.list, then channel members for Slack Connect guests; unresolved handles stay as plain text)" }),
       async (argv) => {
         const args: SendArgs = { target: argv.target!, message: argv.message! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
         if (argv.broadcast) args.broadcast = true;
+        if (argv.mentions) {
+          args.mentions = true;
+          // Resolve mentions with the user token (has users:read) even when the
+          // message itself is sent via the bot token.
+          args.mentionToken = tok(argv as W);
+        }
         let sendToken: string;
         if (argv["as-bot"]) {
           const botToken = resolveBotToken();
@@ -1369,11 +1393,13 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
         .positional("newText", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
-        .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("mentions", { type: "boolean", default: false, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (unresolved handles stay as plain text)" }),
       async (argv) => {
         const args: EditArgs = { target: argv.target!, newText: argv.newText! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        if (argv.mentions) args.mentions = true;
         await cmdEdit(tok(argv as W), args);
       },
     )

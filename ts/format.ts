@@ -1,6 +1,95 @@
 // Text-formatting helpers: mention/date-markup resolution, day grouping.
 
-import { userName } from "./slack.ts";
+import { listConversationMembers, listUsers, userInfo, userName, type Json } from "./slack.ts";
+
+/** Match an `@handle` token at a word boundary, capturing the handle.
+ *  - The negative lookbehind keeps `@` inside emails (`a@b.com`) from matching.
+ *  - Each `.` must be followed by more handle chars, so a trailing sentence dot
+ *    (`thanks @taku.`) is left out of the capture. */
+function mentionRe(): RegExp {
+  return /(?<![A-Za-z0-9._@-])@([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/g;
+}
+
+/** Lowercase + strip hyphens/underscores/whitespace for loose handle matching. */
+function normHandle(s: string): string {
+  return s.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+function asRecord(v: Json | undefined): Record<string, Json> {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Json>) : {};
+}
+
+/** True when a user record matches `@handle` by name / real_name / display_name / email. */
+function userMatchesHandle(u: Record<string, Json>, handle: string): boolean {
+  const nh = normHandle(handle);
+  const profile = asRecord(u.profile);
+  for (const v of [u.name, u.real_name, profile.display_name, profile.real_name]) {
+    if (typeof v === "string" && v && normHandle(v) === nh) return true;
+  }
+  const email = typeof profile.email === "string" ? profile.email.toLowerCase() : "";
+  return email !== "" && email === handle.toLowerCase();
+}
+
+/**
+ * Rewrite `@handle` tokens in `text` to `<@USERID>` so Slack renders them as
+ * real mentions. Resolution order per handle:
+ *   1. workspace users.list (name / real_name / display_name / email)
+ *   2. the target channel's members (conversations.members → users.info) — this
+ *      reaches Slack Connect guests absent from the workspace users.list
+ * Handles that resolve to nothing are left as plain text (never destroyed) and
+ * reported via `warn`. Lookups are cached so each API call runs at most once.
+ */
+export async function encodeMentions(
+  token: string,
+  text: string,
+  channelId: string | undefined,
+  opts: { warn?: (msg: string) => void } = {},
+): Promise<string> {
+  const warn = opts.warn ?? ((m: string) => process.stderr.write(`${m}\n`));
+
+  const handles = new Set<string>();
+  for (const m of text.matchAll(mentionRe())) handles.add(m[1]!);
+  if (handles.size === 0) return text;
+
+  const resolved = new Map<string, string>(); // handle -> user ID
+
+  // Step 1: workspace users.list (fetched once).
+  const wsResp = (await listUsers(token)) as { members?: Json[] };
+  const wsUsers = (wsResp.members ?? []).map(asRecord);
+  const unresolved: string[] = [];
+  for (const handle of handles) {
+    const hit = wsUsers.find((u) => userMatchesHandle(u, handle));
+    const id = hit && typeof hit.id === "string" ? hit.id : "";
+    if (id) resolved.set(handle, id);
+    else unresolved.push(handle);
+  }
+
+  // Step 2: channel members (fetched once) — covers external/Connect guests.
+  if (unresolved.length > 0 && channelId) {
+    const memberIds = await listConversationMembers(token, channelId);
+    const infos: Record<string, Json>[] = [];
+    for (const uid of memberIds) {
+      const info = asRecord((await userInfo(token, uid)) as Json);
+      const u = asRecord(info.user);
+      if (typeof u.id !== "string") u.id = uid;
+      infos.push(u);
+    }
+    for (const handle of unresolved) {
+      const hit = infos.find((u) => userMatchesHandle(u, handle));
+      const id = hit && typeof hit.id === "string" ? hit.id : "";
+      if (id) resolved.set(handle, id);
+    }
+  }
+
+  for (const handle of handles) {
+    if (!resolved.has(handle)) warn(`warn: unresolved mention @${handle} (left as text)`);
+  }
+
+  return text.replace(mentionRe(), (full, handle: string) => {
+    const id = resolved.get(handle);
+    return id ? `<@${id}>` : full;
+  });
+}
 
 export async function resolveMentions(
   token: string,
