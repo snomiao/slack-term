@@ -314,6 +314,31 @@ export async function deleteMessage(
   await post(token, "chat.delete", { channel, ts });
 }
 
+// Create a public (or private) channel via conversations.create. Slack
+// lowercases the name and rejects spaces/most punctuation; the raw API error
+// (e.g. name_taken, invalid_name_specials) surfaces to the caller. Returns the
+// new channel's { id, name }.
+export async function createChannel(
+  token: string,
+  name: string,
+  isPrivate = false,
+): Promise<{ id: string; name: string }> {
+  const resp = (await post(token, "conversations.create", {
+    name,
+    is_private: isPrivate,
+  })) as { channel?: { id?: string; name?: string } };
+  return { id: resp.channel?.id ?? "", name: resp.channel?.name ?? name };
+}
+
+// Invite users to a channel via conversations.invite (up to ~1000 ids).
+export async function inviteToChannel(
+  token: string,
+  channel: string,
+  userIds: string[],
+): Promise<void> {
+  await post(token, "conversations.invite", { channel, users: userIds.join(",") });
+}
+
 export async function listConversations(token: string): Promise<Json> {
   const allChannels: Json[] = [];
   let cursor = "";
