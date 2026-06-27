@@ -17,6 +17,8 @@ import {
   authTest,
   authTestSession,
   conversationInfoSession,
+  createChannel,
+  inviteToChannel,
   createDraft,
   deleteDraft,
   updateDraft,
@@ -1126,6 +1128,56 @@ async function main(): Promise<void> {
             if (purpose) console.log(`purpose: ${purpose}`);
             if (memberCount) console.log(`members: ${memberCount}`);
             console.log(`private: ${ch.is_private === true}`);
+          },
+        )
+        .command(
+          ["create <name>", "new <name>"],
+          "Create a channel (confirm-hash safety gate)",
+          (y2) => y2
+            .positional("name", { type: "string", demandOption: true, describe: "Channel name (Slack lowercases it; no spaces)" })
+            .option("private", { type: "boolean", default: false, describe: "Create a private channel" })
+            .option("invite", { type: "string", array: true, default: [], describe: "Users to invite after creating (@handle or Uxxxx, repeatable)" })
+            .option("code", { type: "string", describe: "Safety hash to confirm create" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            // Slack lowercases and strips the leading #; normalize for preview + code.
+            const name = argv.name!.replace(/^#/, "").toLowerCase();
+            const isPrivate = argv.private === true;
+            const invites = (argv.invite as string[]).filter(Boolean);
+            const code = safetyCode(name, String(isPrivate), invites.join(","));
+            if (argv.code !== code) requireCode(argv.code, code, [
+              `--- Creating channel -------------------------`,
+              `  name:    ${isPrivate ? "🔒 " : "#"}${name}`,
+              `  private: ${isPrivate}`,
+              ...(invites.length ? [`  invite:  ${invites.join(", ")}`] : []),
+              `--------------------------------────────────`,
+            ]);
+            let created: { id: string; name: string };
+            try {
+              created = await createChannel(token, name, isPrivate);
+            } catch (e: unknown) {
+              console.error(e instanceof Error ? e.message : String(e));
+              process.exit(1);
+            }
+            console.log(`✓ Created ${isPrivate ? "🔒 " : "#"}${created.name}  (${created.id})`);
+            if (invites.length) {
+              const ids: string[] = [];
+              for (const ref of invites) {
+                try {
+                  ids.push(ref.startsWith("U") || ref.startsWith("W") ? ref : await resolveUserId(token, ref));
+                } catch (e: unknown) {
+                  console.error(`  ! could not resolve ${ref}: ${e instanceof Error ? e.message : String(e)}`);
+                }
+              }
+              if (ids.length) {
+                try {
+                  await inviteToChannel(token, created.id, ids);
+                  console.log(`✓ Invited ${ids.length} member${ids.length === 1 ? "" : "s"}`);
+                } catch (e: unknown) {
+                  console.error(`  ! invite failed: ${e instanceof Error ? e.message : String(e)}`);
+                }
+              }
+            }
           },
         )
         .demandCommand(1, "")
