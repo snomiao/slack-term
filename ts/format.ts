@@ -3,11 +3,13 @@
 import { listConversationMembers, listUsers, userInfo, userName, type Json } from "./slack.ts";
 
 /** Match an `@handle` token at a word boundary, capturing the handle.
- *  - The negative lookbehind keeps `@` inside emails (`a@b.com`) from matching.
+ *  - The negative lookbehind keeps `@` inside emails (`a@b.com`) from matching,
+ *    and the `<` keeps already-encoded mentions (`<@U0123>`) from being picked up
+ *    as a handle named after the user ID (Slack resolves those natively).
  *  - Each `.` must be followed by more handle chars, so a trailing sentence dot
  *    (`thanks @alice.`) is left out of the capture. */
 function mentionRe(): RegExp {
-  return /(?<![A-Za-z0-9._@-])@([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/g;
+  return /(?<![A-Za-z0-9._@<-])@([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/g;
 }
 
 /** Lowercase + strip hyphens/underscores/whitespace for loose handle matching. */
