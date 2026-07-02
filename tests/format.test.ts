@@ -181,6 +181,20 @@ describe("encodeMentions", () => {
     expect(out).toBe("<@U_ALICE> and <@U_GUEST> and @nobody");
   });
 
+  test("leaves an already-encoded <@USERID> mention untouched without warning", async () => {
+    const warnings: string[] = [];
+    const out = await encodeMentions("xoxp-fake", "<@U03HZFEUA5U> hi", "C_TEST", { warn: (m) => warnings.push(m) });
+    expect(out).toBe("<@U03HZFEUA5U> hi");
+    expect(warnings).toEqual([]);
+  });
+
+  test("mixes an encoded mention with a plain @handle", async () => {
+    const warnings: string[] = [];
+    const out = await encodeMentions("xoxp-fake", "<@U03HZFEUA5U> and @alice", "C_TEST", { warn: (m) => warnings.push(m) });
+    expect(out).toBe("<@U03HZFEUA5U> and <@U_ALICE>");
+    expect(warnings).toEqual([]);
+  });
+
   test("returns text unchanged when there are no @ mentions", async () => {
     const out = await encodeMentions("xoxp-fake", "plain text, no mentions", "C_TEST");
     expect(out).toBe("plain text, no mentions");
