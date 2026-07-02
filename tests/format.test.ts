@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
-import { encodeMentions, resolveMentions } from "../ts/format.ts";
+import { encodeMentions, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
 
 describe("resolveDateMarkup", () => {
   test("replaces <!date^...> with formatted date", () => {
@@ -224,6 +224,93 @@ describe("encodeMentions", () => {
       process.stderr.write = orig;
     }
     expect(captured.join("")).toContain("unresolved mention @ghost");
+  });
+});
+
+describe("findUntaggedMentions", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            { id: "U0YAMADA", name: "yamada", real_name: "山田 太郎", profile: { display_name: "Yamada" } },
+            { id: "U0KOBAYASHI", name: "kobayashi", real_name: "小林 花子", profile: { display_name: "小林" } },
+            // display_name empty → exercises the real_name fallback in displayNameOf.
+            { id: "U0SATO", name: "sato", real_name: "佐藤 次郎", profile: { display_name: "" } },
+            // display_name + real_name empty → exercises the name fallback.
+            { id: "U0KENJI", name: "kenji", real_name: "", profile: { display_name: "" } },
+            { id: "U0DAVE", name: "dave", real_name: "Dave Smith", profile: { display_name: "Dave" } },
+            // A bot whose name would match "工藤さん" — must be filtered out.
+            { id: "U0BOT", name: "kudo", real_name: "工藤 ボット", is_bot: true, profile: { display_name: "工藤" } },
+          ],
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("returns [] with no person-reference cue (no users.list fetch)", async () => {
+    expect(await findUntaggedMentions("xoxp-fake", "just a normal message, nothing to see")).toEqual([]);
+  });
+
+  test("flags untagged JP honorific names that match workspace members", async () => {
+    const out = await findUntaggedMentions("xoxp-fake", "山田さん 小林さん 資料お願いします");
+    expect(out).toEqual([
+      { surface: "山田さん", display: "Yamada", userId: "U0YAMADA" },
+      { surface: "小林さん", display: "小林", userId: "U0KOBAYASHI" },
+    ]);
+  });
+
+  test("rebuilds a clean surface from an over-captured run", async () => {
+    const out = await findUntaggedMentions("xoxp-fake", "ご確認ください山田さん");
+    expect(out).toEqual([{ surface: "山田さん", display: "Yamada", userId: "U0YAMADA" }]);
+  });
+
+  test("does not flag a member who is already <@tagged>", async () => {
+    expect(await findUntaggedMentions("xoxp-fake", "<@U0YAMADA> 山田さん よろしく")).toEqual([]);
+  });
+
+  test("does not flag honorific names that match no member (third-party / external)", async () => {
+    // 田中 is not a member (len-2 no-match); 林 is a single char (< 2, skipped).
+    expect(await findUntaggedMentions("xoxp-fake", "田中さんに確認します。林さんも")).toEqual([]);
+  });
+
+  test("falls back to real_name / name for display", async () => {
+    const out = await findUntaggedMentions("xoxp-fake", "佐藤さんと kenjiさん");
+    expect(out).toEqual([
+      { surface: "佐藤さん", display: "佐藤 次郎", userId: "U0SATO" },
+      // Latin refs report the bare name (honorific only anchors detection).
+      { surface: "kenji", display: "kenji", userId: "U0KENJI" },
+    ]);
+  });
+
+  test("flags an English 'Hi <Name>' greeting", async () => {
+    expect(await findUntaggedMentions("xoxp-fake", "Hi Dave, can you review this?")).toEqual([
+      { surface: "Dave", display: "Dave", userId: "U0DAVE" },
+    ]);
+  });
+
+  test("flags a leading '<Name>,' salutation", async () => {
+    expect(await findUntaggedMentions("xoxp-fake", "Dave,\nplease take a look")).toEqual([
+      { surface: "Dave", display: "Dave", userId: "U0DAVE" },
+    ]);
+  });
+
+  test("dedupes repeated references to the same member", async () => {
+    const out = await findUntaggedMentions("xoxp-fake", "山田さん、山田さんに伝えて");
+    expect(out).toEqual([{ surface: "山田さん", display: "Yamada", userId: "U0YAMADA" }]);
+  });
+
+  test("filters out bots even when the name matches", async () => {
+    expect(await findUntaggedMentions("xoxp-fake", "工藤さん おはよう")).toEqual([]);
   });
 });
 

@@ -93,6 +93,115 @@ export async function encodeMentions(
   });
 }
 
+// --- untagged-mention lint (warn-only) -------------------------------------
+// Flags names written as plain text that map to a known workspace member but
+// carry no <@USERID> tag in the same message — the footgun where "山田さん"
+// reads fine to a human but never actually notifies 山田. Never blocks a send.
+
+// Person-reference cues. Honorific *suffixes* follow a name (JP + ZH); greeting
+// *prefixes* precede one (EN, handled by regex below). Extend freely.
+const HONORIFIC_SUFFIXES = [
+  "さん", "さま", "様", "君", "くん", "ちゃん", "氏", "先生", "先輩", "殿",  // JP
+  "老师", "老師", "兄", "姐", "哥", "姐妹",                                  // ZH
+];
+
+const NAME_CHARS = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}A-Za-z0-9";
+
+function isCjk(s: string): boolean {
+  return /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(s);
+}
+
+type PersonRef = { ref: string; honorific: string };
+
+/** Extract candidate person-references from plain text. CJK matches by honorific
+ *  suffix; EN by "Dear/Hi/Hello/Hey <Name>" and a leading "<Name>," salutation.
+ *  Over-capture on the CJK side is harmless: a ref matching no member is dropped,
+ *  and the warning's surface is rebuilt from the matched member name. */
+function extractPersonRefs(text: string): PersonRef[] {
+  const refs: PersonRef[] = [];
+  const honRe = new RegExp(`([${NAME_CHARS}]{1,12})(${HONORIFIC_SUFFIXES.join("|")})`, "gu");
+  for (const m of text.matchAll(honRe)) refs.push({ ref: m[1]!, honorific: m[2]! });
+  for (const m of text.matchAll(/\b(?:dear|hi|hello|hey)\b[ \t]+([A-Z][A-Za-z'’-]{1,20})/gi)) {
+    refs.push({ ref: m[1]!, honorific: "" });
+  }
+  for (const m of text.matchAll(/(?:^|\n)[ \t]*([A-Z][A-Za-z'’-]{1,20}),/g)) {
+    refs.push({ ref: m[1]!, honorific: "" });
+  }
+  return refs;
+}
+
+/** Normalized name forms of a member (name / real_name / display_name plus their
+ *  whitespace-split parts), lowercased+stripped, length ≥ 2. */
+function nameFormsOf(u: Record<string, Json>): string[] {
+  const profile = asRecord(u.profile);
+  const forms = new Set<string>();
+  for (const v of [u.name, u.real_name, profile.display_name, profile.real_name]) {
+    if (typeof v !== "string" || !v) continue;
+    for (const piece of [v, ...v.split(/\s+/)]) {
+      const n = normHandle(piece);
+      if (n.length >= 2) forms.add(n);
+    }
+  }
+  return [...forms];
+}
+
+/** The member name-form that a ref matches, or undefined. CJK allows substring
+ *  either direction (tolerates over-capture / compound names); Latin requires an
+ *  exact form match to avoid "Ai" ⊂ "Aiden" style false positives. */
+function matchMemberForm(ref: string, forms: string[]): string | undefined {
+  const nr = normHandle(ref);
+  if (nr.length < 2) return undefined;
+  // Exact first so the surface rebuilds to the tightest name (e.g. an
+  // over-captured "ください山田" still reports "山田", not the whole run).
+  for (const f of forms) if (nr === f) return f;
+  if (isCjk(ref)) {
+    for (const f of forms) if (nr.includes(f) || f.includes(nr)) return f;
+  }
+  return undefined;
+}
+
+function displayNameOf(u: Record<string, Json>): string {
+  const profile = asRecord(u.profile);
+  const names = [profile.display_name, u.real_name, u.name].filter(
+    (v): v is string => typeof v === "string" && v !== "",
+  );
+  return names[0] ?? String(u.id ?? "?");
+}
+
+export type UntaggedMention = { surface: string; display: string; userId: string };
+
+/** Warn-only lint: person-references in `text` that resolve to a workspace
+ *  member but carry no <@USERID> tag. Returns [] cheaply (no users.list fetch)
+ *  when the text has no person-reference cue. */
+export async function findUntaggedMentions(token: string, text: string): Promise<UntaggedMention[]> {
+  const refs = extractPersonRefs(text);
+  if (refs.length === 0) return [];
+
+  const taggedIds = new Set<string>();
+  for (const m of text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g)) taggedIds.add(m[1]!);
+
+  const wsResp = (await listUsers(token)) as { members?: Json[] };
+  const pool = (wsResp.members ?? [])
+    .map(asRecord)
+    .filter((u) => u.deleted !== true && u.is_bot !== true && u.id !== "USLACKBOT")
+    .map((u) => ({ id: typeof u.id === "string" ? u.id : "", forms: nameFormsOf(u), display: displayNameOf(u) }))
+    .filter((p) => p.id !== "");
+
+  const out: UntaggedMention[] = [];
+  const seen = new Set<string>();
+  for (const { ref, honorific } of refs) {
+    for (const p of pool) {
+      const form = matchMemberForm(ref, p.forms);
+      if (!form) continue;
+      if (taggedIds.has(p.id) || seen.has(p.id)) break;
+      seen.add(p.id);
+      out.push({ surface: isCjk(ref) ? `${form}${honorific}` : ref, display: p.display, userId: p.id });
+      break;
+    }
+  }
+  return out;
+}
+
 export async function resolveMentions(
   token: string,
   text: string,

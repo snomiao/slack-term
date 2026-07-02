@@ -68,6 +68,11 @@ slack delete "<permalink>"
 
 # Bulk export a channel's history
 slack dump "#channel-name"
+
+# Download a file attachment (by file ID or file permalink) to disk
+slack download F0123ABC                      # → ./<filename>
+slack download F0123ABC ./invoices/          # into a directory
+slack download "https://acme.slack.com/files/U1/F0123ABC/invoice.pdf"
 ```
 
 Targets for `send` are `#channel`, `@user`, `#channel:<thread_ts>`, or a Slack URL —
@@ -75,12 +80,21 @@ a message permalink replies in that message's thread; a channel-only URL posts t
 The confirm preview prints the resolved destination (`→ ... — THREAD REPLY` or
 `→ ... — NEW top-level message`); verify it before re-running with `--code`.
 
+`send` also runs a **warn-only untagged-mention lint**: if the body names a workspace
+member in plain text (honorifics like `山田さん` / `張老师`, or `Hi Dave`) without a
+matching `<@USERID>` tag, it prints `⚠ possible untagged mention: …` alongside the
+confirm code. It never blocks — third-party/external references are expected to trip it.
+To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see below).
+
 ## Output formatting
 
 - DM channels render as `@DisplayName`; public channels as `#channel-name`.
 - `<@UID>` mention tokens are resolved to display names.
 - `<!date^...>` markup is rendered as human-readable dates.
 - Messages are grouped by day (Today / Yesterday / weekday).
+- Attachments show a `📎 <name> (<size>) [<file-id>]` line under the message; `--json`
+  adds a `files[]` array (`id`, `name`, `mimetype`, `size`, `url_private_download`,
+  `permalink`) only on messages that have attachments. Fetch one with `slack download <file-id>`.
 
 ## Getting a Slack token (first-time setup)
 
