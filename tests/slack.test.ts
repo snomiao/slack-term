@@ -25,6 +25,11 @@ const fixtures = {
     ],
   },
 
+  "files.info__file=F00000001": {
+    ok: true,
+    file: { id: "F00000001", name: "invoice.pdf", size: 12345, mimetype: "application/pdf", url_private_download: "https://files.slack.com/files-pri/T-F/download/invoice.pdf" },
+  },
+
   "search.messages__count=10&page=1&query=deploy&sort=timestamp&sort_dir=desc": {
     ok: true,
     messages: {
@@ -167,6 +172,24 @@ describe("slack.ts", () => {
       messages?: unknown[];
     };
     expect(resp.messages).toHaveLength(2);
+  });
+
+  test("filesInfo returns file metadata", async () => {
+    const resp = (await slack.filesInfo(token, "F00000001")) as {
+      file?: { name?: string; url_private_download?: string };
+    };
+    expect(resp.file?.name).toBe("invoice.pdf");
+    expect(resp.file?.url_private_download).toContain("files.slack.com");
+  });
+
+  test("createChannel returns the new channel id/name", async () => {
+    const ch = await slack.createChannel(token, "new-channel", true);
+    expect(ch.id).toBe("C00000042");
+    expect(ch.name).toBe("new-channel");
+  });
+
+  test("inviteToChannel posts conversations.invite", async () => {
+    await expect(slack.inviteToChannel(token, "C00000042", ["U00000002", "U00000003"])).resolves.toBeUndefined();
   });
 
   test("search returns matches", async () => {

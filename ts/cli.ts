@@ -24,6 +24,7 @@ import {
   updateDraft,
   editMessage,
   deleteMessage,
+  filesInfo,
   history,
   listConversations,
   listDrafts,
@@ -48,7 +49,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
-import { dayLabel, encodeMentions, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
+import { dayLabel, encodeMentions, findUntaggedMentions, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -186,14 +187,44 @@ async function formatMsgLine(
     })
     .filter(Boolean)
     .join(" ");
-  const tail = reactions ? `\n   ${reactions}` : "";
+  const attachTail = asArray(m.files)
+    .map(asRecord)
+    .map((f) => {
+      const name = typeof f.name === "string" ? f.name : typeof f.title === "string" ? f.title : "(file)";
+      const sz = typeof f.size === "number" ? `  (${fmtSize(f.size)})` : "";
+      const id = typeof f.id === "string" ? `  [${f.id}]` : "";
+      return `\n   📎 ${name}${sz}${id}`;
+    })
+    .join("");
+  const tail = (reactions ? `\n   ${reactions}` : "") + attachTail;
   return `${stamp}  ${who}:  ${body}${tail}`;
+}
+
+// Human-readable byte size, shared by upload/download/attachment rendering.
+function fmtSize(n: number): string {
+  return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+}
+
+// Slim a message's file attachments to the fields a script needs to detect and
+// fetch them: id (for `slack download`), name, size, mimetype, and the two URLs.
+function slimFiles(m: Record<string, Json>): Record<string, Json>[] {
+  return asArray(m.files)
+    .map(asRecord)
+    .map((f) => ({
+      id: f.id ?? null,
+      name: f.name ?? f.title ?? null,
+      mimetype: f.mimetype ?? null,
+      size: f.size ?? null,
+      url_private_download: f.url_private_download ?? f.url_private ?? null,
+      permalink: f.permalink ?? null,
+    }));
 }
 
 // Slim a raw message down to the fields a script actually needs. Keeps the
 // author's user ID (incl. external / Slack-Connect guests that never appear in
 // users.list) so callers can resolve mentions without scraping history by hand.
 function slimMsg(m: Record<string, Json>): Record<string, Json> {
+  const files = slimFiles(m);
   return {
     ts: m.ts ?? null,
     user: m.user ?? null,
@@ -201,6 +232,9 @@ function slimMsg(m: Record<string, Json>): Record<string, Json> {
     bot_id: m.bot_id ?? null,
     thread_ts: m.thread_ts ?? null,
     text: typeof m.text === "string" ? m.text : "",
+    // Present only when the message carries attachments, so scripts can reliably
+    // detect files without the key adding noise to every plain-text line.
+    ...(files.length > 0 ? { files } : {}),
   };
 }
 
@@ -796,6 +830,17 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     ? await encodeMentions(args.mentionToken ?? token, args.message, channelId)
     : args.message;
 
+  // Warn-only lint: names written as plain text that map to a known workspace
+  // member but aren't <@USERID>-tagged — they won't be notified. Never blocks;
+  // fail-soft (a missing users:read scope or API error must not stall a send).
+  try {
+    for (const u of await findUntaggedMentions(args.mentionToken ?? token, message)) {
+      console.error(`⚠ possible untagged mention: ${u.surface} — @${u.display} won't be notified (did you mean <@${u.userId}>?)`);
+    }
+  } catch {
+    // best-effort; ignore
+  }
+
   // Fetch last 1 message for context hash. Fail-soft: a bot token without
   // im:history (or channels:history) can still send — only the preview of the
   // prior message is lost, so default to empty rather than blocking the send.
@@ -988,10 +1033,6 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   else if (args.userId) channelId = await openDm(token, args.userId);
   else channelId = await resolveChannel(token, ref);
 
-  function fmtSize(n: number): string {
-    return n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`;
-  }
-
   const isBatch = args.filePaths.length > 1;
   const files = args.filePaths.map((fp) => {
     const filename = basename(fp);
@@ -1031,6 +1072,42 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
     console.log(`${prefix}✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
   }
+}
+
+// --- download <ref> [dest] — fetch an attachment's bytes to disk (read-only) ---
+// ref: a file ID (F…) or a Slack file permalink (…/files/<UID>/<FID>/<name>).
+function parseFileId(ref: string): string | undefined {
+  if (/^F[A-Z0-9]+$/i.test(ref)) return ref;
+  return ref.match(/\/files\/[A-Za-z0-9]+\/(F[A-Za-z0-9]+)/)?.[1];
+}
+
+async function cmdDownload(token: string, cookie: string | undefined, ref: string, dest?: string): Promise<void> {
+  const fileId = parseFileId(ref);
+  if (!fileId) {
+    throw new Error(
+      `Not a file ID or file permalink: ${ref}\n` +
+      `Expected F… or https://<ws>.slack.com/files/<UID>/<FID>/<name>`,
+    );
+  }
+  const info = asRecord((await filesInfo(token, fileId, cookie)) as Json);
+  const f = asRecord(info.file);
+  const name = typeof f.name === "string" ? f.name : typeof f.title === "string" ? f.title : fileId;
+  const url = typeof f.url_private_download === "string" ? f.url_private_download
+    : typeof f.url_private === "string" ? f.url_private : "";
+  if (!url) throw new Error(`files.info returned no download URL for ${fileId}`);
+
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (cookie) headers.Cookie = `d=${cookie}`;
+  const res = await fetch(url, { headers });
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} ${res.statusText}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+
+  const { statSync, existsSync } = await import("node:fs");
+  const { basename } = await import("node:path");
+  let outPath = dest ?? name;
+  if (dest && existsSync(dest) && statSync(dest).isDirectory()) outPath = join(dest, basename(name));
+  writeFileSync(outPath, buf);
+  console.log(`✓ Downloaded ${name} (${fmtSize(buf.length)}) → ${outPath}`);
 }
 
 // --- dispatch ---
@@ -1491,6 +1568,16 @@ async function main(): Promise<void> {
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
         await cmdUpload(tok(argv as W), args);
+      },
+    )
+    .command(
+      "download <ref> [dest]",
+      "Download a file attachment (by file ID or file permalink) to disk",
+      (y) => y
+        .positional("ref", { type: "string", demandOption: true, describe: "File ID (F…) or Slack file permalink" })
+        .positional("dest", { type: "string", describe: "Output path or directory (default: ./<filename>)" }),
+      async (argv) => {
+        await cmdDownload(tok(argv as W), ck(argv as W), argv.ref!, argv.dest);
       },
     )
     .command(

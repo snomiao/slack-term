@@ -121,6 +121,14 @@ export async function startMock(
           respond({ ok: true, channel: { id: "C00000099" } });
           return;
         }
+        if (method === "conversations.create") {
+          respond({ ok: true, channel: { id: "C00000042", name: "new-channel" } });
+          return;
+        }
+        if (method === "conversations.invite") {
+          respond({ ok: true, channel: { id: "C00000042" } });
+          return;
+        }
         if (method === "upload-slot") {
           res.statusCode = 200;
           res.end("uploaded");

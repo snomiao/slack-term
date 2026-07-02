@@ -181,6 +181,13 @@ export async function replies(
   return get(token, "conversations.replies", { channel, ts, limit: String(limit) });
 }
 
+// Metadata for a single uploaded file (files.info). Carries url_private_download,
+// which requires an Authorization: Bearer token (+ xoxd cookie for session tokens)
+// to actually fetch the bytes.
+export async function filesInfo(token: string, fileId: string, cookie?: string): Promise<Json> {
+  return get(token, "files.info", { file: fileId }, cookie);
+}
+
 export async function searchPage(
   token: string,
   query: string,
