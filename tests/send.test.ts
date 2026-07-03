@@ -22,10 +22,20 @@ const fixtures = {
     messages: [{ type: "message", user: "U00000002", text: "reply", ts: "1700000100.000200" }],
   },
 
-  // Thread-parent lookup for the confirm gate (and cmdDelete's original-message fetch)
+  // Thread-parent lookup for cmdDelete's original-message fetch (limit=1)
   "conversations.replies__channel=C00000001&limit=1&ts=1700000000.000100": {
     ok: true,
     messages: [{ type: "message", user: "U00000001", text: "hello world", ts: "1700000000.000100" }],
+  },
+
+  // Thread context for the send confirm gate (limit=100): parent + a prior reply,
+  // so the gate can preview the tail and the dup guard has something to match.
+  "conversations.replies__channel=C00000001&limit=100&ts=1700000000.000100": {
+    ok: true,
+    messages: [
+      { type: "message", user: "U00000001", text: "hello world", ts: "1700000000.000100" },
+      { type: "message", user: "U00000002", text: "a prior reply in the thread", ts: "1700000050.000300" },
+    ],
   },
 
   "users.info__user=U00000001": {
@@ -56,6 +66,9 @@ const fixtures = {
     channel: "C00000001",
     permalink: "https://acme.slack.com/archives/C00000001/p1700000000000100",
   },
+
+  "reactions.add": { ok: true },
+  "reactions.remove": { ok: true },
 };
 
 let mock: MockHandle;
@@ -146,6 +159,27 @@ describe("send targeting (CLI)", { timeout: 60_000 }, () => {
     expect(body.thread_ts).toBe("1700000000.000100");
   });
 
+  test("thread gate previews the thread tail, not the channel's last message", async () => {
+    const r = await run(["send", MSG_PERMALINK, "hi there"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("--- Recent messages in thread");
+    // the thread's own prior reply, not the channel-history "reply" fixture
+    expect(r.stdout).toContain("a prior reply in the thread");
+    expect(r.stdout).not.toContain("--- Last message in channel");
+  });
+
+  test("dup guard warns when the message closely matches an existing thread reply", async () => {
+    const r = await run(["send", MSG_PERMALINK, "a prior reply in the thread"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("possible duplicate");
+  });
+
+  test("no dup warning for a distinct thread reply", async () => {
+    const r = await run(["send", MSG_PERMALINK, "something completely unrelated here"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).not.toContain("possible duplicate");
+  });
+
   test("channel target: gate shows NEW top-level message", async () => {
     const r = await run(["send", "#channel-01", "hi there"]);
     expect(r.exitCode).toBe(1);
@@ -198,6 +232,42 @@ describe("delete (CLI)", { timeout: 60_000 }, () => {
     const r = await run(["delete", "#channel-01:1700000000.000100"]);
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toContain("hello world");
+  });
+});
+
+describe("react (CLI)", { timeout: 60_000 }, () => {
+  test("adds a reaction (no confirm gate) via reactions.add", async () => {
+    const before = mock.requests.length;
+    const r = await run(["react", MSG_PERMALINK, "white_check_mark"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("✓ Reacted :white_check_mark:");
+    const add = mock.requests.slice(before).find((q) => q.method === "reactions.add");
+    expect(add).toBeDefined();
+    expect(JSON.parse(add!.body)).toEqual({ channel: "C00000001", timestamp: "1700000000.000100", name: "white_check_mark" });
+  });
+
+  test("--remove calls reactions.remove", async () => {
+    const before = mock.requests.length;
+    const r = await run(["react", MSG_PERMALINK, "eyes", "--remove"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("✓ Removed :eyes:");
+    const rm = mock.requests.slice(before).find((q) => q.method === "reactions.remove");
+    expect(rm).toBeDefined();
+    expect(JSON.parse(rm!.body)).toEqual({ channel: "C00000001", timestamp: "1700000000.000100", name: "eyes" });
+  });
+
+  test("strips surrounding colons from the emoji shortcode", async () => {
+    const before = mock.requests.length;
+    const r = await run(["react", "#channel-01:1700000000.000100", ":hourglass:"]);
+    expect(r.exitCode).toBe(0);
+    const add = mock.requests.slice(before).find((q) => q.method === "reactions.add");
+    expect(JSON.parse(add!.body).name).toBe("hourglass");
+  });
+
+  test("target without ts is rejected", async () => {
+    const r = await run(["react", "#channel-01", "eyes"]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("must embed a message ts");
   });
 });
 

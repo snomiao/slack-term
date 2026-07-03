@@ -321,6 +321,28 @@ export async function deleteMessage(
   await post(token, "chat.delete", { channel, ts });
 }
 
+// Add or remove an emoji reaction on a message. `name` is the emoji shortcode
+// without colons (e.g. "eyes", "white_check_mark"). Slack's reactions.add
+// returns already_reacted when the reaction exists; reactions.remove returns
+// no_reaction when it doesn't — both surface to the caller as API errors.
+export async function reactionAdd(
+  token: string,
+  channel: string,
+  ts: string,
+  name: string,
+): Promise<void> {
+  await post(token, "reactions.add", { channel, timestamp: ts, name });
+}
+
+export async function reactionRemove(
+  token: string,
+  channel: string,
+  ts: string,
+  name: string,
+): Promise<void> {
+  await post(token, "reactions.remove", { channel, timestamp: ts, name });
+}
+
 // Create a public (or private) channel via conversations.create. Slack
 // lowercases the name and rejects spaces/most punctuation; the raw API error
 // (e.g. name_taken, invalid_name_specials) surfaces to the caller. Returns the

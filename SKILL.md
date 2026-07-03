@@ -66,6 +66,11 @@ slack send "https://acme.slack.com/archives/C0123456789/p1700000000000100" "Repl
 slack edit "<permalink>" "fixed wording"
 slack delete "<permalink>"
 
+# React instead of replying for a simple ack — keeps threads tidy (no confirm gate)
+# 👀 seen  ✅ done  ⏳ working on it
+slack react "#general:1700000000.000100" white_check_mark
+slack react "<permalink>" eyes --remove   # take it back
+
 # Bulk export a channel's history
 slack dump "#channel-name"
 
@@ -85,6 +90,15 @@ member in plain text (honorifics like `松田さん` / `張老师`, or `Hi Dave`
 matching `<@USERID>` tag, it prints `⚠ possible untagged mention: …` alongside the
 confirm code. It never blocks — third-party/external references are expected to trip it.
 To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see below).
+
+When the target is a **thread**, the confirm preview shows the thread's recent messages
+(not the channel's last message) and prints `⚠ possible duplicate: …` if your text is
+near-identical to an existing reply — so you can avoid re-posting something already said.
+
+**Etiquette:** prefer a `react` over a reply for simple acks (了解 → `eyes`, 完了 →
+`white_check_mark`, 処理中 → `hourglass`) so threads stay short; read the thread with
+`slack thread`/`slack read` before replying to avoid duplicates; consolidate multiple
+points into one message.
 
 ## Output formatting
 
@@ -109,6 +123,7 @@ Under **User Token Scopes**:
 - `channels:read`, `groups:read`, `im:read`, `mpim:read` — channel/DM listing
 - `users:read` — resolve display names
 - `chat:write` — send messages
+- `reactions:write` — add/remove reactions (`react`)
 
 ### Steps
 
