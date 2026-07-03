@@ -125,6 +125,11 @@ Under **User Token Scopes**:
 - `chat:write` — send messages
 - `reactions:write` — add/remove reactions (`react`)
 
+> **Token-type gotcha:** the CLI uses the **user token** (`xoxp-`) by default, so scopes
+> must be under **User Token Scopes**. Adding `reactions:write` only to *Bot* Token Scopes
+> makes `slack doctor` (which checks the bot token) pass while `slack react` still errors
+> `missing_scope`. Add it under User Token Scopes, then **reinstall** the app.
+
 ### Steps
 
 1. Go to https://api.slack.com/apps → **Create New App → From scratch**.
