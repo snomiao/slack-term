@@ -590,6 +590,46 @@ function safetyCode(...parts: string[]): string {
   return sha256Hex(parts.join("\n")).slice(0, 4);
 }
 
+// Slack API method → the token scope that grants it, for missing_scope guidance.
+const SCOPE_FOR_METHOD: Record<string, string> = {
+  "reactions.add": "reactions:write",
+  "reactions.remove": "reactions:write",
+  "chat.postMessage": "chat:write",
+  "chat.update": "chat:write",
+  "chat.delete": "chat:write",
+  "conversations.replies": "channels:history (or groups:history)",
+  "conversations.history": "channels:history (or groups:history)",
+};
+
+/** Turn a raw Slack API error into a single clean line of guidance, hiding the
+ *  yargs usage dump / stack trace that a thrown handler would otherwise print.
+ *  Recognizes the common reaction/message failure codes; falls back to the
+ *  original message for anything unmapped. */
+function friendlySlackError(e: unknown): string {
+  const raw = e instanceof Error ? e.message : String(e);
+  const m = raw.match(/Slack error on (\S+): (\w+)/);
+  if (!m) return raw;
+  const [, method, code] = m;
+  switch (code) {
+    case "missing_scope": {
+      const scope = SCOPE_FOR_METHOD[method!] ?? "the required";
+      return `Error: token lacks the ${scope} scope (needed for ${method}). Add it to your Slack App and reinstall to the workspace.`;
+    }
+    case "invalid_name":
+      return `Error: not a valid emoji shortcode — use the name without colons (e.g. white_check_mark), and make sure it exists in the workspace.`;
+    case "already_reacted":
+      return `Error: you've already added that reaction to the message.`;
+    case "no_reaction":
+      return `Error: that reaction isn't on the message — nothing to remove.`;
+    case "message_not_found":
+      return `Error: no message found at that timestamp in the channel — check the target ts/permalink.`;
+    case "channel_not_found":
+      return `Error: channel not found — check the target.`;
+    default:
+      return raw;
+  }
+}
+
 /** Dry-run gate: print context, print required --code=, exit 1.
  *  Call this when --code is absent or wrong. */
 function requireCode(provided: string | undefined, expected: string, contextLines: string[]): void {
@@ -1579,7 +1619,7 @@ async function main(): Promise<void> {
         try {
           await cmdSend(sendToken, args);
         } catch (e: unknown) {
-          console.error(e instanceof Error ? e.message : String(e));
+          console.error(friendlySlackError(e));
           process.exit(1);
         }
       },
@@ -1694,7 +1734,14 @@ async function main(): Promise<void> {
         const args: ReactArgs = { target: argv.target!, emoji: argv.emoji! };
         if (argv.remove) args.remove = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        await cmdReact(tok(argv as W), args);
+        // Print a clean one-line error instead of yargs' usage dump + stack when
+        // the reaction fails at runtime (missing_scope, invalid_name, etc.).
+        try {
+          await cmdReact(tok(argv as W), args);
+        } catch (e: unknown) {
+          console.error(friendlySlackError(e));
+          process.exit(1);
+        }
       },
     )
     .command(

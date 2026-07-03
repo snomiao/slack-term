@@ -128,6 +128,11 @@ Requires a Slack user token (`xoxp-...`) with the following scopes:
 - `channels:read`, `groups:read`, `im:read`, `mpim:read` — for channel listing
 - `users:read` — for resolving display names
 - `chat:write` — for sending messages
+- `reactions:write` — for `react` (add/remove reactions)
+
+> If you use a **bot token** (`xoxb-...`) for `react`/`send`, the same scope must be
+> granted to the Slack App. After adding a scope, **reinstall the app** to the
+> workspace for it to take effect — otherwise `react` fails with `missing_scope`.
 
 Set the token via environment variable:
 
