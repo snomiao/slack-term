@@ -24,6 +24,8 @@ import {
   updateDraft,
   editMessage,
   deleteMessage,
+  reactionAdd,
+  reactionRemove,
   filesInfo,
   history,
   listConversations,
@@ -661,26 +663,73 @@ async function destLabel(token: string, channelId: string, ref: string): Promise
   return name === channelId ? channelId : `${name} (${channelId})`;
 }
 
+/** One-line description of a single thread message for confirm gates:
+ *  "2026-06-11 08:05 @handle: head…". `headLen` bounds the text preview. */
+async function threadMsgLine(token: string, m: Record<string, Json>, headLen = 60): Promise<string> {
+  const author = typeof m.user === "string"
+    ? await userName(token, m.user)
+    : typeof m.username === "string"
+    ? m.username
+    : "?";
+  const head = (typeof m.text === "string" ? m.text : "").split("\n")[0] ?? "";
+  const headShort = head.length > headLen ? `${head.slice(0, headLen)}…` : head;
+  const ts = typeof m.ts === "string" ? m.ts : "";
+  const stamp = ts ? slackTsToIso(ts).slice(0, 16).replace("T", " ") : "";
+  return `${stamp} @${author}${headShort ? `: ${headShort}` : ""}`;
+}
+
 /** One-line thread-parent description for confirm gates: "2026-06-11 08:05 @handle: head…".
- *  Fail-soft: returns the raw ts if the parent cannot be fetched. */
-async function threadParentLine(token: string, channelId: string, threadTs: string): Promise<string> {
-  try {
-    const resp = (await replies(token, channelId, threadTs, 1)) as Record<string, Json>;
-    const msgs = asArray(resp.messages).map(asRecord);
-    const parent = msgs.find((m) => String(m.ts) === threadTs) ?? msgs[0];
-    if (!parent) return threadTs;
-    const author = typeof parent.user === "string"
-      ? await userName(token, parent.user)
-      : typeof parent.username === "string"
-      ? parent.username
-      : "?";
-    const head = (typeof parent.text === "string" ? parent.text : "").split("\n")[0] ?? "";
-    const headShort = head.length > 40 ? `${head.slice(0, 40)}…` : head;
-    const stamp = slackTsToIso(threadTs).slice(0, 16).replace("T", " ");
-    return `${stamp} @${author}${headShort ? `: ${headShort}` : ""}`;
-  } catch {
-    return threadTs;
+ *  Fail-soft: returns the raw ts if the parent cannot be found. */
+async function threadParentLine(token: string, threadTs: string, threadMsgs: Record<string, Json>[]): Promise<string> {
+  const parent = threadMsgs.find((m) => String(m.ts) === threadTs) ?? threadMsgs[0];
+  if (!parent) return threadTs;
+  return threadMsgLine(token, parent, 40);
+}
+
+/** Normalize a message for duplicate comparison: lowercase, collapse whitespace,
+ *  strip <@U…>/<#C…> markup and surrounding punctuation so cosmetic differences
+ *  (a trailing period, an added mention) don't hide a re-post. */
+function normalizeForDup(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/<[@#!][^>]+>/g, " ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Character-bigram Dice coefficient (0..1) over normalized text — robust to
+ *  minor edits, good at catching near-identical re-posts. Identical strings →1;
+ *  a shared word or two in otherwise different messages stays low. */
+function textSimilarity(a: string, b: string): number {
+  const na = normalizeForDup(a);
+  const nb = normalizeForDup(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const bigrams = (s: string): Map<string, number> => {
+    const m = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const g = s.slice(i, i + 2);
+      m.set(g, (m.get(g) ?? 0) + 1);
+    }
+    return m;
+  };
+  const ba = bigrams(na);
+  const bb = bigrams(nb);
+  if (ba.size === 0 || bb.size === 0) return 0;
+  let overlap = 0;
+  for (const [g, count] of ba) {
+    const other = bb.get(g);
+    if (other) overlap += Math.min(count, other);
   }
+  const total = sumCounts(ba) + sumCounts(bb);
+  return total === 0 ? 0 : (2 * overlap) / total;
+}
+
+function sumCounts(m: Map<string, number>): number {
+  let n = 0;
+  for (const v of m.values()) n += v;
+  return n;
 }
 
 // --- edit ---
@@ -774,6 +823,38 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
   console.log(`✓ Deleted (ts: ${ts})`);
 }
 
+// --- react ---
+interface ReactArgs {
+  target: string;
+  emoji: string;
+  remove?: boolean;
+  channelId?: string;
+}
+// Add (or --remove) an emoji reaction. No confirm gate: a reaction is trivial
+// and fully reversible (`--remove`), and the whole point is a lightweight ack
+// that doesn't grow the thread. The emoji is a shortcode without colons
+// (e.g. "eyes", "white_check_mark", "hourglass").
+async function cmdReact(token: string, args: ReactArgs): Promise<void> {
+  const { ref, ts } = splitRefTs(args.target);
+  if (!ts) {
+    console.error("Error: target must embed a message ts (e.g. #chan:2026-05-11T06:01:04.000100 or a Slack permalink URL)");
+    process.exit(2);
+  }
+  const emoji = args.emoji.replace(/^:|:$/g, "");
+
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else channelId = await resolveChannel(token, ref);
+
+  if (args.remove) {
+    await reactionRemove(token, channelId, ts, emoji);
+    console.log(`✓ Removed :${emoji}: (ts: ${ts})`);
+  } else {
+    await reactionAdd(token, channelId, ts, emoji);
+    console.log(`✓ Reacted :${emoji}: (ts: ${ts})`);
+  }
+}
+
 // --- send ---
 interface SendArgs {
   target: string;
@@ -841,25 +922,62 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // best-effort; ignore
   }
 
-  // Fetch last 1 message for context hash. Fail-soft: a bot token without
-  // im:history (or channels:history) can still send — only the preview of the
-  // prior message is lost, so default to empty rather than blocking the send.
+  // Gather context for the confirm gate. For a THREAD reply, pull the thread's
+  // own recent messages so the preview shows what's already been said there —
+  // this is what stops accidental duplicate replies (the channel's last message
+  // is irrelevant when you're deep in a thread). For a top-level send, fall back
+  // to the channel's last message. Fail-soft throughout: a bot token without
+  // history scope can still send; only the preview degrades.
   let lastText = "";
   let lastUser = "?";
-  try {
-    const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
-    const lastMsg = asArray(ctx.messages).map(asRecord)
-      .filter((m) => m.subtype === undefined || m.subtype === null)[0];
-    lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
-    // Resolve the author's user ID to a display name for the preview; fall back
-    // to the bot username, then the raw ID. userName() is fail-soft.
-    lastUser = typeof lastMsg?.user === "string"
-      ? await userName(token, lastMsg.user)
-      : typeof lastMsg?.username === "string"
-      ? lastMsg.username
-      : "?";
-  } catch {
-    // best-effort preview only
+  let threadMsgs: Record<string, Json>[] = [];
+  if (threadTs) {
+    try {
+      // Fetch a generous window and preview its tail. conversations.replies is
+      // oldest-first from the parent, so a very long thread's true tail may lie
+      // beyond this window — 100 covers essentially all real threads.
+      const resp = (await replies(token, channelId, threadTs, 100)) as Record<string, Json>;
+      threadMsgs = asArray(resp.messages).map(asRecord);
+      const lastMsg = threadMsgs[threadMsgs.length - 1];
+      // Bind the hash to the thread's most recent message: if someone replies
+      // between preview and confirm, the code invalidates and re-previews.
+      lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+    } catch {
+      // best-effort preview only
+    }
+  } else {
+    try {
+      const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
+      const lastMsg = asArray(ctx.messages).map(asRecord)
+        .filter((m) => m.subtype === undefined || m.subtype === null)[0];
+      lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+      // Resolve the author's user ID to a display name for the preview; fall back
+      // to the bot username, then the raw ID. userName() is fail-soft.
+      lastUser = typeof lastMsg?.user === "string"
+        ? await userName(token, lastMsg.user)
+        : typeof lastMsg?.username === "string"
+        ? lastMsg.username
+        : "?";
+    } catch {
+      // best-effort preview only
+    }
+  }
+
+  // Duplicate guard: if the outgoing message closely matches something already
+  // in the thread, warn (never block). Catches re-posting a reply you already
+  // sent. Threshold is deliberately high so only near-identical text trips it.
+  if (threadTs && threadMsgs.length) {
+    let best = { sim: 0, msg: null as Record<string, Json> | null };
+    for (const m of threadMsgs) {
+      const t = typeof m.text === "string" ? m.text : "";
+      if (!t) continue;
+      const sim = textSimilarity(message, t);
+      if (sim > best.sim) best = { sim, msg: m };
+    }
+    if (best.msg && best.sim >= 0.82) {
+      const pct = Math.round(best.sim * 100);
+      console.error(`⚠ possible duplicate: ${pct}% similar to an existing thread message — ${await threadMsgLine(token, best.msg)}`);
+    }
   }
 
   // Hash covers the destination too — a code minted for one channel/thread
@@ -868,17 +986,32 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref);
-    const destLine = threadTs
-      ? `  → ${dest} thread of ${await threadParentLine(token, channelId, threadTs)} — THREAD REPLY`
-      : `  → ${dest} — NEW top-level message`;
-    requireCode(args.code, code, [
-      `--- Last message in channel ------------------`,
-      `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
-      `--- Sending ----------------------------------`,
-      destLine,
-      `  Message: ${message}`,
-      `--------------------------------────────────`,
-    ]);
+    if (threadTs) {
+      const parentLine = await threadParentLine(token, threadTs, threadMsgs);
+      // Preview the tail of the thread (up to 3 most recent messages) so the
+      // sender can see what's already been said and avoid repeating it.
+      const recent = threadMsgs.slice(-3);
+      const recentLines = recent.length
+        ? await Promise.all(recent.map(async (m) => `  ${await threadMsgLine(token, m)}`))
+        : ["  (thread context unavailable)"];
+      requireCode(args.code, code, [
+        `--- Recent messages in thread ----------------`,
+        ...recentLines,
+        `--- Sending ----------------------------------`,
+        `  → ${dest} thread of ${parentLine} — THREAD REPLY`,
+        `  Message: ${message}`,
+        `--------------------------------────────────`,
+      ]);
+    } else {
+      requireCode(args.code, code, [
+        `--- Last message in channel ------------------`,
+        `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+        `--- Sending ----------------------------------`,
+        `  → ${dest} — NEW top-level message`,
+        `  Message: ${message}`,
+        `--------------------------------────────────`,
+      ]);
+    }
   }
   const ts = await slackSend(token, channelId, message, threadTs, args.broadcast);
   let permalink = "";
@@ -1547,6 +1680,21 @@ async function main(): Promise<void> {
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         await cmdDelete(tok(argv as W), args);
+      },
+    )
+    .command(
+      "react <target> <emoji>",
+      "Add (or --remove) an emoji reaction — a lightweight ack that doesn't grow the thread",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
+        .positional("emoji", { type: "string", demandOption: true, describe: "Emoji shortcode without colons (e.g. eyes, white_check_mark, hourglass)" })
+        .option("remove", { type: "boolean", default: false, describe: "Remove the reaction instead of adding it" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+      async (argv) => {
+        const args: ReactArgs = { target: argv.target!, emoji: argv.emoji! };
+        if (argv.remove) args.remove = true;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        await cmdReact(tok(argv as W), args);
       },
     )
     .command(

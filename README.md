@@ -13,6 +13,7 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 - **Search** — Full-text search across the workspace
 - **Send** — Send messages to channels, DMs, or threads with a confirm-hash safety gate (prevents accidental sends); targeting a message permalink replies in that message's thread
 - **Edit / Delete** — Rewrite or remove a sent message, guarded by the same confirm-hash gate
+- **React** — Add or remove an emoji reaction — a lightweight ack that doesn't grow the thread
 - **Dump** — Bulk-export channel history as markdown
 
 ### Output formatting
@@ -76,6 +77,11 @@ slack send "#general" "ping @ops on call" --no-mentions   # leave @ops as plain 
 # Edit or delete a sent message (same confirm-code gate)
 slack edit "<permalink>" "fixed wording"
 slack delete "<permalink>"
+
+# React instead of replying for a simple ack — keeps the thread tidy (no confirm gate)
+# 👀 seen  ✅ done  ⏳ working on it — target is the #chan:<ts> / permalink form
+slack react "#general:1700000000.000100" white_check_mark
+slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Bulk export channel history
 slack dump --days 7 --filter eng
