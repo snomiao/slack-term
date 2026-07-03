@@ -269,6 +269,38 @@ describe("react (CLI)", { timeout: 60_000 }, () => {
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain("must embed a message ts");
   });
+
+  test("missing_scope → one clean line, no yargs usage dump", async () => {
+    const m = await startMock({ inline: { "reactions.add": { ok: false, error: "missing_scope" } } });
+    try {
+      const r = await run(
+        ["react", "#channel-01:1700000000.000100", "white_check_mark", "--channel-id", "C00000001"],
+        { baseUrl: m.baseUrl },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("reactions:write");
+      // the yargs usage dump (Commands:/Positionals:/Options:) must NOT appear
+      expect(r.stderr).not.toContain("Positionals:");
+      expect(r.stdout).not.toContain("slack react <target>");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("invalid_name → friendly emoji guidance", async () => {
+    const m = await startMock({ inline: { "reactions.add": { ok: false, error: "invalid_name" } } });
+    try {
+      const r = await run(
+        ["react", "#channel-01:1700000000.000100", "notarealemoji", "--channel-id", "C00000001"],
+        { baseUrl: m.baseUrl },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("emoji shortcode");
+      expect(r.stderr).not.toContain("Positionals:");
+    } finally {
+      await m.stop();
+    }
+  });
 });
 
 // Bot-token DM path + scope/messaging diagnostics.
