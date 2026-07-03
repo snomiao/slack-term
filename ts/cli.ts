@@ -613,7 +613,10 @@ function friendlySlackError(e: unknown): string {
   switch (code) {
     case "missing_scope": {
       const scope = SCOPE_FOR_METHOD[method!] ?? "the required";
-      return `Error: token lacks the ${scope} scope (needed for ${method}). Add it to your Slack App and reinstall to the workspace.`;
+      // Note the token-type gotcha: the CLI uses the USER token (xoxp) by default,
+      // so the scope must be in "User Token Scopes" — adding it only to "Bot Token
+      // Scopes" fixes `--as-bot`/`doctor` but not the default path. Then reinstall.
+      return `Error: token lacks the ${scope} scope (needed for ${method}). Add it to your Slack App's User Token Scopes (or Bot Token Scopes if you use a bot token / --as-bot) — it must be on the token type the CLI actually uses — then reinstall to the workspace.`;
     }
     case "invalid_name":
       return `Error: not a valid emoji shortcode — use the name without colons (e.g. white_check_mark), and make sure it exists in the workspace.`;

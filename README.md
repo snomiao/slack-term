@@ -130,9 +130,12 @@ Requires a Slack user token (`xoxp-...`) with the following scopes:
 - `chat:write` — for sending messages
 - `reactions:write` — for `react` (add/remove reactions)
 
-> If you use a **bot token** (`xoxb-...`) for `react`/`send`, the same scope must be
-> granted to the Slack App. After adding a scope, **reinstall the app** to the
-> workspace for it to take effect — otherwise `react` fails with `missing_scope`.
+> Add each scope to the **token type the CLI actually uses**. The CLI defaults to the
+> **user token** (`xoxp-...`), so `reactions:write` must be under **User Token Scopes**.
+> Adding it only to **Bot Token Scopes** makes `slack doctor` (which checks the bot
+> token) look green while `slack react` still fails with `missing_scope` — the bot scope
+> only helps `--as-bot`/bot-token usage. After changing scopes, **reinstall the app** to
+> the workspace for it to take effect.
 
 Set the token via environment variable:
 
