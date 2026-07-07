@@ -271,16 +271,39 @@ export type ChromeCookieCandidate = {
   cookie: string;      // decrypted xoxd-...
 };
 
-/** Read the display name for a Chrome profile from its Preferences JSON. */
+/**
+ * Read a human-friendly display name (nickname + email) for a Chrome profile so a bare
+ * "Default"/"Profile N" is never shown alone.
+ *
+ * Prefers Chrome's `Local State` → profile.info_cache, which reliably carries both the
+ * nickname (`name`) and account email (`user_name`); the per-profile Preferences file
+ * often has neither. Only nickname + email are surfaced — the gaia real name is never read.
+ */
 function chromeProfileName(userDataDir: string, profileDir: string): string {
+  const label = (name: string, email: string): string => {
+    if (name && email) return `${name} (${email})`;
+    return name || email || profileDir;
+  };
+  try {
+    const localState = JSON.parse(
+      readFileSync(join(userDataDir, "Local State"), "utf8"),
+    ) as { profile?: { info_cache?: Record<string, { name?: string; user_name?: string }> } };
+    const info = localState.profile?.info_cache?.[profileDir];
+    if (info && (info.name || info.user_name)) {
+      return label(info.name ?? "", info.user_name ?? "");
+    }
+  } catch {
+    // fall through to Preferences
+  }
   try {
     const prefs = JSON.parse(
       readFileSync(join(userDataDir, profileDir, "Preferences"), "utf8"),
     ) as Record<string, unknown>;
     const profile = prefs.profile as Record<string, unknown> | undefined;
-    const name = (profile?.name as string | undefined) ?? "";
-    const email = (profile?.user_name as string | undefined) ?? "";
-    return email ? `${name} (${email})` : name || profileDir;
+    return label(
+      (profile?.name as string | undefined) ?? "",
+      (profile?.user_name as string | undefined) ?? "",
+    );
   } catch {
     return profileDir;
   }
