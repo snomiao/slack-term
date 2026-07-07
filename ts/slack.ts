@@ -47,6 +47,19 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
         `  slack workspace set-token <name> <xoxp-token>`,
       );
     }
+    // Bot tokens (xoxb-) can't act as a user: they lack user scopes (missing_scope) and can't
+    // open a DM with themselves (cannot_dm_bot, e.g. `tail @you`). Point at a user-token workspace.
+    if ((err === "missing_scope" || err === "cannot_dm_bot") && token.startsWith("xoxb-")) {
+      const why = err === "cannot_dm_bot"
+        ? `you're authenticated as a bot, so "@you" is the bot itself and it can't DM itself`
+        : `this bot token lacks the user scope this action needs`;
+      throw new Error(
+        `Slack error on ${method}: ${err} — ${why}.\n` +
+        `Tailing/DMing people and listing users need a user session, not a bot token.\n` +
+        `  Switch workspace:  slack workspace ls   then   slack workspace use <name>\n` +
+        `  Or import your Slack desktop session:  slack workspace import`,
+      );
+    }
     throw new Error(`Slack error on ${method}: ${err}`);
   }
   return body as Json;
