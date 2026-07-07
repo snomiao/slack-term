@@ -2,8 +2,8 @@
 // Profiles are stored in ~/.config/slack-cli/profiles.json.
 //
 // Workspace selection uses lockfiles:
-//   Local (cwd):  .slack-cli/workspace   — set with: slack workspace use <name>
-//   Global (home): ~/.slack-cli/workspace — set with: slack workspace use -g <name>
+//   Local (cwd):  .slack-cli/workspace   — set with: slack auth use <name>
+//   Global (home): ~/.slack-cli/workspace — set with: slack auth use -g <name>
 //
 // Token resolution order (no --workspace flag):
 //   1. process.env SLACK_TOKEN or SLACK_BOT_TOKEN
@@ -262,8 +262,8 @@ export function resolveToken(workspaceFlag?: string): string {
   if (names.length > 0) {
     throw new Error(
       `Workspace not selected (${names.join(", ")} available).\n` +
-      `  Select locally:  slack workspace use <name>          (writes .slack-cli/workspace)\n` +
-      `  Select globally: slack workspace use -g <name>       (writes ~/.slack-cli/workspace)`,
+      `  Select locally:  slack auth use <name>          (writes .slack-cli/workspace)\n` +
+      `  Select globally: slack auth use -g <name>       (writes ~/.slack-cli/workspace)`,
     );
   }
 

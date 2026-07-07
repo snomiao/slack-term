@@ -44,7 +44,7 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
       throw new Error(
         `Desktop app token (xoxc-) is not accepted by the public Slack API.\n` +
         `Replace it with an xoxp- user token:\n` +
-        `  slack workspace set-token <name> <xoxp-token>`,
+        `  slack auth token`,
       );
     }
     // Bot tokens (xoxb-) can't act as a user: they lack user scopes (missing_scope) and can't
@@ -56,8 +56,8 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
       throw new Error(
         `Slack error on ${method}: ${err} — ${why}.\n` +
         `Tailing/DMing people and listing users need a user session, not a bot token.\n` +
-        `  Switch workspace:  slack workspace ls   then   slack workspace use <name>\n` +
-        `  Or import your Slack desktop session:  slack workspace import`,
+        `  Switch workspace:  slack auth ls   then   slack auth use <name>\n` +
+        `  Or import your Slack desktop session:  slack auth login`,
       );
     }
     throw new Error(`Slack error on ${method}: ${err}`);
@@ -90,14 +90,13 @@ async function callSession(token: string, method: string, init: RequestInit, coo
     if ((err === "invalid_auth" || err === "not_authed") && !token.startsWith("xoxc-")) {
       throw new Error(
         `The draft API requires a desktop app session token (xoxc-).\n` +
-        `Import from Slack desktop:  slack workspace import`,
+        `Import from Slack desktop:  slack auth login`,
       );
     }
     if ((err === "invalid_auth" || err === "not_authed") && !cookie) {
       throw new Error(
         `drafts.list also requires the xoxd session cookie.\n` +
-        `Set it with:  slack workspace set-cookie <workspace-name> <xoxd-value>\n` +
-        `Get xoxd from browser: DevTools → Application → Cookies → slack.com → d`,
+        `Attach it with:  slack auth chrome   (macOS)   or   slack auth firefox`,
       );
     }
     throw new Error(`Slack error on ${method}: ${err}`);
