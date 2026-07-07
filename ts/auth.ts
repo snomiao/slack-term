@@ -263,6 +263,29 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
     }
   }
 
+  // A Chrome xoxd session cookie only augments a desktop *user* session token (xoxc-); it has
+  // no effect on a bot token (xoxb-). Attaching it to a bot profile silently does nothing and
+  // user-level actions (tail @user, DMs, users.list) still fail with missing_scope /
+  // cannot_dm_bot. Stop early with a pointer to a user-token workspace instead.
+  const selected = profiles.find((p) => p.name === profileName)!;
+  if (selected.profile.token.startsWith("xoxb-")) {
+    console.error(
+      `\nWorkspace "${profileName}" uses a bot token (xoxb-). A Chrome session cookie only\n` +
+      `augments a user session token (xoxc-) — it has no effect on a bot token, so user-level\n` +
+      `actions (tail @user, DMs, listing users) would still fail.`,
+    );
+    const userProfiles = profiles.filter(
+      (p) => p.profile.token.startsWith("xoxc-") || p.profile.token.startsWith("xoxp-"),
+    );
+    if (userProfiles.length > 0) {
+      console.error(`  Target a user-token workspace instead: ${userProfiles.map((p) => p.name).join(", ")}`);
+      console.error(`    slack auth chrome -w ${userProfiles[0]!.name}`);
+    } else {
+      console.error(`  Import your Slack desktop user session instead:  slack workspace import`);
+    }
+    process.exit(1);
+  }
+
   console.log("Scanning Chrome profiles for Slack session...");
   console.log("macOS may show a dialog asking for your login password — click Allow.");
 
