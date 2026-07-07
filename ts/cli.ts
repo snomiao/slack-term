@@ -1297,6 +1297,21 @@ async function main(): Promise<void> {
 
   await yargs(hideBin(process.argv))
     .scriptName("slack")
+    // A thrown handler error (e.g. a Slack API failure) is a runtime error, not a usage
+    // mistake — print just the clean one-line message, never the command's --help block or a
+    // minified source stack. Reserve the usage/help output for actual argument-parse errors
+    // (err is undefined then). showHelpOnFail(false) stops yargs' default help dump.
+    .showHelpOnFail(false)
+    .fail((msg, err, y) => {
+      if (err) {
+        console.error(err.message);
+        process.exit(1);
+      }
+      console.error(msg);
+      console.error("");
+      y.showHelp();
+      process.exit(1);
+    })
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
