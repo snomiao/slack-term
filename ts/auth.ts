@@ -281,7 +281,7 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
       console.error(`  Target a user-token workspace instead: ${userProfiles.map((p) => p.name).join(", ")}`);
       console.error(`    slack auth chrome -w ${userProfiles[0]!.name}`);
     } else {
-      console.error(`  Import your Slack desktop user session instead:  slack workspace import`);
+      console.error(`  Import your Slack desktop user session instead:  slack auth login`);
     }
     process.exit(1);
   }
