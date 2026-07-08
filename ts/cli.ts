@@ -962,11 +962,16 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // Prominent, always-visible warning for any @token that will NOT notify —
     // so a mistyped or unresolved name (esp. a Japanese display name) is caught
     // before it goes out as inert plain text. Shown even when --code is passed.
+    // The no-directory cause is shared by every token, so warn about it once.
+    let saidNoDir = false;
     for (const u of mentionReport.unresolved) {
       if (u.reason === "ambiguous") {
         console.error(`⚠ ${u.surface} matches multiple users — will send as plain text, NOT notified. Use <@USERID> or a unique name.`);
       } else if (u.reason === "no-directory") {
-        console.error(`⚠ cannot resolve @mentions — token lacks users:read; will send as plain text, NOT notified.`);
+        if (!saidNoDir) {
+          console.error(`⚠ cannot resolve @mentions — token lacks users:read; will send as plain text, NOT notified.`);
+          saidNoDir = true;
+        }
       } else {
         console.error(`⚠ ${u.surface} matched no user — will send as plain text, NOT notified.`);
       }

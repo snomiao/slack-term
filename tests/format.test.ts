@@ -269,6 +269,13 @@ describe("encodeMentions — Japanese display names", () => {
     expect(out).toBe("<@U_YAMADA>さん おはよう");
   });
 
+  test("does NOT tag a surname-only member when a hiragana given name follows (@山田たろう)", async () => {
+    // "た" is hiragana but not a curated particle → "山田" must not partial-match.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田たろう よろしく", undefined);
+    expect(rep.text).toBe("@山田たろう よろしく");
+    expect(rep.unresolved).toEqual([{ surface: "@山田たろう", reason: "no-match" }]);
+  });
+
   test("tags a name when a hiragana particle follows (@柏原大空は)", async () => {
     const out = await encodeMentions("xoxp-fake", "@柏原大空は 確認しました", undefined);
     expect(out).toBe("<@U_KASHIWA>は 確認しました");

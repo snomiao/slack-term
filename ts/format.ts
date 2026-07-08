@@ -66,19 +66,15 @@ function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
     if (!id) continue;
     for (const form of fullNameForms(u)) {
       if (!nr.startsWith(form)) continue;
-      // A prefix shorter than the whole run only counts when what follows is a
-      // grammatical continuation (a hiragana particle/okurigana) or a known
-      // honorific — NOT another kanji/katakana glyph, which is more likely the
-      // rest of a longer name. This stops "@山田太郎" from tagging a member
-      // whose name is just "山田", while still resolving "@柏原大空は" (particle)
-      // and "@田中様" (kanji honorific).
+      // A prefix shorter than the whole run only counts when what immediately
+      // follows is a CURATED particle or honorific — NOT any hiragana. Accepting
+      // arbitrary hiragana would still mis-tag a hiragana given name: "@山田たろう"
+      // would let a member named just "山田" match on the leading "た". So we
+      // resolve only on an exact full-name match, or a prefix followed by a known
+      // particle ("@柏原大空は") / honorific ("@山田さん", "@田中様"); anything else
+      // (more kanji/katakana, or a hiragana given name) stays literal.
       const rest = nr.slice(form.length);
-      if (rest.length > 0) {
-        const c = rest.codePointAt(0)!;
-        const isHiragana = c >= 0x3040 && c <= 0x309f;
-        const isHonorific = HONORIFIC_SUFFIXES.some((h) => rest.startsWith(h));
-        if (!isHiragana && !isHonorific) continue;
-      }
+      if (rest.length > 0 && !CJK_MENTION_CONTINUATIONS.some((s) => rest.startsWith(s))) continue;
       if (!best || form.length > best.matchLen) {
         best = { userId: id, matchLen: form.length, display: displayNameOf(u) };
         ambiguous = false;
@@ -233,6 +229,17 @@ export async function encodeMentions(
 const HONORIFIC_SUFFIXES = [
   "さん", "さま", "様", "君", "くん", "ちゃん", "氏", "先生", "先輩", "殿",  // JP
   "老师", "老師", "兄", "姐", "哥", "姐妹",                                  // ZH
+];
+
+// Particles that idiomatically follow a name right after an `@mention`. Together
+// with HONORIFIC_SUFFIXES these are the ONLY continuations that let a shorter
+// full-name prefix match in matchCjkRun — deliberately a curated set, not "any
+// hiragana", so a hiragana given name ("@山田たろう") can never let a surname-only
+// member "山田" mis-match. (Given names starting with a bare particle like の are
+// a rare residual we accept.)
+const CJK_MENTION_CONTINUATIONS = [
+  ...HONORIFIC_SUFFIXES,
+  "から", "まで", "は", "が", "を", "に", "へ", "と", "も", "で", "や", "の",
 ];
 
 const NAME_CHARS = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}A-Za-z0-9";
