@@ -607,13 +607,13 @@ export async function userName(token: string, userId: string): Promise<string> {
   }
 }
 
-export async function listUsers(token: string): Promise<Json> {
+export async function listUsers(token: string, cookie?: string): Promise<Json> {
   const allMembers: Json[] = [];
   let cursor = "";
   while (true) {
     const params: Record<string, string> = { limit: "200" };
     if (cursor) params.cursor = cursor;
-    const resp = (await get(token, "users.list", params)) as {
+    const resp = (await get(token, "users.list", params, cookie)) as {
       members?: Json[];
       response_metadata?: { next_cursor?: string };
     };
@@ -627,13 +627,13 @@ export async function listUsers(token: string): Promise<Json> {
 /** List the member user IDs of a channel/DM (paginated).
  *  Used by mention encoding to reach members — including Slack Connect guests —
  *  who do not appear in the workspace-wide users.list. */
-export async function listConversationMembers(token: string, channel: string): Promise<string[]> {
+export async function listConversationMembers(token: string, channel: string, cookie?: string): Promise<string[]> {
   const all: string[] = [];
   let cursor = "";
   while (true) {
     const params: Record<string, string> = { channel, limit: "200" };
     if (cursor) params.cursor = cursor;
-    const resp = (await get(token, "conversations.members", params)) as {
+    const resp = (await get(token, "conversations.members", params, cookie)) as {
       members?: string[];
       response_metadata?: { next_cursor?: string };
     };
@@ -696,8 +696,8 @@ export async function conversationInfoSession(token: string, channelId: string, 
   return postSession(token, "conversations.info", { channel: channelId }, cookie);
 }
 
-export async function userInfo(token: string, userId: string): Promise<Json> {
-  return get(token, "users.info", { user: userId });
+export async function userInfo(token: string, userId: string, cookie?: string): Promise<Json> {
+  return get(token, "users.info", { user: userId }, cookie);
 }
 
 export async function conversationInfo(token: string, channelId: string): Promise<Json> {

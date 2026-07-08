@@ -2,16 +2,6 @@
 
 import { listConversationMembers, listUsers, userInfo, userName, type Json } from "./slack.ts";
 
-/** Match an `@handle` token at a word boundary, capturing the handle.
- *  - The negative lookbehind keeps `@` inside emails (`a@b.com`) from matching,
- *    and the `<` keeps already-encoded mentions (`<@U0123>`) from being picked up
- *    as a handle named after the user ID (Slack resolves those natively).
- *  - Each `.` must be followed by more handle chars, so a trailing sentence dot
- *    (`thanks @alice.`) is left out of the capture. */
-function mentionRe(): RegExp {
-  return /(?<![A-Za-z0-9._@<-])@([A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*)/g;
-}
-
 /** Lowercase + strip hyphens/underscores/whitespace for loose handle matching. */
 function normHandle(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
@@ -32,65 +22,260 @@ function userMatchesHandle(u: Record<string, Json>, handle: string): boolean {
   return email !== "" && email === handle.toLowerCase();
 }
 
+export type MentionResolution = { surface: string; display: string; userId: string };
+// "no-match": the full intended lookup ran and the token genuinely matched no one.
+// "unavailable": a directory source needed to resolve it could not be consulted
+//   (users:read missing, or an API/connection error) — so we cannot claim it is a
+//   non-user. "ambiguous": several users matched exactly.
+export type UnresolvedMention = { surface: string; reason: "no-match" | "ambiguous" | "unavailable" };
+/** Structured outcome of mention encoding, so callers (the send confirm gate)
+ *  can preview exactly who will — and won't — be notified. */
+export type MentionEncodeResult = {
+  text: string;
+  resolved: MentionResolution[];
+  unresolved: UnresolvedMention[];
+};
+
+/** Full normalized name-forms of a member — the WHOLE display_name / real_name /
+ *  name, never split into parts. An explicit `@name` mention must match a full
+ *  name (`@鈴木陽菜`), never a bare surname fragment (`@鈴木`), which would be
+ *  ambiguous. Length ≥ 2. */
+function fullNameForms(u: Record<string, Json>): string[] {
+  const profile = asRecord(u.profile);
+  const forms = new Set<string>();
+  for (const v of [profile.display_name, u.real_name, u.name, profile.real_name]) {
+    if (typeof v === "string" && v) {
+      const n = normHandle(v);
+      if (n.length >= 2) forms.add(n);
+    }
+  }
+  return [...forms];
+}
+
+type CjkMatch = { userId: string; matchLen: number; display: string } | "ambiguous" | undefined;
+
+/** Directory match for a CJK `@名前` token. `run` is the raw token after `@`
+ *  (e.g. "鈴木陽菜さん"). A user resolves only when the token equals their full
+ *  name exactly, or equals their full name followed by exactly one trailing
+ *  honorific ("さん", "様", …) which is then left in the message text rather than
+ *  swallowed into the tag. Deliberately NOT a partial-prefix match: it would
+ *  mis-tag a surname-only member from a longer given name. `matchLen` is a RAW
+ *  index into `run` (the length of the name part), computed with raw string ops
+ *  so it stays correct even when the name contains characters `normHandle` drops
+ *  (spaces, `-`, `_`). Returns "ambiguous" when two distinct users tie on the
+ *  longest name match. */
+function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
+  const nr = normHandle(run);
+  let best: { userId: string; matchLen: number; formLen: number; display: string } | undefined;
+  let ambiguous = false;
+  for (const u of dir) {
+    const id = typeof u.id === "string" ? u.id : "";
+    if (!id) continue;
+    for (const form of fullNameForms(u)) {
+      // Raw length of the name part matching `form`, or -1. Either the whole token
+      // is the name (exact), or the token ends with exactly one honorific and the
+      // remainder (raw) normalizes to the name. No particle / partial-prefix match:
+      // Japanese cannot distinguish "山田は…" (particle) from "山田はるか" (given
+      // name), so under-tag rather than risk notifying the wrong person.
+      let rawLen = -1;
+      if (nr === form) {
+        rawLen = run.length;
+      } else {
+        for (const h of HONORIFIC_SUFFIXES) {
+          if (run.length > h.length && run.endsWith(h) && normHandle(run.slice(0, run.length - h.length)) === form) {
+            rawLen = run.length - h.length;
+            break;
+          }
+        }
+      }
+      if (rawLen < 0) continue;
+      if (!best || form.length > best.formLen) {
+        best = { userId: id, matchLen: rawLen, formLen: form.length, display: displayNameOf(u) };
+        ambiguous = false;
+      } else if (form.length === best.formLen && best.userId !== id) {
+        ambiguous = true;
+      }
+    }
+  }
+  if (!best) return undefined;
+  return ambiguous ? "ambiguous" : { userId: best.userId, matchLen: best.matchLen, display: best.display };
+}
+
 /**
- * Rewrite `@handle` tokens in `text` to `<@USERID>` so Slack renders them as
- * real mentions. Resolution order per handle:
- *   1. workspace users.list (name / real_name / display_name / email)
- *   2. the target channel's members (conversations.members → users.info) — this
- *      reaches Slack Connect guests absent from the workspace users.list
- * Handles that resolve to nothing are left as plain text (never destroyed) and
- * reported via `warn`. Lookups are cached so each API call runs at most once.
+ * Rewrite `@handle` / `@名前` tokens in `text` to `<@USERID>` so Slack renders
+ * them as real mentions, returning a structured report of what did and did not
+ * resolve. Two kinds of token are recognized:
+ *   - ASCII handles (`@alice`, `@t.yamada19850101`) — matched whole against
+ *     name / real_name / display_name / email.
+ *   - CJK names (`@鈴木陽菜`, `@鈴木陽菜さん`) — matched against the directory by
+ *     exact full name, or full name + one trailing honorific (kept outside the
+ *     tag). A display name written in kanji/kana (which the old ASCII-only regex
+ *     could not even capture) resolves; anything only partially matching stays
+ *     literal, to never notify the wrong person.
+ * Resolution order: (1) workspace users.list, then (2) the target channel's
+ * members (reaches Slack Connect guests absent from users.list). users.list is
+ * fail-soft: a lookup that cannot run (missing `users:read`, API error) yields an
+ * "unavailable" report entry instead of aborting the send, and is never reported
+ * as a definite "no-match". A name matching several users exactly is always left
+ * literal + reported "ambiguous" (fail-safe) — channel membership is never used
+ * to guess which duplicate was meant. Unresolved tokens are never destroyed.
  */
+export async function encodeMentionsDetailed(
+  token: string,
+  text: string,
+  channelId: string | undefined,
+  cookie?: string,
+): Promise<MentionEncodeResult> {
+  const NAME_RUN = `[${NAME_CHARS}ー]+`;
+  // One mention token = runs of name characters (any script) joined by internal
+  // `. _ -`, so a mixed-script / dotted handle is captured WHOLE: `@田中Taro`,
+  // `@佐藤.dev`, `@t.yamada19850101`, `@Alice-A`. It never ends on a separator,
+  // so a trailing sentence dot ("@alice.") is left out. Capturing the FULL token —
+  // never a script-boundary prefix — is what lets the fail-closed exact match
+  // refuse to tag "田中" from "@田中Taro". Lookbehind guard skips emails (`a@b`),
+  // already-encoded `<@U…>`, and doubled `@@`.
+  const TOKEN = `${NAME_RUN}(?:[._-]+${NAME_RUN})*`;
+  const tokenRe = new RegExp(`(?<![A-Za-z0-9._@<-])@(${TOKEN})`, "gu");
+
+  const tokens = new Set<string>();
+  for (const m of text.matchAll(tokenRe)) tokens.add(m[1]!);
+  if (tokens.size === 0) return { text, resolved: [], unresolved: [] };
+
+  type R =
+    | { status: "resolved"; userId: string; matchLen: number; display: string }
+    | { status: "ambiguous" }
+    | { status: "pending" };
+  const res = new Map<string, R>();
+  for (const t of tokens) res.set(t, { status: "pending" });
+
+  const resolveAgainst = (dir: Record<string, Json>[]): void => {
+    for (const t of tokens) {
+      if (res.get(t)!.status !== "pending") continue;
+      if (isCjk(t)) {
+        const m = matchCjkRun(t, dir);
+        if (m === "ambiguous") res.set(t, { status: "ambiguous" });
+        else if (m) res.set(t, { status: "resolved", userId: m.userId, matchLen: m.matchLen, display: m.display });
+      } else {
+        // Fail-closed like the CJK path: userMatchesHandle also matches loosely on
+        // real_name / display_name / email, so if two distinct users match the same
+        // handle, resolve nothing and report ambiguous rather than notify the wrong
+        // person on a first-match win.
+        const hits = dir.filter((u) => userMatchesHandle(u, t));
+        const ids = new Set(hits.map((u) => (typeof u.id === "string" ? u.id : "")).filter(Boolean));
+        if (ids.size === 1) {
+          const hit = hits.find((u) => typeof u.id === "string")!;
+          res.set(t, { status: "resolved", userId: hit.id as string, matchLen: t.length, display: displayNameOf(hit) });
+        } else if (ids.size > 1) {
+          res.set(t, { status: "ambiguous" });
+        }
+        // ids.size === 0 → stays pending; may still resolve via the channel pass.
+      }
+    }
+  };
+
+  // Track each directory source's availability separately, so a still-unresolved
+  // token is only reported as a genuine "no-match" when every source that could
+  // have resolved it was actually consulted. A failed source (missing users:read,
+  // API error) makes the outcome "unavailable" (indeterminate) — never a false
+  // "not a user". Fail-soft throughout: a lookup error must never abort the send.
+
+  // Step 1: workspace users.list.
+  let wsOk = false;
+  try {
+    const wsResp = (await listUsers(token, cookie)) as { members?: Json[] };
+    resolveAgainst((wsResp.members ?? []).map(asRecord));
+    wsOk = true;
+  } catch {
+    wsOk = false;
+  }
+
+  // Step 2: channel members (fetched once) — covers external/Connect guests.
+  // Only ever resolves tokens still "pending"; an ambiguous token stays ambiguous
+  // (fail-safe: we never let channel membership guess which duplicate was meant).
+  const stillPending = [...tokens].some((t) => res.get(t)!.status === "pending");
+  let channelAttempted = false;
+  let channelOk = true;
+  if (stillPending && channelId) {
+    channelAttempted = true;
+    try {
+      const memberIds = await listConversationMembers(token, channelId, cookie);
+      const infos: Record<string, Json>[] = [];
+      for (const uid of memberIds) {
+        const info = asRecord((await userInfo(token, uid, cookie)) as Json);
+        const u = asRecord(info.user);
+        if (typeof u.id !== "string") u.id = uid;
+        infos.push(u);
+      }
+      resolveAgainst(infos);
+    } catch {
+      // best-effort; a preview degrading is fine, aborting a send is not.
+      channelOk = false;
+    }
+  }
+
+  // A token is a true no-match only if the workspace list was read AND — when a
+  // channel exists to check for Connect guests — that channel was actually
+  // consulted and succeeded. If the channel lookup was skipped or failed we can't
+  // claim the token is a non-user, so it stays "unavailable" (indeterminate).
+  const searchedFully = wsOk && (channelId ? (channelAttempted && channelOk) : true);
+
+  const resolved: MentionResolution[] = [];
+  const unresolved: UnresolvedMention[] = [];
+  for (const t of tokens) {
+    const r = res.get(t)!;
+    if (r.status === "resolved") {
+      resolved.push({ surface: `@${t.slice(0, r.matchLen)}`, display: r.display, userId: r.userId });
+    } else if (r.status === "ambiguous") {
+      unresolved.push({ surface: `@${t}`, reason: "ambiguous" });
+    } else {
+      unresolved.push({ surface: `@${t}`, reason: searchedFully ? "no-match" : "unavailable" });
+    }
+  }
+
+  const out = text.replace(tokenRe, (full, tk: string) => {
+    const r = res.get(tk);
+    // For a CJK match, keep the un-matched tail (a trailing honorific) as text.
+    if (r && r.status === "resolved") return `<@${r.userId}>${tk.slice(r.matchLen)}`;
+    return full;
+  });
+
+  return { text: out, resolved, unresolved };
+}
+
+/** User-facing warning lines for mentions that will NOT notify, deduped (the
+ *  "unavailable" cause is shared, so it is reported once). The single source of
+ *  this wording — the encodeMentions wrapper and the CLI send/edit flows both use
+ *  it, so their messages never drift. Each caller adds its own prefix. */
+export function mentionWarnings(unresolved: UnresolvedMention[]): string[] {
+  const lines: string[] = [];
+  let saidUnavailable = false;
+  for (const u of unresolved) {
+    if (u.reason === "ambiguous") {
+      lines.push(`${u.surface} matches multiple people — not tagged, sent as plain text (use <@USERID> to tag)`);
+    } else if (u.reason === "unavailable") {
+      if (saidUnavailable) continue;
+      lines.push(`could not fetch the user list (users:read missing or an API/connection error) — @mentions not tagged, sent as plain text`);
+      saidUnavailable = true;
+    } else {
+      lines.push(`${u.surface} matched no one — not tagged, sent as plain text`);
+    }
+  }
+  return lines;
+}
+
+/** String-returning wrapper over {@link encodeMentionsDetailed}: rewrites tokens
+ *  and emits a `warn` line per token that stayed literal. Preserved for callers
+ *  (and tests) that only need the encoded text. */
 export async function encodeMentions(
   token: string,
   text: string,
   channelId: string | undefined,
-  opts: { warn?: (msg: string) => void } = {},
+  opts: { warn?: (msg: string) => void; cookie?: string } = {},
 ): Promise<string> {
   const warn = opts.warn ?? ((m: string) => process.stderr.write(`${m}\n`));
-
-  const handles = new Set<string>();
-  for (const m of text.matchAll(mentionRe())) handles.add(m[1]!);
-  if (handles.size === 0) return text;
-
-  const resolved = new Map<string, string>(); // handle -> user ID
-
-  // Step 1: workspace users.list (fetched once).
-  const wsResp = (await listUsers(token)) as { members?: Json[] };
-  const wsUsers = (wsResp.members ?? []).map(asRecord);
-  const unresolved: string[] = [];
-  for (const handle of handles) {
-    const hit = wsUsers.find((u) => userMatchesHandle(u, handle));
-    const id = hit && typeof hit.id === "string" ? hit.id : "";
-    if (id) resolved.set(handle, id);
-    else unresolved.push(handle);
-  }
-
-  // Step 2: channel members (fetched once) — covers external/Connect guests.
-  if (unresolved.length > 0 && channelId) {
-    const memberIds = await listConversationMembers(token, channelId);
-    const infos: Record<string, Json>[] = [];
-    for (const uid of memberIds) {
-      const info = asRecord((await userInfo(token, uid)) as Json);
-      const u = asRecord(info.user);
-      if (typeof u.id !== "string") u.id = uid;
-      infos.push(u);
-    }
-    for (const handle of unresolved) {
-      const hit = infos.find((u) => userMatchesHandle(u, handle));
-      const id = hit && typeof hit.id === "string" ? hit.id : "";
-      if (id) resolved.set(handle, id);
-    }
-  }
-
-  for (const handle of handles) {
-    if (!resolved.has(handle)) warn(`warn: unresolved mention @${handle} (left as text)`);
-  }
-
-  return text.replace(mentionRe(), (full, handle: string) => {
-    const id = resolved.get(handle);
-    return id ? `<@${id}>` : full;
-  });
+  const rep = await encodeMentionsDetailed(token, text, channelId, opts.cookie);
+  for (const line of mentionWarnings(rep.unresolved)) warn(`warn: ${line}`);
+  return rep.text;
 }
 
 // --- untagged-mention lint (warn-only) -------------------------------------
@@ -173,14 +358,14 @@ export type UntaggedMention = { surface: string; display: string; userId: string
 /** Warn-only lint: person-references in `text` that resolve to a workspace
  *  member but carry no <@USERID> tag. Returns [] cheaply (no users.list fetch)
  *  when the text has no person-reference cue. */
-export async function findUntaggedMentions(token: string, text: string): Promise<UntaggedMention[]> {
+export async function findUntaggedMentions(token: string, text: string, cookie?: string): Promise<UntaggedMention[]> {
   const refs = extractPersonRefs(text);
   if (refs.length === 0) return [];
 
   const taggedIds = new Set<string>();
   for (const m of text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]*)?>/g)) taggedIds.add(m[1]!);
 
-  const wsResp = (await listUsers(token)) as { members?: Json[] };
+  const wsResp = (await listUsers(token, cookie)) as { members?: Json[] };
   const pool = (wsResp.members ?? [])
     .map(asRecord)
     .filter((u) => u.deleted !== true && u.is_bot !== true && u.id !== "USLACKBOT")

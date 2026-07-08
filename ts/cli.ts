@@ -51,7 +51,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
-import { dayLabel, encodeMentions, findUntaggedMentions, formatYmdHm, resolveDateMarkup, resolveMentions } from "./format.ts";
+import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -590,6 +590,23 @@ function safetyCode(...parts: string[]): string {
   return sha256Hex(parts.join("\n")).slice(0, 4);
 }
 
+/** Strip ANSI escape sequences and control characters before drawing text the
+ *  terminal treats as trusted. Slack lets any user pick their own display name,
+ *  so an attacker could embed color/cursor codes; neutralize them here. */
+function stripTerminalControls(s: string): string {
+  return s
+    // CSI sequences (colors, cursor moves, …)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
+    // any remaining control chars, including a lone ESC and C1 range
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    // Unicode bidi controls (marks, embeddings, overrides, isolates) — a crafted
+    // display name could use these to spoof or reorder the rendered line.
+    // ALM, LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI.
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
+}
+
 // Slack API method → the token scope that grants it, for missing_scope guidance.
 const SCOPE_FOR_METHOD: Record<string, string> = {
   "reactions.add": "reactions:write",
@@ -912,6 +929,9 @@ interface SendArgs {
   // send token; set to the user token when sending --as-bot so the bot token
   // need not carry users:read.
   mentionToken?: string;
+  // Session cookie (xoxd) for the mention token — required for an xoxc- user
+  // token to call users.list on the public API (it is rejected without it).
+  mentionCookie?: string;
 }
 
 // Detect the silent-failure footgun: DMing yourself with your own user token.
@@ -948,21 +968,48 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   else if (args.userId) channelId = await openDm(token, args.userId);
   else channelId = await resolveChannel(token, ref);
 
-  // Convert @handle tokens to <@USERID> before hashing/sending so the safety
-  // gate covers exactly what will be posted. Unresolved handles stay as text.
-  const message = args.mentions
-    ? await encodeMentions(args.mentionToken ?? token, args.message, channelId)
-    : args.message;
+  // Convert @handle / @名前 tokens to <@USERID> before hashing/sending so the
+  // safety gate covers exactly what will be posted. Unresolved tokens stay as
+  // text. The detailed report drives the confirm-gate mention preview below.
+  let message = args.message;
+  let mentionReport: MentionEncodeResult | null = null;
+  if (args.mentions) {
+    mentionReport = await encodeMentionsDetailed(args.mentionToken ?? token, args.message, channelId, args.mentionCookie);
+    message = mentionReport.text;
+    // Prominent, always-visible warning for any @token that will NOT notify —
+    // so a mistyped or unresolved name (esp. a Japanese display name) is caught
+    // before it goes out as inert plain text. Shown even when --code is passed.
+    // Wording is shared with the library wrapper via mentionWarnings(). Strip
+    // control chars — the surfaces embed Slack-controlled display text.
+    for (const line of mentionWarnings(mentionReport.unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
+  }
 
-  // Warn-only lint: names written as plain text that map to a known workspace
-  // member but aren't <@USERID>-tagged — they won't be notified. Never blocks;
-  // fail-soft (a missing users:read scope or API error must not stall a send).
+  // Warn-only lint: names written as plain text (no leading @) that map to a
+  // known workspace member but aren't <@USERID>-tagged — they won't be notified.
+  // Never blocks; fail-soft (a missing users:read scope or API error must not
+  // stall a send).
   try {
-    for (const u of await findUntaggedMentions(args.mentionToken ?? token, message)) {
-      console.error(`⚠ possible untagged mention: ${u.surface} — @${u.display} won't be notified (did you mean <@${u.userId}>?)`);
+    for (const u of await findUntaggedMentions(args.mentionToken ?? token, message, args.mentionCookie)) {
+      // u.surface / u.display carry Slack-controlled display text — strip control chars.
+      console.error(`⚠ possible untagged mention: ${stripTerminalControls(u.surface)} — @${stripTerminalControls(u.display)} won't be notified (did you mean <@${u.userId}>?)`);
     }
   } catch {
     // best-effort; ignore
+  }
+
+  // Confirm-gate mention preview: exactly who resolves (→ notified) and who
+  // stays literal. Inserted into the dry-run block so the sender eyeballs the
+  // tagging before committing with --code.
+  const mentionLines: string[] = [];
+  if (mentionReport && (mentionReport.resolved.length > 0 || mentionReport.unresolved.length > 0)) {
+    mentionLines.push(`--- Mentions ---------------------------------`);
+    for (const r of mentionReport.resolved) {
+      mentionLines.push(`  ✓ ${stripTerminalControls(r.surface)} → @${stripTerminalControls(r.display)} (${r.userId}) — will notify`);
+    }
+    for (const u of mentionReport.unresolved) {
+      const why = u.reason === "ambiguous" ? "ambiguous" : u.reason === "unavailable" ? "lookup unavailable" : "no match";
+      mentionLines.push(`  ⚠ ${stripTerminalControls(u.surface)} — plain text, NOT notified (${why})`);
+    }
   }
 
   // Gather context for the confirm gate. For a THREAD reply, pull the thread's
@@ -1040,6 +1087,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       requireCode(args.code, code, [
         `--- Recent messages in thread ----------------`,
         ...recentLines,
+        ...mentionLines,
         `--- Sending ----------------------------------`,
         `  → ${dest} thread of ${parentLine} — THREAD REPLY`,
         `  Message: ${message}`,
@@ -1049,6 +1097,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       requireCode(args.code, code, [
         `--- Last message in channel ------------------`,
         `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+        ...mentionLines,
         `--- Sending ----------------------------------`,
         `  → ${dest} — NEW top-level message`,
         `  Message: ${message}`,
@@ -1597,8 +1646,11 @@ async function main(): Promise<void> {
         if (argv.mentions !== false) {
           args.mentions = true;
           // Resolve mentions with the user token (has users:read) even when the
-          // message itself is sent via the bot token.
+          // message itself is sent via the bot token. Pass its cookie too so an
+          // xoxc- desktop token can reach users.list (rejected without the cookie).
           args.mentionToken = tok(argv as W);
+          const mc = ck(argv as W);
+          if (mc) args.mentionCookie = mc;
         }
         let sendToken: string;
         if (argv["as-bot"]) {

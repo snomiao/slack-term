@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
-import { encodeMentions, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
+import { encodeMentions, encodeMentionsDetailed, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
 
 describe("resolveDateMarkup", () => {
   test("replaces <!date^...> with formatted date", () => {
@@ -173,7 +173,7 @@ describe("encodeMentions", () => {
     const warnings: string[] = [];
     const out = await encodeMentions("xoxp-fake", "hey @nobody there", "C_TEST", { warn: (m) => warnings.push(m) });
     expect(out).toBe("hey @nobody there");
-    expect(warnings).toEqual(["warn: unresolved mention @nobody (left as text)"]);
+    expect(warnings).toEqual(["warn: @nobody matched no one — not tagged, sent as plain text"]);
   });
 
   test("handles multiple mentions in one message", async () => {
@@ -210,7 +210,7 @@ describe("encodeMentions", () => {
     // Guest is only resolvable via channel members; without a channel it stays text.
     const out = await encodeMentions("xoxp-fake", "@t.yamada19850101 @alice", undefined, { warn: (m) => warnings.push(m) });
     expect(out).toBe("@t.yamada19850101 <@U_ALICE>");
-    expect(warnings).toEqual(["warn: unresolved mention @t.yamada19850101 (left as text)"]);
+    expect(warnings).toEqual(["warn: @t.yamada19850101 matched no one — not tagged, sent as plain text"]);
   });
 
   test("default warn writes to stderr without throwing", async () => {
@@ -223,7 +223,258 @@ describe("encodeMentions", () => {
     } finally {
       process.stderr.write = orig;
     }
-    expect(captured.join("")).toContain("unresolved mention @ghost");
+    expect(captured.join("")).toContain("@ghost matched no one");
+  });
+});
+
+describe("encodeMentions — Japanese display names", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            { id: "U_KASHIWA", name: "h.suzuki", real_name: "鈴木 陽菜", profile: { display_name: "鈴木陽菜" } },
+            { id: "U_TARO", name: "tanaka.taro", real_name: "田中 太郎", profile: { display_name: "田中太郎" } },
+            // Two members whose full name is exactly 田中 → an @田中 mention is ambiguous.
+            { id: "U_TANAKA1", name: "tanaka1", real_name: "田中", profile: { display_name: "田中" } },
+            { id: "U_TANAKA2", name: "tanaka2", real_name: "田中", profile: { display_name: "田中" } },
+            { id: "U_ALICE", name: "alice", real_name: "Alice Anderson", profile: { display_name: "Alice A" } },
+            // Surname-only display name — the over-match footgun: "@山田太郎" must NOT tag this member.
+            { id: "U_YAMADA", name: "yamada", real_name: "山田", profile: { display_name: "山田" } },
+            // Mixed script (kanji + latin) display name — full-token capture must resolve it whole.
+            { id: "U_MIX", name: "mix", real_name: "山田Taro", profile: { display_name: "山田Taro" } },
+          ],
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("does NOT tag a surname-only member when a longer name follows (@山田太郎)", async () => {
+    // "太郎" is more kanji, not a particle/honorific → the "山田" prefix must not match.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田太郎 よろしく", undefined);
+    expect(rep.text).toBe("@山田太郎 よろしく");
+    expect(rep.resolved).toEqual([]);
+    expect(rep.unresolved).toEqual([{ surface: "@山田太郎", reason: "no-match" }]);
+  });
+
+  test("tags a surname-only member when a honorific follows (@山田さん)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@山田さん おはよう", undefined);
+    expect(out).toBe("<@U_YAMADA>さん おはよう");
+  });
+
+  test.each([
+    "@山田たろう よろしく",     // hiragana given name
+    "@山田はるか お願い",       // given name starting with the particle は
+    "@山田のぞみ です",         // ...の
+    "@山田もも さん",           // ...も
+    "@山田はな へ",             // ...は
+  ])("does NOT partial-match a surname-only member (%s)", async (input) => {
+    // A sub-name prefix must never tag: given names are indistinguishable from
+    // name+particle on the surface, so under-tag rather than notify the wrong 山田.
+    const rep = await encodeMentionsDetailed("xoxp-fake", input, undefined);
+    expect(rep.text).toBe(input);
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("does NOT tag on a bare particle continuation (@鈴木陽菜は → literal)", async () => {
+    // "は" could be a particle OR the start of a given name → not resolvable.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@鈴木陽菜は 確認しました", undefined);
+    expect(rep.text).toBe("@鈴木陽菜は 確認しました");
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("captures a mixed-script name whole and resolves it (@山田Taro)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@山田Taro hi", undefined);
+    expect(out).toBe("<@U_MIX> hi");
+  });
+
+  test("does NOT partial-capture across a separator into a surname (@山田.dev)", async () => {
+    // Token is "山田.dev" (full), which matches no one — must NOT fall back to "山田".
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田.dev ping", undefined);
+    expect(rep.text).toBe("@山田.dev ping");
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("does NOT partial-capture a mixed-script name into a surname (@田中Taro)", async () => {
+    // "田中Taro" is nobody; must not tag the ambiguous "田中" members.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中Taro です", undefined);
+    expect(rep.text).toBe("@田中Taro です");
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("slices the honorific by RAW length when the name has a hyphen (@山田-Taroさん)", async () => {
+    // normHandle drops the "-", so a normalized-length slice would mangle the tail;
+    // the raw-length slice must leave exactly "さん".
+    const out = await encodeMentions("xoxp-fake", "@山田-Taroさん 確認", undefined);
+    expect(out).toBe("<@U_MIX>さん 確認");
+  });
+
+  test("resolves a kanji display name written as @名前", async () => {
+    const out = await encodeMentions("xoxp-fake", "@鈴木陽菜 資料お願いします", undefined);
+    expect(out).toBe("<@U_KASHIWA> 資料お願いします");
+  });
+
+  test("leaves a trailing honorific outside the tag (@名前さん)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@鈴木陽菜さん 確認お願いします", undefined);
+    expect(out).toBe("<@U_KASHIWA>さん 確認お願いします");
+  });
+
+  test("longest-match beats a shorter ambiguous prefix (@田中太郎)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@田中太郎 よろしく", undefined);
+    expect(out).toBe("<@U_TARO> よろしく");
+  });
+
+  test("leaves an ambiguous name literal and reports it", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中 です", undefined);
+    expect(rep.text).toBe("@田中 です");
+    expect(rep.unresolved).toEqual([{ surface: "@田中", reason: "ambiguous" }]);
+  });
+
+  test("warns on an ambiguous name via the string wrapper", async () => {
+    const warnings: string[] = [];
+    await encodeMentions("xoxp-fake", "@田中 です", undefined, { warn: (m) => warnings.push(m) });
+    expect(warnings).toEqual(["warn: @田中 matches multiple people — not tagged, sent as plain text (use <@USERID> to tag)"]);
+  });
+
+  test("an ambiguous name stays literal even with a channel (never disambiguated by membership)", async () => {
+    // Fail-safe: channel membership must not be used to guess which duplicate was
+    // meant. No conversations.members mock is defined — proof it is not consulted.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中 です", "C_ANY");
+    expect(rep.text).toBe("@田中 です");
+    expect(rep.unresolved).toEqual([{ surface: "@田中", reason: "ambiguous" }]);
+  });
+
+  test("still resolves ASCII handles unchanged alongside kanji", async () => {
+    const out = await encodeMentions("xoxp-fake", "@alice and @鈴木陽菜", undefined);
+    expect(out).toBe("<@U_ALICE> and <@U_KASHIWA>");
+  });
+
+  test("detailed report lists resolved surface, display and id", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@鈴木陽菜さん", undefined);
+    expect(rep.resolved).toEqual([{ surface: "@鈴木陽菜", display: "鈴木陽菜", userId: "U_KASHIWA" }]);
+    expect(rep.unresolved).toEqual([]);
+  });
+});
+
+describe("encodeMentions — directory unavailable (missing users:read)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        // Simulate a bot token that lacks users:read — users.list errors out.
+        "users.list__limit=200": { ok: false, error: "missing_scope" },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("does not throw; leaves mentions literal and reports them as unavailable (not no-match)", async () => {
+    const rep = await encodeMentionsDetailed("xoxb-fake", "@alice @鈴木陽菜", undefined);
+    expect(rep.text).toBe("@alice @鈴木陽菜");
+    expect(rep.resolved).toEqual([]);
+    expect(rep.unresolved).toEqual([
+      { surface: "@alice", reason: "unavailable" },
+      { surface: "@鈴木陽菜", reason: "unavailable" },
+    ]);
+  });
+
+  test("wrapper emits a single directory-unavailable warning", async () => {
+    const warnings: string[] = [];
+    await encodeMentions("xoxb-fake", "@alice @bob", undefined, { warn: (m) => warnings.push(m) });
+    expect(warnings).toEqual([
+      "warn: could not fetch the user list (users:read missing or an API/connection error) — @mentions not tagged, sent as plain text",
+    ]);
+  });
+});
+
+describe("encodeMentions — channel fallback fails (not a false no-match)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        // Workspace list succeeds but does not contain the handle...
+        "users.list__limit=200": { ok: true, members: [{ id: "U_X", name: "someoneelse" }] },
+        // ...and the channel-member fallback errors (e.g. bot not in channel).
+        "conversations.members__channel=C_FAIL&limit=200": { ok: false, error: "channel_not_found" },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("a Connect-guest handle stays 'unavailable', not a definite no-match", async () => {
+    // The guest can only live in the channel, whose lookup failed — so we must
+    // NOT claim it matched no user; it is indeterminate.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@t.guest99", "C_FAIL");
+    expect(rep.text).toBe("@t.guest99");
+    expect(rep.unresolved).toEqual([{ surface: "@t.guest99", reason: "unavailable" }]);
+  });
+
+  test("with the workspace list read and no channel, a miss is a true no-match", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@nobody99", undefined);
+    expect(rep.unresolved).toEqual([{ surface: "@nobody99", reason: "no-match" }]);
+  });
+});
+
+describe("encodeMentions — ASCII duplicate names (fail-closed)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            // Two distinct users sharing a real_name and display_name — a loose
+            // handle match must fail-close (ambiguous), not first-match win.
+            { id: "U_D1", name: "dup1", real_name: "Dup Person", profile: { display_name: "Duppy" } },
+            { id: "U_D2", name: "dup2", real_name: "Dup Person", profile: { display_name: "Duppy" } },
+          ],
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("a handle matching two users by display_name is ambiguous, not first-match", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@Duppy hi", undefined);
+    expect(rep.text).toBe("@Duppy hi");
+    expect(rep.unresolved).toEqual([{ surface: "@Duppy", reason: "ambiguous" }]);
+  });
+
+  test("a handle matching two users by real_name is ambiguous", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@DupPerson", undefined);
+    expect(rep.unresolved).toEqual([{ surface: "@DupPerson", reason: "ambiguous" }]);
+  });
+
+  test("a unique handle still resolves", async () => {
+    const out = await encodeMentions("xoxp-fake", "@dup1 hey", undefined);
+    expect(out).toBe("<@U_D1> hey");
   });
 });
 
