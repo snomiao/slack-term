@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "vitest";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
-import { encodeMentions, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
+import { encodeMentions, encodeMentionsDetailed, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
 
 describe("resolveDateMarkup", () => {
   test("replaces <!date^...> with formatted date", () => {
@@ -224,6 +224,129 @@ describe("encodeMentions", () => {
       process.stderr.write = orig;
     }
     expect(captured.join("")).toContain("unresolved mention @ghost");
+  });
+});
+
+describe("encodeMentions — Japanese display names", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            { id: "U_KASHIWA", name: "d.kashiwabara", real_name: "柏原 大空", profile: { display_name: "柏原大空" } },
+            { id: "U_TARO", name: "tanaka.taro", real_name: "田中 太郎", profile: { display_name: "田中太郎" } },
+            // Two members whose full name is exactly 田中 → an @田中 mention is ambiguous.
+            { id: "U_TANAKA1", name: "tanaka1", real_name: "田中", profile: { display_name: "田中" } },
+            { id: "U_TANAKA2", name: "tanaka2", real_name: "田中", profile: { display_name: "田中" } },
+            { id: "U_ALICE", name: "alice", real_name: "Alice Anderson", profile: { display_name: "Alice A" } },
+            // Surname-only display name — the over-match footgun: "@山田太郎" must NOT tag this member.
+            { id: "U_YAMADA", name: "yamada", real_name: "山田", profile: { display_name: "山田" } },
+          ],
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("does NOT tag a surname-only member when a longer name follows (@山田太郎)", async () => {
+    // "太郎" is more kanji, not a particle/honorific → the "山田" prefix must not match.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田太郎 よろしく", undefined);
+    expect(rep.text).toBe("@山田太郎 よろしく");
+    expect(rep.resolved).toEqual([]);
+    expect(rep.unresolved).toEqual([{ surface: "@山田太郎", reason: "no-match" }]);
+  });
+
+  test("tags a surname-only member when a honorific follows (@山田さん)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@山田さん おはよう", undefined);
+    expect(out).toBe("<@U_YAMADA>さん おはよう");
+  });
+
+  test("tags a name when a hiragana particle follows (@柏原大空は)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@柏原大空は 確認しました", undefined);
+    expect(out).toBe("<@U_KASHIWA>は 確認しました");
+  });
+
+  test("resolves a kanji display name written as @名前", async () => {
+    const out = await encodeMentions("xoxp-fake", "@柏原大空 資料お願いします", undefined);
+    expect(out).toBe("<@U_KASHIWA> 資料お願いします");
+  });
+
+  test("leaves a trailing honorific outside the tag (@名前さん)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@柏原大空さん 確認お願いします", undefined);
+    expect(out).toBe("<@U_KASHIWA>さん 確認お願いします");
+  });
+
+  test("longest-match beats a shorter ambiguous prefix (@田中太郎)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@田中太郎 よろしく", undefined);
+    expect(out).toBe("<@U_TARO> よろしく");
+  });
+
+  test("leaves an ambiguous name literal and reports it", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中 です", undefined);
+    expect(rep.text).toBe("@田中 です");
+    expect(rep.unresolved).toEqual([{ surface: "@田中", reason: "ambiguous" }]);
+  });
+
+  test("warns on an ambiguous name via the string wrapper", async () => {
+    const warnings: string[] = [];
+    await encodeMentions("xoxp-fake", "@田中 です", undefined, { warn: (m) => warnings.push(m) });
+    expect(warnings).toEqual(["warn: ambiguous mention @田中 matches multiple users (left as text)"]);
+  });
+
+  test("still resolves ASCII handles unchanged alongside kanji", async () => {
+    const out = await encodeMentions("xoxp-fake", "@alice and @柏原大空", undefined);
+    expect(out).toBe("<@U_ALICE> and <@U_KASHIWA>");
+  });
+
+  test("detailed report lists resolved surface, display and id", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@柏原大空さん", undefined);
+    expect(rep.resolved).toEqual([{ surface: "@柏原大空", display: "柏原大空", userId: "U_KASHIWA" }]);
+    expect(rep.unresolved).toEqual([]);
+  });
+});
+
+describe("encodeMentions — directory unavailable (missing users:read)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        // Simulate a bot token that lacks users:read — users.list errors out.
+        "users.list__limit=200": { ok: false, error: "missing_scope" },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("does not throw; leaves mentions literal and reports no-directory", async () => {
+    const rep = await encodeMentionsDetailed("xoxb-fake", "@alice @柏原大空", undefined);
+    expect(rep.text).toBe("@alice @柏原大空");
+    expect(rep.resolved).toEqual([]);
+    expect(rep.unresolved).toEqual([
+      { surface: "@alice", reason: "no-directory" },
+      { surface: "@柏原大空", reason: "no-directory" },
+    ]);
+  });
+
+  test("wrapper emits a single users:read warning", async () => {
+    const warnings: string[] = [];
+    await encodeMentions("xoxb-fake", "@alice @bob", undefined, { warn: (m) => warnings.push(m) });
+    expect(warnings).toEqual([
+      "warn: cannot resolve @mentions — users.list unavailable (token needs users:read); left as text",
+    ]);
   });
 });
 
