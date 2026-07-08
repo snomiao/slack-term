@@ -173,7 +173,7 @@ describe("encodeMentions", () => {
     const warnings: string[] = [];
     const out = await encodeMentions("xoxp-fake", "hey @nobody there", "C_TEST", { warn: (m) => warnings.push(m) });
     expect(out).toBe("hey @nobody there");
-    expect(warnings).toEqual(["warn: unresolved mention @nobody (left as text)"]);
+    expect(warnings).toEqual(["warn: @nobody matched no one — not tagged, sent as plain text"]);
   });
 
   test("handles multiple mentions in one message", async () => {
@@ -210,7 +210,7 @@ describe("encodeMentions", () => {
     // Guest is only resolvable via channel members; without a channel it stays text.
     const out = await encodeMentions("xoxp-fake", "@t.matsuda19790127 @alice", undefined, { warn: (m) => warnings.push(m) });
     expect(out).toBe("@t.matsuda19790127 <@U_ALICE>");
-    expect(warnings).toEqual(["warn: unresolved mention @t.matsuda19790127 (left as text)"]);
+    expect(warnings).toEqual(["warn: @t.matsuda19790127 matched no one — not tagged, sent as plain text"]);
   });
 
   test("default warn writes to stderr without throwing", async () => {
@@ -223,7 +223,7 @@ describe("encodeMentions", () => {
     } finally {
       process.stderr.write = orig;
     }
-    expect(captured.join("")).toContain("unresolved mention @ghost");
+    expect(captured.join("")).toContain("@ghost matched no one");
   });
 });
 
@@ -314,7 +314,15 @@ describe("encodeMentions — Japanese display names", () => {
   test("warns on an ambiguous name via the string wrapper", async () => {
     const warnings: string[] = [];
     await encodeMentions("xoxp-fake", "@田中 です", undefined, { warn: (m) => warnings.push(m) });
-    expect(warnings).toEqual(["warn: ambiguous mention @田中 matches multiple users (left as text)"]);
+    expect(warnings).toEqual(["warn: @田中 matches multiple people — not tagged, sent as plain text (use <@USERID> to tag)"]);
+  });
+
+  test("an ambiguous name stays literal even with a channel (never disambiguated by membership)", async () => {
+    // Fail-safe: channel membership must not be used to guess which duplicate was
+    // meant. No conversations.members mock is defined — proof it is not consulted.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中 です", "C_ANY");
+    expect(rep.text).toBe("@田中 です");
+    expect(rep.unresolved).toEqual([{ surface: "@田中", reason: "ambiguous" }]);
   });
 
   test("still resolves ASCII handles unchanged alongside kanji", async () => {
@@ -361,7 +369,7 @@ describe("encodeMentions — directory unavailable (missing users:read)", () => 
     const warnings: string[] = [];
     await encodeMentions("xoxb-fake", "@alice @bob", undefined, { warn: (m) => warnings.push(m) });
     expect(warnings).toEqual([
-      "warn: could not fetch the user directory (users:read missing or API/connection error); mentions left as text",
+      "warn: could not fetch the user list (users:read missing or an API/connection error) — @mentions not tagged, sent as plain text",
     ]);
   });
 });

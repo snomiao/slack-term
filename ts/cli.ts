@@ -51,7 +51,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
-import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
+import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -962,20 +962,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // Prominent, always-visible warning for any @token that will NOT notify —
     // so a mistyped or unresolved name (esp. a Japanese display name) is caught
     // before it goes out as inert plain text. Shown even when --code is passed.
-    // The unavailable cause is shared by every token, so warn about it once.
-    let saidUnavailable = false;
-    for (const u of mentionReport.unresolved) {
-      if (u.reason === "ambiguous") {
-        console.error(`⚠ ${u.surface} matches multiple users — will send as plain text, NOT notified. Use <@USERID> or a unique name.`);
-      } else if (u.reason === "unavailable") {
-        if (!saidUnavailable) {
-          console.error(`⚠ could not fetch the user list (users:read missing or API/connection error) — @mentions will send as plain text, NOT notified.`);
-          saidUnavailable = true;
-        }
-      } else {
-        console.error(`⚠ ${u.surface} matched no user — will send as plain text, NOT notified.`);
-      }
-    }
+    // Wording is shared with the library wrapper via mentionWarnings().
+    for (const line of mentionWarnings(mentionReport.unresolved)) console.error(`⚠ ${line}`);
   }
 
   // Warn-only lint: names written as plain text (no leading @) that map to a

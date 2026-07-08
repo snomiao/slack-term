@@ -109,7 +109,9 @@ function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
  * members (reaches Slack Connect guests absent from users.list). users.list is
  * fail-soft: a lookup that cannot run (missing `users:read`, API error) yields an
  * "unavailable" report entry instead of aborting the send, and is never reported
- * as a definite "no-match". Unresolved tokens are never destroyed.
+ * as a definite "no-match". A name matching several users exactly is always left
+ * literal + reported "ambiguous" (fail-safe) — channel membership is never used
+ * to guess which duplicate was meant. Unresolved tokens are never destroyed.
  */
 export async function encodeMentionsDetailed(
   token: string,
@@ -168,9 +170,13 @@ export async function encodeMentionsDetailed(
   }
 
   // Step 2: channel members (fetched once) — covers external/Connect guests.
+  // Only ever resolves tokens still "pending"; an ambiguous token stays ambiguous
+  // (fail-safe: we never let channel membership guess which duplicate was meant).
   const stillPending = [...tokens].some((t) => res.get(t)!.status === "pending");
-  let channelOk = true; // stays true when no channel lookup was needed
+  let channelAttempted = false;
+  let channelOk = true;
   if (stillPending && channelId) {
+    channelAttempted = true;
     try {
       const memberIds = await listConversationMembers(token, channelId, cookie);
       const infos: Record<string, Json>[] = [];
@@ -187,9 +193,11 @@ export async function encodeMentionsDetailed(
     }
   }
 
-  // A token is a true no-match only if the workspace list was read AND, when a
-  // channel was consulted for Connect guests, that read also succeeded.
-  const searchedFully = wsOk && (channelId ? channelOk : true);
+  // A token is a true no-match only if the workspace list was read AND — when a
+  // channel exists to check for Connect guests — that channel was actually
+  // consulted and succeeded. If the channel lookup was skipped or failed we can't
+  // claim the token is a non-user, so it stays "unavailable" (indeterminate).
+  const searchedFully = wsOk && (channelId ? (channelAttempted && channelOk) : true);
 
   const resolved: MentionResolution[] = [];
   const unresolved: UnresolvedMention[] = [];
@@ -214,6 +222,27 @@ export async function encodeMentionsDetailed(
   return { text: out, resolved, unresolved };
 }
 
+/** User-facing warning lines for mentions that will NOT notify, deduped (the
+ *  "unavailable" cause is shared, so it is reported once). The single source of
+ *  this wording — the encodeMentions wrapper and the CLI send/edit flows both use
+ *  it, so their messages never drift. Each caller adds its own prefix. */
+export function mentionWarnings(unresolved: UnresolvedMention[]): string[] {
+  const lines: string[] = [];
+  let saidUnavailable = false;
+  for (const u of unresolved) {
+    if (u.reason === "ambiguous") {
+      lines.push(`${u.surface} matches multiple people — not tagged, sent as plain text (use <@USERID> to tag)`);
+    } else if (u.reason === "unavailable") {
+      if (saidUnavailable) continue;
+      lines.push(`could not fetch the user list (users:read missing or an API/connection error) — @mentions not tagged, sent as plain text`);
+      saidUnavailable = true;
+    } else {
+      lines.push(`${u.surface} matched no one — not tagged, sent as plain text`);
+    }
+  }
+  return lines;
+}
+
 /** String-returning wrapper over {@link encodeMentionsDetailed}: rewrites tokens
  *  and emits a `warn` line per token that stayed literal. Preserved for callers
  *  (and tests) that only need the encoded text. */
@@ -225,20 +254,7 @@ export async function encodeMentions(
 ): Promise<string> {
   const warn = opts.warn ?? ((m: string) => process.stderr.write(`${m}\n`));
   const rep = await encodeMentionsDetailed(token, text, channelId, opts.cookie);
-  let saidUnavailable = false;
-  for (const u of rep.unresolved) {
-    if (u.reason === "ambiguous") {
-      warn(`warn: ambiguous mention ${u.surface} matches multiple users (left as text)`);
-    } else if (u.reason === "unavailable") {
-      // Shared cause across every affected token — warn about it once.
-      if (!saidUnavailable) {
-        warn(`warn: could not fetch the user directory (users:read missing or API/connection error); mentions left as text`);
-        saidUnavailable = true;
-      }
-    } else {
-      warn(`warn: unresolved mention ${u.surface} (left as text)`);
-    }
-  }
+  for (const line of mentionWarnings(rep.unresolved)) warn(`warn: ${line}`);
   return rep.text;
 }
 
