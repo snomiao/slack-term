@@ -590,6 +590,19 @@ function safetyCode(...parts: string[]): string {
   return sha256Hex(parts.join("\n")).slice(0, 4);
 }
 
+/** Strip ANSI escape sequences and control characters before drawing text the
+ *  terminal treats as trusted. Slack lets any user pick their own display name,
+ *  so an attacker could embed color/cursor codes; neutralize them here. */
+function stripTerminalControls(s: string): string {
+  return s
+    // CSI sequences (colors, cursor moves, …)
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
+    // any remaining control chars, including a lone ESC and C1 range
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+}
+
 // Slack API method → the token scope that grants it, for missing_scope guidance.
 const SCOPE_FOR_METHOD: Record<string, string> = {
   "reactions.add": "reactions:write",
@@ -962,8 +975,9 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // Prominent, always-visible warning for any @token that will NOT notify —
     // so a mistyped or unresolved name (esp. a Japanese display name) is caught
     // before it goes out as inert plain text. Shown even when --code is passed.
-    // Wording is shared with the library wrapper via mentionWarnings().
-    for (const line of mentionWarnings(mentionReport.unresolved)) console.error(`⚠ ${line}`);
+    // Wording is shared with the library wrapper via mentionWarnings(). Strip
+    // control chars — the surfaces embed Slack-controlled display text.
+    for (const line of mentionWarnings(mentionReport.unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
   }
 
   // Warn-only lint: names written as plain text (no leading @) that map to a
@@ -985,11 +999,11 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   if (mentionReport && (mentionReport.resolved.length > 0 || mentionReport.unresolved.length > 0)) {
     mentionLines.push(`--- Mentions ---------------------------------`);
     for (const r of mentionReport.resolved) {
-      mentionLines.push(`  ✓ ${r.surface} → @${r.display} (${r.userId}) — will notify`);
+      mentionLines.push(`  ✓ ${stripTerminalControls(r.surface)} → @${stripTerminalControls(r.display)} (${r.userId}) — will notify`);
     }
     for (const u of mentionReport.unresolved) {
       const why = u.reason === "ambiguous" ? "ambiguous" : u.reason === "unavailable" ? "lookup unavailable" : "no match";
-      mentionLines.push(`  ⚠ ${u.surface} — plain text, NOT notified (${why})`);
+      mentionLines.push(`  ⚠ ${stripTerminalControls(u.surface)} — plain text, NOT notified (${why})`);
     }
   }
 
