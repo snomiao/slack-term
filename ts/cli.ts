@@ -600,7 +600,10 @@ function stripTerminalControls(s: string): string {
     .replace(/\x1b\[[0-9;:?]*[ -/]*[@-~]/g, "")
     // any remaining control chars, including a lone ESC and C1 range
     // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f-\x9f]/g, "");
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
+    // Unicode bidi controls (marks, embeddings, overrides, isolates) — a crafted
+    // display name could use these to spoof or reorder the rendered line.
+    .replace(/[؜‎‏‪-‮⁦-⁩]/g, "");
 }
 
 // Slack API method → the token scope that grants it, for missing_scope guidance.

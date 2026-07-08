@@ -54,44 +54,51 @@ function fullNameForms(u: Record<string, Json>): string[] {
 
 type CjkMatch = { userId: string; matchLen: number; display: string } | "ambiguous" | undefined;
 
-/** Directory match for a CJK `@名前` run. `run` is the raw text after `@` (e.g.
- *  "柏原大空さん"). A user resolves only when the run equals their full name
- *  exactly, or equals their full name followed by exactly one trailing honorific
- *  ("さん", "様", …) which is then left in the message text rather than swallowed
- *  into the tag. Deliberately NOT a partial-prefix match: it would mis-tag a
- *  surname-only member from a longer given name. Because the run is drawn from a
- *  space/punctuation-free character class, normalized length == raw length, so
- *  `matchLen` (a normalized-form length) also indexes the raw run. Returns
- *  "ambiguous" when two distinct users tie on the longest exact match. */
+/** Directory match for a CJK `@名前` token. `run` is the raw token after `@`
+ *  (e.g. "柏原大空さん"). A user resolves only when the token equals their full
+ *  name exactly, or equals their full name followed by exactly one trailing
+ *  honorific ("さん", "様", …) which is then left in the message text rather than
+ *  swallowed into the tag. Deliberately NOT a partial-prefix match: it would
+ *  mis-tag a surname-only member from a longer given name. `matchLen` is a RAW
+ *  index into `run` (the length of the name part), computed with raw string ops
+ *  so it stays correct even when the name contains characters `normHandle` drops
+ *  (spaces, `-`, `_`). Returns "ambiguous" when two distinct users tie on the
+ *  longest name match. */
 function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
   const nr = normHandle(run);
-  const honorifics = HONORIFIC_SUFFIXES.map((h) => normHandle(h));
-  let best: { userId: string; matchLen: number; display: string } | undefined;
+  let best: { userId: string; matchLen: number; formLen: number; display: string } | undefined;
   let ambiguous = false;
   for (const u of dir) {
     const id = typeof u.id === "string" ? u.id : "";
     if (!id) continue;
     for (const form of fullNameForms(u)) {
-      // Resolve ONLY on an exact full-name match, or an exact match after peeling
-      // exactly one trailing honorific (which stays outside the tag). NO particle
-      // / partial-prefix matching: Japanese cannot distinguish "山田は…" (particle)
-      // from "山田はるか" (given name) on the surface, so any sub-name prefix would
-      // risk tagging the wrong person. We under-tag ("@山田は好きだ" leaves 山田
-      // untagged) rather than mis-notify.
-      let matched = false;
-      if (nr === form) matched = true;
-      else if (nr.startsWith(form) && honorifics.includes(nr.slice(form.length))) matched = true;
-      if (!matched) continue;
-      if (!best || form.length > best.matchLen) {
-        best = { userId: id, matchLen: form.length, display: displayNameOf(u) };
+      // Raw length of the name part matching `form`, or -1. Either the whole token
+      // is the name (exact), or the token ends with exactly one honorific and the
+      // remainder (raw) normalizes to the name. No particle / partial-prefix match:
+      // Japanese cannot distinguish "山田は…" (particle) from "山田はるか" (given
+      // name), so under-tag rather than risk notifying the wrong person.
+      let rawLen = -1;
+      if (nr === form) {
+        rawLen = run.length;
+      } else {
+        for (const h of HONORIFIC_SUFFIXES) {
+          if (run.length > h.length && run.endsWith(h) && normHandle(run.slice(0, run.length - h.length)) === form) {
+            rawLen = run.length - h.length;
+            break;
+          }
+        }
+      }
+      if (rawLen < 0) continue;
+      if (!best || form.length > best.formLen) {
+        best = { userId: id, matchLen: rawLen, formLen: form.length, display: displayNameOf(u) };
         ambiguous = false;
-      } else if (form.length === best.matchLen && best.userId !== id) {
+      } else if (form.length === best.formLen && best.userId !== id) {
         ambiguous = true;
       }
     }
   }
   if (!best) return undefined;
-  return ambiguous ? "ambiguous" : best;
+  return ambiguous ? "ambiguous" : { userId: best.userId, matchLen: best.matchLen, display: best.display };
 }
 
 /**
@@ -119,13 +126,16 @@ export async function encodeMentionsDetailed(
   channelId: string | undefined,
   cookie?: string,
 ): Promise<MentionEncodeResult> {
-  const ASCII = "[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*";
-  const CJK = `[${NAME_CHARS}ー]+`;
-  // Lookbehind guard matches the old mentionRe(): skip emails (`a@b`), already-
-  // encoded `<@U…>`, and doubled `@@`. ASCII alternative is tried first so a pure
-  // ASCII handle keeps its exact old behavior; the CJK run only fires when ASCII
-  // cannot start (the char after `@` is a Han/Hiragana/Katakana glyph).
-  const tokenRe = new RegExp(`(?<![A-Za-z0-9._@<-])@(${ASCII}|${CJK})`, "gu");
+  const NAME_RUN = `[${NAME_CHARS}ー]+`;
+  // One mention token = runs of name characters (any script) joined by internal
+  // `. _ -`, so a mixed-script / dotted handle is captured WHOLE: `@田中Taro`,
+  // `@佐藤.dev`, `@t.matsuda19790127`, `@Alice-A`. It never ends on a separator,
+  // so a trailing sentence dot ("@taku.") is left out. Capturing the FULL token —
+  // never a script-boundary prefix — is what lets the fail-closed exact match
+  // refuse to tag "田中" from "@田中Taro". Lookbehind guard skips emails (`a@b`),
+  // already-encoded `<@U…>`, and doubled `@@`.
+  const TOKEN = `${NAME_RUN}(?:[._-]+${NAME_RUN})*`;
+  const tokenRe = new RegExp(`(?<![A-Za-z0-9._@<-])@(${TOKEN})`, "gu");
 
   const tokens = new Set<string>();
   for (const m of text.matchAll(tokenRe)) tokens.add(m[1]!);

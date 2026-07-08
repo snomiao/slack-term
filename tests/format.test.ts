@@ -244,6 +244,8 @@ describe("encodeMentions — Japanese display names", () => {
             { id: "U_ALICE", name: "alice", real_name: "Alice Anderson", profile: { display_name: "Alice A" } },
             // Surname-only display name — the over-match footgun: "@山田太郎" must NOT tag this member.
             { id: "U_YAMADA", name: "yamada", real_name: "山田", profile: { display_name: "山田" } },
+            // Mixed script (kanji + latin) display name — full-token capture must resolve it whole.
+            { id: "U_MIX", name: "mix", real_name: "山田Taro", profile: { display_name: "山田Taro" } },
           ],
         },
       },
@@ -288,6 +290,32 @@ describe("encodeMentions — Japanese display names", () => {
     const rep = await encodeMentionsDetailed("xoxp-fake", "@柏原大空は 確認しました", undefined);
     expect(rep.text).toBe("@柏原大空は 確認しました");
     expect(rep.resolved).toEqual([]);
+  });
+
+  test("captures a mixed-script name whole and resolves it (@山田Taro)", async () => {
+    const out = await encodeMentions("xoxp-fake", "@山田Taro hi", undefined);
+    expect(out).toBe("<@U_MIX> hi");
+  });
+
+  test("does NOT partial-capture across a separator into a surname (@山田.dev)", async () => {
+    // Token is "山田.dev" (full), which matches no one — must NOT fall back to "山田".
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田.dev ping", undefined);
+    expect(rep.text).toBe("@山田.dev ping");
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("does NOT partial-capture a mixed-script name into a surname (@田中Taro)", async () => {
+    // "田中Taro" is nobody; must not tag the ambiguous "田中" members.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@田中Taro です", undefined);
+    expect(rep.text).toBe("@田中Taro です");
+    expect(rep.resolved).toEqual([]);
+  });
+
+  test("slices the honorific by RAW length when the name has a hyphen (@山田-Taroさん)", async () => {
+    // normHandle drops the "-", so a normalized-length slice would mangle the tail;
+    // the raw-length slice must leave exactly "さん".
+    const out = await encodeMentions("xoxp-fake", "@山田-Taroさん 確認", undefined);
+    expect(out).toBe("<@U_MIX>さん 確認");
   });
 
   test("resolves a kanji display name written as @名前", async () => {
