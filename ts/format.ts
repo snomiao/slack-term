@@ -146,9 +146,19 @@ export async function encodeMentionsDetailed(
         if (m === "ambiguous") res.set(t, { status: "ambiguous" });
         else if (m) res.set(t, { status: "resolved", userId: m.userId, matchLen: m.matchLen, display: m.display });
       } else {
-        const hit = dir.find((u) => userMatchesHandle(u, t));
-        const id = hit && typeof hit.id === "string" ? hit.id : "";
-        if (id) res.set(t, { status: "resolved", userId: id, matchLen: t.length, display: displayNameOf(hit!) });
+        // Fail-closed like the CJK path: userMatchesHandle also matches loosely on
+        // real_name / display_name / email, so if two distinct users match the same
+        // handle, resolve nothing and report ambiguous rather than notify the wrong
+        // person on a first-match win.
+        const hits = dir.filter((u) => userMatchesHandle(u, t));
+        const ids = new Set(hits.map((u) => (typeof u.id === "string" ? u.id : "")).filter(Boolean));
+        if (ids.size === 1) {
+          const hit = hits.find((u) => typeof u.id === "string")!;
+          res.set(t, { status: "resolved", userId: hit.id as string, matchLen: t.length, display: displayNameOf(hit) });
+        } else if (ids.size > 1) {
+          res.set(t, { status: "ambiguous" });
+        }
+        // ids.size === 0 → stays pending; may still resolve via the channel pass.
       }
     }
   };

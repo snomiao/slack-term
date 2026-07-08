@@ -986,7 +986,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // stall a send).
   try {
     for (const u of await findUntaggedMentions(args.mentionToken ?? token, message, args.mentionCookie)) {
-      console.error(`⚠ possible untagged mention: ${u.surface} — @${u.display} won't be notified (did you mean <@${u.userId}>?)`);
+      // u.surface / u.display carry Slack-controlled display text — strip control chars.
+      console.error(`⚠ possible untagged mention: ${stripTerminalControls(u.surface)} — @${stripTerminalControls(u.display)} won't be notified (did you mean <@${u.userId}>?)`);
     }
   } catch {
     // best-effort; ignore

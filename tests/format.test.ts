@@ -408,6 +408,48 @@ describe("encodeMentions — channel fallback fails (not a false no-match)", () 
   });
 });
 
+describe("encodeMentions — ASCII duplicate names (fail-closed)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.list__limit=200": {
+          ok: true,
+          members: [
+            // Two distinct users sharing a real_name and display_name — a loose
+            // handle match must fail-close (ambiguous), not first-match win.
+            { id: "U_D1", name: "dup1", real_name: "Dup Person", profile: { display_name: "Duppy" } },
+            { id: "U_D2", name: "dup2", real_name: "Dup Person", profile: { display_name: "Duppy" } },
+          ],
+        },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("a handle matching two users by display_name is ambiguous, not first-match", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@Duppy hi", undefined);
+    expect(rep.text).toBe("@Duppy hi");
+    expect(rep.unresolved).toEqual([{ surface: "@Duppy", reason: "ambiguous" }]);
+  });
+
+  test("a handle matching two users by real_name is ambiguous", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@DupPerson", undefined);
+    expect(rep.unresolved).toEqual([{ surface: "@DupPerson", reason: "ambiguous" }]);
+  });
+
+  test("a unique handle still resolves", async () => {
+    const out = await encodeMentions("xoxp-fake", "@dup1 hey", undefined);
+    expect(out).toBe("<@U_D1> hey");
+  });
+});
+
 describe("findUntaggedMentions", () => {
   let mock: MockHandle;
 
