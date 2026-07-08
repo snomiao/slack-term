@@ -269,16 +269,25 @@ describe("encodeMentions — Japanese display names", () => {
     expect(out).toBe("<@U_YAMADA>さん おはよう");
   });
 
-  test("does NOT tag a surname-only member when a hiragana given name follows (@山田たろう)", async () => {
-    // "た" is hiragana but not a curated particle → "山田" must not partial-match.
-    const rep = await encodeMentionsDetailed("xoxp-fake", "@山田たろう よろしく", undefined);
-    expect(rep.text).toBe("@山田たろう よろしく");
-    expect(rep.unresolved).toEqual([{ surface: "@山田たろう", reason: "no-match" }]);
+  test.each([
+    "@山田たろう よろしく",     // hiragana given name
+    "@山田はるか お願い",       // given name starting with the particle は
+    "@山田のぞみ です",         // ...の
+    "@山田もも さん",           // ...も
+    "@山田はな へ",             // ...は
+  ])("does NOT partial-match a surname-only member (%s)", async (input) => {
+    // A sub-name prefix must never tag: given names are indistinguishable from
+    // name+particle on the surface, so under-tag rather than notify the wrong 山田.
+    const rep = await encodeMentionsDetailed("xoxp-fake", input, undefined);
+    expect(rep.text).toBe(input);
+    expect(rep.resolved).toEqual([]);
   });
 
-  test("tags a name when a hiragana particle follows (@柏原大空は)", async () => {
-    const out = await encodeMentions("xoxp-fake", "@柏原大空は 確認しました", undefined);
-    expect(out).toBe("<@U_KASHIWA>は 確認しました");
+  test("does NOT tag on a bare particle continuation (@柏原大空は → literal)", async () => {
+    // "は" could be a particle OR the start of a given name → not resolvable.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@柏原大空は 確認しました", undefined);
+    expect(rep.text).toBe("@柏原大空は 確認しました");
+    expect(rep.resolved).toEqual([]);
   });
 
   test("resolves a kanji display name written as @名前", async () => {

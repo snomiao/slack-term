@@ -59,22 +59,23 @@ type CjkMatch = { userId: string; matchLen: number; display: string } | "ambiguo
  *  "ambiguous" when two distinct users tie on the longest match. */
 function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
   const nr = normHandle(run);
+  const honorifics = HONORIFIC_SUFFIXES.map((h) => normHandle(h));
   let best: { userId: string; matchLen: number; display: string } | undefined;
   let ambiguous = false;
   for (const u of dir) {
     const id = typeof u.id === "string" ? u.id : "";
     if (!id) continue;
     for (const form of fullNameForms(u)) {
-      if (!nr.startsWith(form)) continue;
-      // A prefix shorter than the whole run only counts when what immediately
-      // follows is a CURATED particle or honorific — NOT any hiragana. Accepting
-      // arbitrary hiragana would still mis-tag a hiragana given name: "@山田たろう"
-      // would let a member named just "山田" match on the leading "た". So we
-      // resolve only on an exact full-name match, or a prefix followed by a known
-      // particle ("@柏原大空は") / honorific ("@山田さん", "@田中様"); anything else
-      // (more kanji/katakana, or a hiragana given name) stays literal.
-      const rest = nr.slice(form.length);
-      if (rest.length > 0 && !CJK_MENTION_CONTINUATIONS.some((s) => rest.startsWith(s))) continue;
+      // Resolve ONLY on an exact full-name match, or an exact match after peeling
+      // exactly one trailing honorific (which stays outside the tag). NO particle
+      // / partial-prefix matching: Japanese cannot distinguish "山田は…" (particle)
+      // from "山田はるか" (given name) on the surface, so any sub-name prefix would
+      // risk tagging the wrong person. We under-tag ("@山田は好きだ" leaves 山田
+      // untagged) rather than mis-notify.
+      let matched = false;
+      if (nr === form) matched = true;
+      else if (nr.startsWith(form) && honorifics.includes(nr.slice(form.length))) matched = true;
+      if (!matched) continue;
       if (!best || form.length > best.matchLen) {
         best = { userId: id, matchLen: form.length, display: displayNameOf(u) };
         ambiguous = false;
@@ -93,9 +94,11 @@ function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
  * resolve. Two kinds of token are recognized:
  *   - ASCII handles (`@alice`, `@t.matsuda19790127`) — matched whole against
  *     name / real_name / display_name / email.
- *   - CJK names (`@柏原大空`, `@柏原大空さん`) — matched by directory longest-prefix
- *     so a display name written in kanji/kana (which the old ASCII-only regex
- *     could not even capture) resolves, with any trailing honorific left intact.
+ *   - CJK names (`@柏原大空`, `@柏原大空さん`) — matched against the directory by
+ *     exact full name, or full name + one trailing honorific (kept outside the
+ *     tag). A display name written in kanji/kana (which the old ASCII-only regex
+ *     could not even capture) resolves; anything only partially matching stays
+ *     literal, to never notify the wrong person.
  * Resolution order: (1) workspace users.list, then (2) the target channel's
  * members (reaches Slack Connect guests absent from users.list). users.list is
  * fail-soft: a token lacking `users:read` yields a "no-directory" report entry
@@ -229,17 +232,6 @@ export async function encodeMentions(
 const HONORIFIC_SUFFIXES = [
   "さん", "さま", "様", "君", "くん", "ちゃん", "氏", "先生", "先輩", "殿",  // JP
   "老师", "老師", "兄", "姐", "哥", "姐妹",                                  // ZH
-];
-
-// Particles that idiomatically follow a name right after an `@mention`. Together
-// with HONORIFIC_SUFFIXES these are the ONLY continuations that let a shorter
-// full-name prefix match in matchCjkRun — deliberately a curated set, not "any
-// hiragana", so a hiragana given name ("@山田たろう") can never let a surname-only
-// member "山田" mis-match. (Given names starting with a bare particle like の are
-// a rare residual we accept.)
-const CJK_MENTION_CONTINUATIONS = [
-  ...HONORIFIC_SUFFIXES,
-  "から", "まで", "は", "が", "を", "に", "へ", "と", "も", "で", "や", "の",
 ];
 
 const NAME_CHARS = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}A-Za-z0-9";
