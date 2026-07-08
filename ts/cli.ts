@@ -603,7 +603,8 @@ function stripTerminalControls(s: string): string {
     .replace(/[\x00-\x1f\x7f-\x9f]/g, "")
     // Unicode bidi controls (marks, embeddings, overrides, isolates) — a crafted
     // display name could use these to spoof or reorder the rendered line.
-    .replace(/[؜‎‏‪-‮⁦-⁩]/g, "");
+    // ALM, LRM/RLM, LRE/RLE/PDF/LRO/RLO, LRI/RLI/FSI/PDI.
+    .replace(/[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "");
 }
 
 // Slack API method → the token scope that grants it, for missing_scope guidance.
