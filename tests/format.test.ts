@@ -347,22 +347,56 @@ describe("encodeMentions — directory unavailable (missing users:read)", () => 
     delete process.env.SLACK_API_BASE;
   });
 
-  test("does not throw; leaves mentions literal and reports no-directory", async () => {
+  test("does not throw; leaves mentions literal and reports them as unavailable (not no-match)", async () => {
     const rep = await encodeMentionsDetailed("xoxb-fake", "@alice @柏原大空", undefined);
     expect(rep.text).toBe("@alice @柏原大空");
     expect(rep.resolved).toEqual([]);
     expect(rep.unresolved).toEqual([
-      { surface: "@alice", reason: "no-directory" },
-      { surface: "@柏原大空", reason: "no-directory" },
+      { surface: "@alice", reason: "unavailable" },
+      { surface: "@柏原大空", reason: "unavailable" },
     ]);
   });
 
-  test("wrapper emits a single users:read warning", async () => {
+  test("wrapper emits a single directory-unavailable warning", async () => {
     const warnings: string[] = [];
     await encodeMentions("xoxb-fake", "@alice @bob", undefined, { warn: (m) => warnings.push(m) });
     expect(warnings).toEqual([
-      "warn: cannot resolve @mentions — users.list unavailable (token needs users:read); left as text",
+      "warn: could not fetch the user directory (users:read missing or API/connection error); mentions left as text",
     ]);
+  });
+});
+
+describe("encodeMentions — channel fallback fails (not a false no-match)", () => {
+  let mock: MockHandle;
+
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        // Workspace list succeeds but does not contain the handle...
+        "users.list__limit=200": { ok: true, members: [{ id: "U_X", name: "someoneelse" }] },
+        // ...and the channel-member fallback errors (e.g. bot not in channel).
+        "conversations.members__channel=C_FAIL&limit=200": { ok: false, error: "channel_not_found" },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("a Connect-guest handle stays 'unavailable', not a definite no-match", async () => {
+    // The guest can only live in the channel, whose lookup failed — so we must
+    // NOT claim it matched no user; it is indeterminate.
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@t.guest99", "C_FAIL");
+    expect(rep.text).toBe("@t.guest99");
+    expect(rep.unresolved).toEqual([{ surface: "@t.guest99", reason: "unavailable" }]);
+  });
+
+  test("with the workspace list read and no channel, a miss is a true no-match", async () => {
+    const rep = await encodeMentionsDetailed("xoxp-fake", "@nobody99", undefined);
+    expect(rep.unresolved).toEqual([{ surface: "@nobody99", reason: "no-match" }]);
   });
 });
 

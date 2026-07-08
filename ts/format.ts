@@ -23,7 +23,11 @@ function userMatchesHandle(u: Record<string, Json>, handle: string): boolean {
 }
 
 export type MentionResolution = { surface: string; display: string; userId: string };
-export type UnresolvedMention = { surface: string; reason: "no-match" | "ambiguous" | "no-directory" };
+// "no-match": the full intended lookup ran and the token genuinely matched no one.
+// "unavailable": a directory source needed to resolve it could not be consulted
+//   (users:read missing, or an API/connection error) — so we cannot claim it is a
+//   non-user. "ambiguous": several users matched exactly.
+export type UnresolvedMention = { surface: string; reason: "no-match" | "ambiguous" | "unavailable" };
 /** Structured outcome of mention encoding, so callers (the send confirm gate)
  *  can preview exactly who will — and won't — be notified. */
 export type MentionEncodeResult = {
@@ -50,13 +54,15 @@ function fullNameForms(u: Record<string, Json>): string[] {
 
 type CjkMatch = { userId: string; matchLen: number; display: string } | "ambiguous" | undefined;
 
-/** Directory longest-prefix match for a CJK `@名前` run. `run` is the raw text
- *  after `@` (e.g. "柏原大空さん"); the longest member full-name that is a prefix
- *  of it wins, so a trailing honorific / particle ("さん", "は") is left in the
- *  message text rather than swallowed into the tag. Because the run is drawn from
- *  a space/punctuation-free character class, normalized length == raw length, so
+/** Directory match for a CJK `@名前` run. `run` is the raw text after `@` (e.g.
+ *  "柏原大空さん"). A user resolves only when the run equals their full name
+ *  exactly, or equals their full name followed by exactly one trailing honorific
+ *  ("さん", "様", …) which is then left in the message text rather than swallowed
+ *  into the tag. Deliberately NOT a partial-prefix match: it would mis-tag a
+ *  surname-only member from a longer given name. Because the run is drawn from a
+ *  space/punctuation-free character class, normalized length == raw length, so
  *  `matchLen` (a normalized-form length) also indexes the raw run. Returns
- *  "ambiguous" when two distinct users tie on the longest match. */
+ *  "ambiguous" when two distinct users tie on the longest exact match. */
 function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
   const nr = normHandle(run);
   const honorifics = HONORIFIC_SUFFIXES.map((h) => normHandle(h));
@@ -101,8 +107,9 @@ function matchCjkRun(run: string, dir: Record<string, Json>[]): CjkMatch {
  *     literal, to never notify the wrong person.
  * Resolution order: (1) workspace users.list, then (2) the target channel's
  * members (reaches Slack Connect guests absent from users.list). users.list is
- * fail-soft: a token lacking `users:read` yields a "no-directory" report entry
- * instead of aborting the send. Unresolved tokens are never destroyed.
+ * fail-soft: a lookup that cannot run (missing `users:read`, API error) yields an
+ * "unavailable" report entry instead of aborting the send, and is never reported
+ * as a definite "no-match". Unresolved tokens are never destroyed.
  */
 export async function encodeMentionsDetailed(
   token: string,
@@ -144,18 +151,25 @@ export async function encodeMentionsDetailed(
     }
   };
 
-  // Step 1: workspace users.list (fail-soft — a token without users:read must
-  // not abort the send; mentions stay literal and are reported as no-directory).
-  let directoryUnavailable = false;
+  // Track each directory source's availability separately, so a still-unresolved
+  // token is only reported as a genuine "no-match" when every source that could
+  // have resolved it was actually consulted. A failed source (missing users:read,
+  // API error) makes the outcome "unavailable" (indeterminate) — never a false
+  // "not a user". Fail-soft throughout: a lookup error must never abort the send.
+
+  // Step 1: workspace users.list.
+  let wsOk = false;
   try {
     const wsResp = (await listUsers(token, cookie)) as { members?: Json[] };
     resolveAgainst((wsResp.members ?? []).map(asRecord));
+    wsOk = true;
   } catch {
-    directoryUnavailable = true;
+    wsOk = false;
   }
 
   // Step 2: channel members (fetched once) — covers external/Connect guests.
   const stillPending = [...tokens].some((t) => res.get(t)!.status === "pending");
+  let channelOk = true; // stays true when no channel lookup was needed
   if (stillPending && channelId) {
     try {
       const memberIds = await listConversationMembers(token, channelId, cookie);
@@ -169,8 +183,13 @@ export async function encodeMentionsDetailed(
       resolveAgainst(infos);
     } catch {
       // best-effort; a preview degrading is fine, aborting a send is not.
+      channelOk = false;
     }
   }
+
+  // A token is a true no-match only if the workspace list was read AND, when a
+  // channel was consulted for Connect guests, that read also succeeded.
+  const searchedFully = wsOk && (channelId ? channelOk : true);
 
   const resolved: MentionResolution[] = [];
   const unresolved: UnresolvedMention[] = [];
@@ -181,13 +200,13 @@ export async function encodeMentionsDetailed(
     } else if (r.status === "ambiguous") {
       unresolved.push({ surface: `@${t}`, reason: "ambiguous" });
     } else {
-      unresolved.push({ surface: `@${t}`, reason: directoryUnavailable ? "no-directory" : "no-match" });
+      unresolved.push({ surface: `@${t}`, reason: searchedFully ? "no-match" : "unavailable" });
     }
   }
 
   const out = text.replace(tokenRe, (full, tk: string) => {
     const r = res.get(tk);
-    // For a CJK match, keep the un-matched tail (honorific/particle) as text.
+    // For a CJK match, keep the un-matched tail (a trailing honorific) as text.
     if (r && r.status === "resolved") return `<@${r.userId}>${tk.slice(r.matchLen)}`;
     return full;
   });
@@ -206,14 +225,15 @@ export async function encodeMentions(
 ): Promise<string> {
   const warn = opts.warn ?? ((m: string) => process.stderr.write(`${m}\n`));
   const rep = await encodeMentionsDetailed(token, text, channelId, opts.cookie);
-  let saidNoDir = false;
+  let saidUnavailable = false;
   for (const u of rep.unresolved) {
     if (u.reason === "ambiguous") {
       warn(`warn: ambiguous mention ${u.surface} matches multiple users (left as text)`);
-    } else if (u.reason === "no-directory") {
-      if (!saidNoDir) {
-        warn(`warn: cannot resolve @mentions — users.list unavailable (token needs users:read); left as text`);
-        saidNoDir = true;
+    } else if (u.reason === "unavailable") {
+      // Shared cause across every affected token — warn about it once.
+      if (!saidUnavailable) {
+        warn(`warn: could not fetch the user directory (users:read missing or API/connection error); mentions left as text`);
+        saidUnavailable = true;
       }
     } else {
       warn(`warn: unresolved mention ${u.surface} (left as text)`);
