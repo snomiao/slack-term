@@ -390,18 +390,20 @@ async function cmdChannels(token: string, limit: number, filter?: string, all?: 
 
 /** search.messages (and most read/write Web API methods) reject a bot token
  *  (xoxb-) with not_allowed_token_type — it's a user-only endpoint. Find a
- *  sibling profile that holds a user token (xoxp-/xoxc-) so the caller can
- *  retry with it automatically instead of just erroring. Prefers a profile
- *  for the same workspace (teamId) as the bot profile currently in use; falls
- *  back to any user-token profile if the team can't be determined/matched. */
+ *  sibling profile that holds a user token (xoxp-/xoxc-) for the *same*
+ *  workspace (teamId) as the bot profile currently in use, so the caller can
+ *  retry with it automatically instead of just erroring. Deliberately does
+ *  NOT fall back to a user-token profile for a different workspace — that
+ *  would silently run the search against the wrong (possibly private)
+ *  workspace instead of failing loudly. Returns undefined (no fallback) when
+ *  the current token isn't a known profile at all, since its workspace can't
+ *  be verified. */
 function findUserTokenProfile(currentToken: string): { name: string; profile: Profile } | undefined {
   const isUserToken = (t: string) => t.startsWith("xoxp-") || t.startsWith("xoxc-");
   const profiles = listProfiles();
   const current = profiles.find((p) => p.profile.token === currentToken);
-  const sameTeam = current
-    ? profiles.find((p) => isUserToken(p.profile.token) && p.profile.teamId === current.profile.teamId)
-    : undefined;
-  return sameTeam ?? profiles.find((p) => isUserToken(p.profile.token));
+  if (!current) return undefined;
+  return profiles.find((p) => isUserToken(p.profile.token) && p.profile.teamId === current.profile.teamId);
 }
 
 async function cmdSearch(token: string, query: string, count: number, json: boolean, cookie?: string): Promise<void> {
@@ -1276,14 +1278,15 @@ interface ScheduleSendArgs {
   code?: string;
   channelId?: string;
   userId?: string;
+  cookie?: string;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else if (args.userId) channelId = await openDm(token, args.userId);
-  else channelId = await resolveChannel(token, ref);
+  else if (args.userId) channelId = await openDm(token, args.userId, args.cookie);
+  else channelId = await resolveChannel(token, ref, args.cookie);
 
   const postAt = parsePostAt(args.at);
   const postAtDate = new Date(postAt * 1000).toISOString();
@@ -1298,18 +1301,18 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
       `---------------------------------------------`,
     ]);
   }
-  const id = await scheduleMessage(token, channelId, args.message, postAt, threadTs);
+  const id = await scheduleMessage(token, channelId, args.message, postAt, threadTs, args.cookie);
   console.log(`✓ Scheduled (id: ${id}, at: ${postAtDate})`);
 }
 
-async function cmdScheduleList(token: string, target?: string, channelId?: string): Promise<void> {
+async function cmdScheduleList(token: string, target?: string, channelId?: string, cookie?: string): Promise<void> {
   let channel: string | undefined;
   if (channelId) {
     channel = channelId;
   } else if (target) {
-    channel = await resolveChannel(token, target);
+    channel = await resolveChannel(token, target, cookie);
   }
-  const resp = (await listScheduledMessages(token, channel)) as {
+  const resp = (await listScheduledMessages(token, channel, cookie)) as {
     scheduled_messages?: { id: string; channel_id: string; post_at: number; text: string }[];
   };
   const msgs = resp.scheduled_messages ?? [];
@@ -1325,11 +1328,12 @@ interface ScheduleRmArgs {
   id: string;
   code?: string;
   channelId?: string;
+  cookie?: string;
 }
 async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void> {
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else channelId = await resolveChannel(token, args.target);
+  else channelId = await resolveChannel(token, args.target, args.cookie);
 
   const code = safetyCode(channelId, args.id);
   if (args.code !== code) {
@@ -1340,7 +1344,7 @@ async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void>
       `---------------------------------------------`,
     ]);
   }
-  await deleteScheduledMessage(token, channelId, args.id);
+  await deleteScheduledMessage(token, channelId, args.id, args.cookie);
   console.log(`✓ Deleted scheduled message ${args.id}`);
 }
 
@@ -1353,6 +1357,7 @@ interface UploadArgs {
   code?: string;
   channelId?: string;
   userId?: string;
+  cookie?: string;
 }
 async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   const { statSync, existsSync } = await import("node:fs");
@@ -1369,8 +1374,8 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else if (args.userId) channelId = await openDm(token, args.userId);
-  else channelId = await resolveChannel(token, ref);
+  else if (args.userId) channelId = await openDm(token, args.userId, args.cookie);
+  else channelId = await resolveChannel(token, ref, args.cookie);
 
   const isBatch = args.filePaths.length > 1;
   const files = args.filePaths.map((fp) => {
@@ -1407,7 +1412,7 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     const uploadOpts: { title?: string; threadTs?: string; initialComment?: string } = { title: f.title };
     if (threadTs !== undefined) uploadOpts.threadTs = threadTs;
     if (args.comment !== undefined && i === 0) uploadOpts.initialComment = args.comment;
-    const { fileId, permalink } = await uploadFile(token, channelId, f.fp, uploadOpts);
+    const { fileId, permalink } = await uploadFile(token, channelId, f.fp, uploadOpts, args.cookie);
     const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
     console.log(`${prefix}✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
   }
@@ -1868,6 +1873,8 @@ async function main(): Promise<void> {
             if (argv.code) args.code = argv.code;
             if (argv["channel-id"]) args.channelId = argv["channel-id"];
             if (argv["user-id"]) args.userId = argv["user-id"];
+            const cookie = ck(argv as W);
+            if (cookie) args.cookie = cookie;
             await cmdScheduleSend(tok(argv as W), args);
           },
         )
@@ -1878,7 +1885,7 @@ async function main(): Promise<void> {
             .positional("target", { type: "string", describe: "#channel to filter by" })
             .option("channel-id", { type: "string", describe: "Raw channel ID" }),
           async (argv) => {
-            await cmdScheduleList(tok(argv as W), argv.target as string | undefined, argv["channel-id"]);
+            await cmdScheduleList(tok(argv as W), argv.target as string | undefined, argv["channel-id"], ck(argv as W));
           },
         )
         .command(
@@ -1892,6 +1899,8 @@ async function main(): Promise<void> {
           async (argv) => {
             const args: ScheduleRmArgs = { target: argv.target!, id: argv.id! };
             if (argv.code) args.code = argv.code;
+            const cookie = ck(argv as W);
+            if (cookie) args.cookie = cookie;
             if (argv["channel-id"]) args.channelId = argv["channel-id"];
             await cmdScheduleRm(tok(argv as W), args);
           },
@@ -1977,6 +1986,8 @@ async function main(): Promise<void> {
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
+        const cookie = ck(argv as W);
+        if (cookie) args.cookie = cookie;
         await cmdUpload(tok(argv as W), args);
       },
     )

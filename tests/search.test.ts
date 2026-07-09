@@ -99,6 +99,38 @@ describe("search token-type fallback (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  test("bot profile + user profile for a DIFFERENT workspace must NOT fall back (would silently search the wrong workspace)", async () => {
+    tmpHome = mkdtempSync(join(tmpdir(), "slack-search-crossteam-"));
+    try {
+      const cfgDir = join(tmpHome, ".config", "slack-cli");
+      mkdirSync(cfgDir, { recursive: true });
+      const profiles = {
+        "acme-bot": { token: "xoxb-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "bot" },
+        // Same profiles.json, but a different workspace entirely (different teamId).
+        "other-alice": { token: "xoxc-other", team: "Other Co", teamId: "T99999999", url: "https://other.slack.com/", user: "alice", cookie: "xoxd-other-secret" },
+      };
+      writeFileSync(join(cfgDir, "profiles.json"), JSON.stringify({ profiles }));
+      const lockDir = join(tmpHome, ".slack-cli");
+      mkdirSync(lockDir, { recursive: true });
+      writeFileSync(join(lockDir, "workspace"), "acme-bot\n");
+
+      const m = await startMock({ inline: { "search.messages": { ok: false, error: "not_allowed_token_type" } } });
+      try {
+        const r = await run(tmpHome, ["search", "poc2"], { baseUrl: m.baseUrl });
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr).toContain("requires a user token");
+        expect(r.stderr).not.toContain("falling back");
+        // Must never have attempted the cross-workspace token at all.
+        const searchReqs = m.requests.filter((q) => q.method === "search.messages");
+        expect(searchReqs.every((q) => q.headers.authorization !== "Bearer xoxc-other")).toBe(true);
+      } finally {
+        await m.stop();
+      }
+    } finally {
+      rmSync(tmpHome, { recursive: true, force: true });
+    }
+  });
+
   test("bot profile + sibling user profile: falls back automatically and returns results", async () => {
     tmpHome = mkdtempSync(join(tmpdir(), "slack-search-fallback-"));
     try {
