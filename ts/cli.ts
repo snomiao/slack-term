@@ -8,7 +8,7 @@ import { join } from "node:path";
 
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile } from "./profiles.ts";
+import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
@@ -387,8 +387,50 @@ async function cmdChannels(token: string, limit: number, filter?: string, all?: 
 }
 
 // --- search ---
-async function cmdSearch(token: string, query: string, count: number, json: boolean): Promise<void> {
-  const resp = await searchAll(token, query, count);
+
+/** search.messages (and most read/write Web API methods) reject a bot token
+ *  (xoxb-) with not_allowed_token_type — it's a user-only endpoint. Find a
+ *  sibling profile that holds a user token (xoxp-/xoxc-) so the caller can
+ *  retry with it automatically instead of just erroring. Prefers a profile
+ *  for the same workspace (teamId) as the bot profile currently in use; falls
+ *  back to any user-token profile if the team can't be determined/matched. */
+function findUserTokenProfile(currentToken: string): { name: string; profile: Profile } | undefined {
+  const isUserToken = (t: string) => t.startsWith("xoxp-") || t.startsWith("xoxc-");
+  const profiles = listProfiles();
+  const current = profiles.find((p) => p.profile.token === currentToken);
+  const sameTeam = current
+    ? profiles.find((p) => isUserToken(p.profile.token) && p.profile.teamId === current.profile.teamId)
+    : undefined;
+  return sameTeam ?? profiles.find((p) => isUserToken(p.profile.token));
+}
+
+async function cmdSearch(token: string, query: string, count: number, json: boolean, cookie?: string): Promise<void> {
+  let searchToken = token;
+  let searchCookie = cookie;
+  let resp: Json;
+  try {
+    resp = await searchAll(searchToken, query, count, searchCookie);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (token.startsWith("xoxb-") && msg.includes("not_allowed_token_type")) {
+      const fallback = findUserTokenProfile(token);
+      if (fallback) {
+        console.error(`Note: search.messages needs a user token — the active profile is a bot token (xoxb-); falling back to profile "${fallback.name}".`);
+        searchToken = fallback.profile.token;
+        searchCookie = fallback.profile.cookie;
+        resp = await searchAll(searchToken, query, count, searchCookie);
+      } else {
+        console.error(
+          "Error: search requires a user token (xoxp-/xoxc-) — the active profile is a bot token (xoxb-), which Slack rejects for search.messages.\n" +
+          "  Add a user-token profile:  slack auth login   (or slack auth token)\n" +
+          "  Then select it:            slack auth use <name>   (or pass --workspace <name>)",
+        );
+        process.exit(1);
+      }
+    } else {
+      throw e;
+    }
+  }
   if (json) {
     console.log(JSON.stringify(resp, null, 2));
     return;
@@ -403,7 +445,7 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
     if (isIm && rawName.startsWith("U")) {
       const handleKey = "@" + rawName;
       if (!cache.has(handleKey)) {
-        const [, h] = await userInfoPair(token, rawName);
+        const [, h] = await userInfoPair(searchToken, rawName, searchCookie);
         cache.set(handleKey, h);
       }
       chLabel = `@${cache.get(handleKey) ?? rawName}`;
@@ -412,7 +454,7 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
     } else {
       chLabel = `#${rawName}`;
     }
-    console.log(await formatMsgLine(token, m, cache, chLabel));
+    console.log(await formatMsgLine(searchToken, m, cache, chLabel));
   }
 }
 
@@ -705,15 +747,15 @@ function parseTargetThread(s: string): { ref: string; threadTs?: string } {
 /** Human-readable destination label for confirm gates, e.g. "#general (C00000001)".
  *  When ref is already a #channel/@user label, keep it; otherwise resolve the channel
  *  name via conversations.info (fail-soft: a raw ID is still unambiguous). */
-async function destLabel(token: string, channelId: string, ref: string): Promise<string> {
+async function destLabel(token: string, channelId: string, ref: string, cookie?: string): Promise<string> {
   let name = ref;
   if (!ref.startsWith("#") && !ref.startsWith("@")) {
     try {
-      const info = asRecord((await conversationInfo(token, channelId)) as Json);
+      const info = asRecord((await conversationInfo(token, channelId, cookie)) as Json);
       const ch = asRecord(info.channel);
       if (ch.is_im === true) {
         const uid = typeof ch.user === "string" ? ch.user : "";
-        name = uid ? `@${await userName(token, uid)}` : channelId;
+        name = uid ? `@${await userName(token, uid, cookie)}` : channelId;
       } else {
         name = typeof ch.name === "string" ? `#${ch.name}` : channelId;
       }
@@ -726,9 +768,9 @@ async function destLabel(token: string, channelId: string, ref: string): Promise
 
 /** One-line description of a single thread message for confirm gates:
  *  "2026-06-11 08:05 @handle: head…". `headLen` bounds the text preview. */
-async function threadMsgLine(token: string, m: Record<string, Json>, headLen = 60): Promise<string> {
+async function threadMsgLine(token: string, m: Record<string, Json>, headLen = 60, cookie?: string): Promise<string> {
   const author = typeof m.user === "string"
-    ? await userName(token, m.user)
+    ? await userName(token, m.user, cookie)
     : typeof m.username === "string"
     ? m.username
     : "?";
@@ -741,10 +783,10 @@ async function threadMsgLine(token: string, m: Record<string, Json>, headLen = 6
 
 /** One-line thread-parent description for confirm gates: "2026-06-11 08:05 @handle: head…".
  *  Fail-soft: returns the raw ts if the parent cannot be found. */
-async function threadParentLine(token: string, threadTs: string, threadMsgs: Record<string, Json>[]): Promise<string> {
+async function threadParentLine(token: string, threadTs: string, threadMsgs: Record<string, Json>[], cookie?: string): Promise<string> {
   const parent = threadMsgs.find((m) => String(m.ts) === threadTs) ?? threadMsgs[0];
   if (!parent) return threadTs;
-  return threadMsgLine(token, parent, 40);
+  return threadMsgLine(token, parent, 40, cookie);
 }
 
 /** Normalize a message for duplicate comparison: lowercase, collapse whitespace,
@@ -800,6 +842,9 @@ interface EditArgs {
   code?: string;
   channelId?: string;
   mentions?: boolean;
+  // Session cookie (xoxd) for `token` — required for an xoxc- desktop session
+  // token to be accepted by the public Slack API at all.
+  cookie?: string;
 }
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const { ref, ts } = splitRefTs(args.target);
@@ -810,10 +855,10 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else channelId = await resolveChannel(token, ref);
+  else channelId = await resolveChannel(token, ref, args.cookie);
 
   // Fetch the message to display the original text and compute the safety hash.
-  const resp = (await replies(token, channelId, ts, 1)) as Record<string, Json>;
+  const resp = (await replies(token, channelId, ts, 1, args.cookie)) as Record<string, Json>;
   const msgs = asArray(resp.messages).map(asRecord);
   const original = msgs.find((m) => String(m.ts) === ts);
   if (!original) {
@@ -824,7 +869,7 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
 
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
   const newText = args.mentions
-    ? await encodeMentions(token, args.newText, channelId)
+    ? await encodeMentions(token, args.newText, channelId, args.cookie ? { cookie: args.cookie } : {})
     : args.newText;
 
   const code = safetyCode(originalText, newText);
@@ -838,7 +883,7 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     ]);
   }
 
-  const newTs = await editMessage(token, channelId, ts, newText);
+  const newTs = await editMessage(token, channelId, ts, newText, args.cookie);
   console.log(`✓ Edited (ts: ${newTs})`);
 }
 
@@ -847,6 +892,7 @@ interface DeleteArgs {
   target: string;
   code?: string;
   channelId?: string;
+  cookie?: string;
 }
 async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
   const { ref, ts } = splitRefTs(args.target);
@@ -857,10 +903,10 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else channelId = await resolveChannel(token, ref);
+  else channelId = await resolveChannel(token, ref, args.cookie);
 
   // Fetch the message to display what is being deleted and compute the safety hash.
-  const resp = (await replies(token, channelId, ts, 1)) as Record<string, Json>;
+  const resp = (await replies(token, channelId, ts, 1, args.cookie)) as Record<string, Json>;
   const msgs = asArray(resp.messages).map(asRecord);
   const original = msgs.find((m) => String(m.ts) === ts);
   if (!original) {
@@ -871,7 +917,7 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
 
   const code = safetyCode(channelId, ts, originalText);
   if (args.code !== code) {
-    const dest = await destLabel(token, channelId, ref);
+    const dest = await destLabel(token, channelId, ref, args.cookie);
     requireCode(args.code, code, [
       `--- Deleting message -------------------------`,
       `  → ${dest} at ${slackTsToIso(ts)}`,
@@ -880,7 +926,7 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
     ]);
   }
 
-  await deleteMessage(token, channelId, ts);
+  await deleteMessage(token, channelId, ts, args.cookie);
   console.log(`✓ Deleted (ts: ${ts})`);
 }
 
@@ -890,6 +936,7 @@ interface ReactArgs {
   emoji: string;
   remove?: boolean;
   channelId?: string;
+  cookie?: string;
 }
 // Add (or --remove) an emoji reaction. No confirm gate: a reaction is trivial
 // and fully reversible (`--remove`), and the whole point is a lightweight ack
@@ -905,13 +952,13 @@ async function cmdReact(token: string, args: ReactArgs): Promise<void> {
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else channelId = await resolveChannel(token, ref);
+  else channelId = await resolveChannel(token, ref, args.cookie);
 
   if (args.remove) {
-    await reactionRemove(token, channelId, ts, emoji);
+    await reactionRemove(token, channelId, ts, emoji, args.cookie);
     console.log(`✓ Removed :${emoji}: (ts: ${ts})`);
   } else {
-    await reactionAdd(token, channelId, ts, emoji);
+    await reactionAdd(token, channelId, ts, emoji, args.cookie);
     console.log(`✓ Reacted :${emoji}: (ts: ${ts})`);
   }
 }
@@ -933,18 +980,22 @@ interface SendArgs {
   // Session cookie (xoxd) for the mention token — required for an xoxc- user
   // token to call users.list on the public API (it is rejected without it).
   mentionCookie?: string;
+  // Session cookie (xoxd) for `token` itself — required for an xoxc- desktop
+  // session token to be accepted by the public Slack API at all (chat.postMessage
+  // included). Not set when sending --as-bot (the bot token needs no cookie).
+  cookie?: string;
 }
 
 // Detect the silent-failure footgun: DMing yourself with your own user token.
 // Slack does not notify you about messages you sent to yourself, so an
 // escalation DM via `send @me` (or @your-own-handle) is delivered but never
 // surfaces. Returns true when ref names the token's own user.
-async function isSelfDm(token: string, ref: string): Promise<boolean> {
+async function isSelfDm(token: string, ref: string, cookie?: string): Promise<boolean> {
   if (!ref.startsWith("@")) return false;
   const name = ref.slice(1).toLowerCase().replace(/[^a-z0-9]/g, "");
   if (name === "me" || name === "you") return true;
   try {
-    const self = await authTest(token);
+    const self = await authTest(token, cookie);
     const selfName = (self.user ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
     return selfName !== "" && selfName === name;
   } catch {
@@ -954,10 +1005,11 @@ async function isSelfDm(token: string, ref: string): Promise<boolean> {
 
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
+  const cookie = args.cookie;
 
   // Guard the self-DM footgun before doing anything else, unless sending as the
   // bot (which delivers a notifiable DM from a different identity).
-  if (!args.asBot && !args.channelId && !args.userId && await isSelfDm(token, ref)) {
+  if (!args.asBot && !args.channelId && !args.userId && await isSelfDm(token, ref, cookie)) {
     console.error(
       `Warning: "${ref}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
       `  To reach yourself with a notification, send as the bot:  slack send '${ref}' '...' --as-bot`,
@@ -966,8 +1018,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
-  else if (args.userId) channelId = await openDm(token, args.userId);
-  else channelId = await resolveChannel(token, ref);
+  else if (args.userId) channelId = await openDm(token, args.userId, cookie);
+  else channelId = await resolveChannel(token, ref, cookie);
 
   // Convert @handle / @名前 tokens to <@USERID> before hashing/sending so the
   // safety gate covers exactly what will be posted. Unresolved tokens stay as
@@ -1036,7 +1088,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       // Fetch a generous window and preview its tail. conversations.replies is
       // oldest-first from the parent, so a very long thread's true tail may lie
       // beyond this window — 100 covers essentially all real threads.
-      const resp = (await replies(token, channelId, threadTs, 100)) as Record<string, Json>;
+      const resp = (await replies(token, channelId, threadTs, 100, cookie)) as Record<string, Json>;
       threadMsgs = asArray(resp.messages).map(asRecord);
       const lastMsg = threadMsgs[threadMsgs.length - 1];
       // Bind the hash to the thread's most recent message: if someone replies
@@ -1050,7 +1102,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     }
   } else {
     try {
-      const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
+      const ctx = (await history(token, channelId, 1, undefined, undefined, cookie)) as Record<string, Json>;
       // limit=1 already narrows this to exactly the channel's true last message
       // (subtype or not) — take it raw for the ownership check below. The
       // subtype filter is only for the human-readable preview text/author: it
@@ -1063,7 +1115,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       // Resolve the author's user ID to a display name for the preview; fall back
       // to the bot username, then the raw ID. userName() is fail-soft.
       lastUser = typeof lastMsg?.user === "string"
-        ? await userName(token, lastMsg.user)
+        ? await userName(token, lastMsg.user, cookie)
         : typeof lastMsg?.username === "string"
         ? lastMsg.username
         : "?";
@@ -1086,7 +1138,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // shape `send --as-bot` produces. Opt out with SLACK_UNREPLIED_WARN=0.
   if (process.env.SLACK_UNREPLIED_WARN !== "0" && lastMsgTs && (lastMsgUserId || lastMsgBotId)) {
     try {
-      const self = await authScopes(token);
+      const self = await authScopes(token, cookie);
       const isSelfAuthor =
         (!!lastMsgUserId && !!self.userId && self.userId === lastMsgUserId) ||
         (!!lastMsgBotId && !!self.botId && self.botId === lastMsgBotId);
@@ -1100,7 +1152,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         // embedded thread_ts colliding with the appended message ts.
         let editCmd = `slack edit "#${channelId}:${lastMsgTs}" "<新しい本文>" --channel-id ${channelId}`;
         try {
-          const permalink = await getPermalink(token, channelId, lastMsgTs);
+          const permalink = await getPermalink(token, channelId, lastMsgTs, cookie);
           if (permalink) editCmd = `slack edit "${permalink}" "<新しい本文>"`;
         } catch {
           // fall back to the --channel-id form above
@@ -1128,7 +1180,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     }
     if (best.msg && best.sim >= 0.82) {
       const pct = Math.round(best.sim * 100);
-      console.error(`⚠ possible duplicate: ${pct}% similar to an existing thread message — ${await threadMsgLine(token, best.msg)}`);
+      console.error(`⚠ possible duplicate: ${pct}% similar to an existing thread message — ${await threadMsgLine(token, best.msg, 60, cookie)}`);
     }
   }
 
@@ -1137,14 +1189,14 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const code = safetyCode(channelId, threadTs ?? "", lastText, message);
 
   if (args.code !== code) {
-    const dest = await destLabel(token, channelId, ref);
+    const dest = await destLabel(token, channelId, ref, cookie);
     if (threadTs) {
-      const parentLine = await threadParentLine(token, threadTs, threadMsgs);
+      const parentLine = await threadParentLine(token, threadTs, threadMsgs, cookie);
       // Preview the tail of the thread (up to 3 most recent messages) so the
       // sender can see what's already been said and avoid repeating it.
       const recent = threadMsgs.slice(-3);
       const recentLines = recent.length
-        ? await Promise.all(recent.map(async (m) => `  ${await threadMsgLine(token, m)}`))
+        ? await Promise.all(recent.map(async (m) => `  ${await threadMsgLine(token, m, 60, cookie)}`))
         : ["  (thread context unavailable)"];
       requireCode(args.code, code, [
         `--- Recent messages in thread ----------------`,
@@ -1167,10 +1219,10 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       ]);
     }
   }
-  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast);
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie);
   let permalink = "";
   try {
-    permalink = await getPermalink(token, channelId, ts);
+    permalink = await getPermalink(token, channelId, ts, cookie);
   } catch {
     // fail-soft: getPermalink failure (rate limit, network, etc.) should not
     // mask send success — fall back to ts-only output below.
@@ -1491,10 +1543,11 @@ async function main(): Promise<void> {
           (y2) => y2.positional("channel", { type: "string", demandOption: true, describe: "#name or channel ID" }),
           async (argv) => {
             const token = tok(argv as W);
+            const cookie = ck(argv as W);
             const ref = argv.channel!;
             const channelRef = ref.startsWith("#") || ref.startsWith("@") || ref.startsWith("C") || ref.startsWith("G") || ref.startsWith("D") ? ref : `#${ref}`;
-            const channelId = await resolveChannel(token, channelRef);
-            const resp = asRecord((await conversationInfo(token, channelId)) as Json);
+            const channelId = await resolveChannel(token, channelRef, cookie);
+            const resp = asRecord((await conversationInfo(token, channelId, cookie)) as Json);
             const ch = asRecord(resp.channel);
             const name = typeof ch.name === "string" ? ch.name : channelId;
             const isIm = ch.is_im === true;
@@ -1519,6 +1572,7 @@ async function main(): Promise<void> {
             .option("code", { type: "string", describe: "Safety hash to confirm create" }),
           async (argv) => {
             const token = tok(argv as W);
+            const cookie = ck(argv as W);
             // Slack lowercases and strips the leading #; normalize for preview + code.
             const name = argv.name!.replace(/^#/, "").toLowerCase();
             const isPrivate = argv.private === true;
@@ -1533,7 +1587,7 @@ async function main(): Promise<void> {
             ]);
             let created: { id: string; name: string };
             try {
-              created = await createChannel(token, name, isPrivate);
+              created = await createChannel(token, name, isPrivate, cookie);
             } catch (e: unknown) {
               console.error(e instanceof Error ? e.message : String(e));
               process.exit(1);
@@ -1543,14 +1597,32 @@ async function main(): Promise<void> {
               const ids: string[] = [];
               for (const ref of invites) {
                 try {
-                  ids.push(ref.startsWith("U") || ref.startsWith("W") ? ref : await resolveUserId(token, ref));
+                  ids.push(ref.startsWith("U") || ref.startsWith("W") ? ref : await resolveUserId(token, ref, cookie));
                 } catch (e: unknown) {
                   console.error(`  ! could not resolve ${ref}: ${e instanceof Error ? e.message : String(e)}`);
                 }
               }
+              // conversations.invite returns ok:true but silently no-ops for a
+              // single-channel guest (is_ultra_restricted) — they can only ever
+              // belong to the one channel they were created in. Warn up front
+              // (fail-soft, never blocks) so a no-op invite isn't mistaken for
+              // success.
+              for (const uid of ids) {
+                try {
+                  const info = asRecord((await userInfo(token, uid, cookie)) as Json);
+                  const u = asRecord(info.user);
+                  if (u.is_ultra_restricted === true) {
+                    console.error(`⚠ ${uid} is a single-channel guest — Slack restricts them to their one existing channel; this invite will likely report success but not actually add them.`);
+                  } else if (u.is_restricted === true) {
+                    console.error(`⚠ ${uid} is a multi-channel guest — double-check they were actually added (guest invites can silently no-op depending on workspace restrictions).`);
+                  }
+                } catch {
+                  // best-effort; a lookup failure must not block the invite
+                }
+              }
               if (ids.length) {
                 try {
-                  await inviteToChannel(token, created.id, ids);
+                  await inviteToChannel(token, created.id, ids, cookie);
                   console.log(`✓ Invited ${ids.length} member${ids.length === 1 ? "" : "s"}`);
                 } catch (e: unknown) {
                   console.error(`  ! invite failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1681,7 +1753,7 @@ async function main(): Promise<void> {
         .option("count", { alias: "n", type: "number", default: 100 })
         .option("json", { type: "boolean", default: false, describe: "Output raw JSON" }),
       async (argv) => {
-        await cmdSearch(tok(argv as W), argv.query!, argv.count, argv.json);
+        await cmdSearch(tok(argv as W), argv.query!, argv.count, argv.json, ck(argv as W));
       },
     )
     .command(
@@ -1730,7 +1802,7 @@ async function main(): Promise<void> {
           // (not the user's own self-DM).
           if (!args.channelId && !args.userId && args.target.startsWith("@")) {
             try {
-              args.userId = await resolveUserId(tok(argv as W), args.target);
+              args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
             } catch (e: unknown) {
               console.error(
                 `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
@@ -1744,6 +1816,11 @@ async function main(): Promise<void> {
           args.asBot = true;
         } else {
           sendToken = tok(argv as W);
+          // Session cookie for `sendToken` itself — needed for an xoxc- desktop
+          // token to be accepted by the public API at all. Not applicable to the
+          // bot token above (bot tokens need no cookie).
+          const sc = ck(argv as W);
+          if (sc) args.cookie = sc;
         }
         // Print a clean error instead of yargs' usage dump when a send fails at
         // runtime (e.g. missing scope, channel not found). The confirm gate
@@ -1837,6 +1914,8 @@ async function main(): Promise<void> {
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv.mentions !== false) args.mentions = true;
+        const cookie = ck(argv as W);
+        if (cookie) args.cookie = cookie;
         await cmdEdit(tok(argv as W), args);
       },
     )
@@ -1851,6 +1930,8 @@ async function main(): Promise<void> {
         const args: DeleteArgs = { target: argv.target! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        const cookie = ck(argv as W);
+        if (cookie) args.cookie = cookie;
         await cmdDelete(tok(argv as W), args);
       },
     )
@@ -1866,6 +1947,8 @@ async function main(): Promise<void> {
         const args: ReactArgs = { target: argv.target!, emoji: argv.emoji! };
         if (argv.remove) args.remove = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        const cookie = ck(argv as W);
+        if (cookie) args.cookie = cookie;
         // Print a clean one-line error instead of yargs' usage dump + stack when
         // the reaction fails at runtime (missing_scope, invalid_name, etc.).
         try {

@@ -40,10 +40,13 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
   if (body.ok !== true) {
     const err = body.error ?? "unknown";
     if (err === "ratelimited") throw new RateLimitError(60);
+    // A desktop session token (xoxc-) is only accepted by the public Web API when
+    // paired with its xoxd session cookie — without one, point at the xoxp fallback.
     if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
       throw new Error(
-        `Desktop app token (xoxc-) is not accepted by the public Slack API.\n` +
-        `Replace it with an xoxp- user token:\n` +
+        `Desktop app token (xoxc-) needs its session cookie to be accepted by the public Slack API.\n` +
+        `Attach it:  slack auth chrome   (macOS)   or   slack auth firefox\n` +
+        `Or replace the token with an xoxp- user token:\n` +
         `  slack auth token`,
       );
     }
@@ -119,16 +122,19 @@ function get(token: string, method: string, params: Record<string, string>, cook
   return call(token, `${method}?${qs}`, { method: "GET" }, cookie);
 }
 
-function post(token: string, method: string, body: Record<string, Json>): Promise<Json> {
+function post(token: string, method: string, body: Record<string, Json>, cookie?: string): Promise<Json> {
   return call(token, method, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-  });
+  }, cookie);
 }
 
-export async function authTest(token: string): Promise<{ team: string; teamId: string; url: string; user: string; userId: string }> {
-  const resp = (await get(token, "auth.test", {})) as {
+export async function authTest(
+  token: string,
+  cookie?: string,
+): Promise<{ team: string; teamId: string; url: string; user: string; userId: string }> {
+  const resp = (await get(token, "auth.test", {}, cookie)) as {
     team?: string; team_id?: string; url?: string; user?: string; user_id?: string;
   };
   return {
@@ -143,13 +149,12 @@ export async function authTest(token: string): Promise<{ team: string; teamId: s
 // auth.test plus the token's granted scopes. Slack returns the granted bot/user
 // scopes in the `X-OAuth-Scopes` response header on every Web API call, which is
 // the only way to learn what a token can do without probing each endpoint.
-export async function authScopes(token: string): Promise<{
+export async function authScopes(token: string, cookie?: string): Promise<{
   userId: string; botId: string; team: string; url: string; scopes: string[];
 }> {
-  const res = await fetch(`${base()}/auth.test`, {
-    method: "GET",
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+  if (cookie) headers["Cookie"] = `d=${cookie}`;
+  const res = await fetch(`${base()}/auth.test`, { method: "GET", headers });
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
     throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
@@ -170,18 +175,25 @@ export async function authScopes(token: string): Promise<{
 
 // Resolve a bot's app_id (and bot user id) from its bot_id — needed to build the
 // app-settings deep link in messaging diagnostics.
-export async function botsInfo(token: string, botId: string): Promise<{ appId: string; userId: string }> {
-  const resp = (await get(token, "bots.info", { bot: botId })) as {
+export async function botsInfo(token: string, botId: string, cookie?: string): Promise<{ appId: string; userId: string }> {
+  const resp = (await get(token, "bots.info", { bot: botId }, cookie)) as {
     bot?: { app_id?: string; user_id?: string };
   };
   return { appId: resp.bot?.app_id ?? "", userId: resp.bot?.user_id ?? "" };
 }
 
-export async function history(token: string, channel: string, limit = 20, oldest?: string, cursor?: string): Promise<Json> {
+export async function history(
+  token: string,
+  channel: string,
+  limit = 20,
+  oldest?: string,
+  cursor?: string,
+  cookie?: string,
+): Promise<Json> {
   const params: Record<string, string> = { channel, limit: String(limit) };
   if (oldest !== undefined) params.oldest = oldest;
   if (cursor !== undefined) params.cursor = cursor;
-  return get(token, "conversations.history", params);
+  return get(token, "conversations.history", params, cookie);
 }
 
 export async function replies(
@@ -189,8 +201,9 @@ export async function replies(
   channel: string,
   ts: string,
   limit = 50,
+  cookie?: string,
 ): Promise<Json> {
-  return get(token, "conversations.replies", { channel, ts, limit: String(limit) });
+  return get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie);
 }
 
 // Metadata for a single uploaded file (files.info). Carries url_private_download,
@@ -205,6 +218,7 @@ export async function searchPage(
   query: string,
   count: number,
   page: number,
+  cookie?: string,
 ): Promise<Json> {
   return get(token, "search.messages", {
     query,
@@ -212,20 +226,20 @@ export async function searchPage(
     sort_dir: "desc",
     count: String(Math.min(Math.max(count, 1), 100)),
     page: String(Math.max(page, 1)),
-  });
+  }, cookie);
 }
 
-export async function search(token: string, query: string): Promise<Json> {
-  return searchPage(token, query, 100, 1);
+export async function search(token: string, query: string, cookie?: string): Promise<Json> {
+  return searchPage(token, query, 100, 1, cookie);
 }
 
-export async function searchAll(token: string, query: string, max: number): Promise<Json> {
+export async function searchAll(token: string, query: string, max: number, cookie?: string): Promise<Json> {
   const perPage = 100;
   let page = 1;
   const all: Json[] = [];
   let last: Json = { ok: true, messages: {} };
   while (true) {
-    const resp = await searchPage(token, query, perPage, page);
+    const resp = await searchPage(token, query, perPage, page, cookie);
     const matches = getPath(resp, ["messages", "matches"]);
     const arr = Array.isArray(matches) ? matches : [];
     all.push(...arr);
@@ -246,6 +260,7 @@ export async function send(
   text: string,
   threadTs?: string,
   replyBroadcast?: boolean,
+  cookie?: string,
 ): Promise<string> {
   const body: Record<string, Json> = {
     channel,
@@ -256,7 +271,7 @@ export async function send(
   // "Also send to channel": broadcast a threaded reply back to the channel.
   // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
   if (replyBroadcast && threadTs !== undefined) body.reply_broadcast = true;
-  const resp = (await post(token, "chat.postMessage", body)) as { ts?: string };
+  const resp = (await post(token, "chat.postMessage", body, cookie)) as { ts?: string };
   return resp.ts ?? "";
 }
 
@@ -266,6 +281,7 @@ export async function scheduleMessage(
   text: string,
   postAt: number,
   threadTs?: string,
+  cookie?: string,
 ): Promise<string> {
   const body: Record<string, Json> = {
     channel,
@@ -274,39 +290,42 @@ export async function scheduleMessage(
     blocks: [{ type: "markdown", text }],
   };
   if (threadTs !== undefined) body.thread_ts = threadTs;
-  const resp = (await post(token, "chat.scheduleMessage", body)) as { scheduled_message_id?: string };
+  const resp = (await post(token, "chat.scheduleMessage", body, cookie)) as { scheduled_message_id?: string };
   return resp.scheduled_message_id ?? "";
 }
 
 export async function listScheduledMessages(
   token: string,
   channel?: string,
+  cookie?: string,
 ): Promise<Json> {
   const params: Record<string, string> = {};
   if (channel) params.channel = channel;
-  return get(token, "chat.scheduledMessages.list", params);
+  return get(token, "chat.scheduledMessages.list", params, cookie);
 }
 
 export async function deleteScheduledMessage(
   token: string,
   channel: string,
   scheduledMessageId: string,
+  cookie?: string,
 ): Promise<void> {
   await post(token, "chat.deleteScheduledMessage", {
     channel,
     scheduled_message_id: scheduledMessageId,
-  });
+  }, cookie);
 }
 
 export async function getPermalink(
   token: string,
   channel: string,
   messageTs: string,
+  cookie?: string,
 ): Promise<string> {
   const resp = (await get(token, "chat.getPermalink", {
     channel,
     message_ts: messageTs,
-  })) as { permalink?: string };
+  }, cookie)) as { permalink?: string };
   return resp.permalink ?? "";
 }
 
@@ -315,13 +334,14 @@ export async function editMessage(
   channel: string,
   ts: string,
   text: string,
+  cookie?: string,
 ): Promise<string> {
   const resp = (await post(token, "chat.update", {
     channel,
     ts,
     text,
     blocks: [{ type: "markdown", text }],
-  })) as { ts?: string };
+  }, cookie)) as { ts?: string };
   return resp.ts ?? ts;
 }
 
@@ -329,8 +349,9 @@ export async function deleteMessage(
   token: string,
   channel: string,
   ts: string,
+  cookie?: string,
 ): Promise<void> {
-  await post(token, "chat.delete", { channel, ts });
+  await post(token, "chat.delete", { channel, ts }, cookie);
 }
 
 // Add or remove an emoji reaction on a message. `name` is the emoji shortcode
@@ -342,8 +363,9 @@ export async function reactionAdd(
   channel: string,
   ts: string,
   name: string,
+  cookie?: string,
 ): Promise<void> {
-  await post(token, "reactions.add", { channel, timestamp: ts, name });
+  await post(token, "reactions.add", { channel, timestamp: ts, name }, cookie);
 }
 
 export async function reactionRemove(
@@ -351,8 +373,9 @@ export async function reactionRemove(
   channel: string,
   ts: string,
   name: string,
+  cookie?: string,
 ): Promise<void> {
-  await post(token, "reactions.remove", { channel, timestamp: ts, name });
+  await post(token, "reactions.remove", { channel, timestamp: ts, name }, cookie);
 }
 
 // Create a public (or private) channel via conversations.create. Slack
@@ -363,11 +386,12 @@ export async function createChannel(
   token: string,
   name: string,
   isPrivate = false,
+  cookie?: string,
 ): Promise<{ id: string; name: string }> {
   const resp = (await post(token, "conversations.create", {
     name,
     is_private: isPrivate,
-  })) as { channel?: { id?: string; name?: string } };
+  }, cookie)) as { channel?: { id?: string; name?: string } };
   return { id: resp.channel?.id ?? "", name: resp.channel?.name ?? name };
 }
 
@@ -376,17 +400,18 @@ export async function inviteToChannel(
   token: string,
   channel: string,
   userIds: string[],
+  cookie?: string,
 ): Promise<void> {
-  await post(token, "conversations.invite", { channel, users: userIds.join(",") });
+  await post(token, "conversations.invite", { channel, users: userIds.join(",") }, cookie);
 }
 
-export async function listConversations(token: string): Promise<Json> {
+export async function listConversations(token: string, cookie?: string): Promise<Json> {
   const allChannels: Json[] = [];
   let cursor = "";
   while (true) {
     const params: Record<string, string> = { limit: "200", types: "public_channel,private_channel,im,mpim" };
     if (cursor) params.cursor = cursor;
-    const resp = (await get(token, "conversations.list", params)) as {
+    const resp = (await get(token, "conversations.list", params, cookie)) as {
       channels?: Json[];
       response_metadata?: { next_cursor?: string };
     };
@@ -397,8 +422,8 @@ export async function listConversations(token: string): Promise<Json> {
   return { channels: allChannels };
 }
 
-export async function openDm(token: string, userId: string): Promise<string> {
-  const resp = (await post(token, "conversations.open", { users: userId })) as {
+export async function openDm(token: string, userId: string, cookie?: string): Promise<string> {
+  const resp = (await post(token, "conversations.open", { users: userId }, cookie)) as {
     channel?: { id?: string };
   };
   const id = resp.channel?.id;
@@ -501,7 +526,7 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
       };
       const dm = (dmResp.channels ?? []).find((ch) => ch.user === userId);
       if (dm?.id) return String(dm.id);
-      return openDm(token, userId);
+      return openDm(token, userId, cookie);
     }
 
     // Find user ID first via users.list (batch), then locate existing DM.
@@ -577,9 +602,10 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
 export async function userInfoPair(
   token: string,
   userId: string,
+  cookie?: string,
 ): Promise<[string, string]> {
   try {
-    const resp = (await get(token, "users.info", { user: userId })) as {
+    const resp = (await get(token, "users.info", { user: userId }, cookie)) as {
       user?: { profile?: { display_name?: string }; real_name?: string; name?: string };
     };
     const display = resp.user?.profile?.display_name;
@@ -594,9 +620,9 @@ export async function userInfoPair(
   }
 }
 
-export async function userName(token: string, userId: string): Promise<string> {
+export async function userName(token: string, userId: string, cookie?: string): Promise<string> {
   try {
-    const resp = (await get(token, "users.info", { user: userId })) as {
+    const resp = (await get(token, "users.info", { user: userId }, cookie)) as {
       user?: { profile?: { display_name?: string }; real_name?: string; name?: string };
     };
     const display = resp.user?.profile?.display_name;
@@ -700,8 +726,8 @@ export async function userInfo(token: string, userId: string, cookie?: string): 
   return get(token, "users.info", { user: userId }, cookie);
 }
 
-export async function conversationInfo(token: string, channelId: string): Promise<Json> {
-  return get(token, "conversations.info", { channel: channelId });
+export async function conversationInfo(token: string, channelId: string, cookie?: string): Promise<Json> {
+  return get(token, "conversations.info", { channel: channelId }, cookie);
 }
 
 export async function deleteDraft(token: string, draftId: string, cookie?: string): Promise<Json> {
@@ -724,6 +750,7 @@ export async function uploadFile(
   channel: string,
   filePath: string,
   opts: { title?: string; threadTs?: string; initialComment?: string } = {},
+  cookie?: string,
 ): Promise<{ fileId: string; permalink?: string }> {
   const { statSync, readFileSync } = await import("node:fs");
   const { basename } = await import("node:path");
@@ -735,7 +762,7 @@ export async function uploadFile(
   const urlResp = (await get(token, "files.getUploadURLExternal", {
     filename,
     length: String(stat.size),
-  })) as { upload_url?: string; file_id?: string };
+  }, cookie)) as { upload_url?: string; file_id?: string };
 
   const uploadUrl = urlResp.upload_url;
   const fileId = urlResp.file_id;
@@ -758,7 +785,7 @@ export async function uploadFile(
   if (opts.threadTs) completeBody.thread_ts = opts.threadTs;
   if (opts.initialComment) completeBody.initial_comment = opts.initialComment;
 
-  const completeResp = (await post(token, "files.completeUploadExternal", completeBody)) as {
+  const completeResp = (await post(token, "files.completeUploadExternal", completeBody, cookie)) as {
     files?: Array<{ permalink?: string }>;
   };
 

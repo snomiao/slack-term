@@ -92,7 +92,15 @@ function run(
   args: string[],
   extra: { env?: Record<string, string>; baseUrl?: string } = {},
 ): Promise<RunResult> {
-  const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, ...rest } = process.env as Record<string, string>;
+  // Strip every Slack-auth-related var the host shell might have set for real
+  // usage (this CLI is used daily against a real workspace) — otherwise a
+  // developer's actual SLACK_COOKIE/SLACK_WORKSPACE leaks into the child and
+  // silently changes which code path a test exercises.
+  const {
+    SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
+    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
+    ...rest
+  } = process.env as Record<string, string>;
   const env = {
     ...rest,
     HOME: tmpHome,
@@ -198,6 +206,70 @@ describe("send targeting (CLI)", { timeout: 60_000 }, () => {
     const post = mock.requests.slice(before).find((q) => q.method === "chat.postMessage");
     const body = JSON.parse(post!.body) as { thread_ts?: string };
     expect(body.thread_ts).toBeUndefined();
+  });
+});
+
+// BUG-1 regression: a desktop session token (xoxc-) IS accepted by the public
+// Slack API when paired with its xoxd session cookie — the CLI previously
+// rejected xoxc- outright without ever trying to attach the cookie it already
+// had (SLACK_COOKIE / profile.cookie), even though `resolveCookie()` already
+// existed for exactly this purpose.
+describe("xoxc token + cookie (CLI)", { timeout: 60_000 }, () => {
+  test("xoxc- without a cookie: chat.postMessage invalid_auth still surfaces the desktop-token guidance (unchanged)", async () => {
+    // Overrides the mock's normally-always-succeeds chat.postMessage to simulate
+    // the real Slack rejection an xoxc- token gets without its session cookie.
+    const m = await startMock({
+      inline: {
+        ...fixtures,
+        "chat.postMessage": { ok: false, error: "invalid_auth" },
+      },
+    });
+    try {
+      const env = { SLACK_MCP_XOXP_TOKEN: "xoxc-fake" };
+      const dry = await run(["send", "#channel-01", "hi via xoxc"], { baseUrl: m.baseUrl, env });
+      const r = await run(
+        ["send", "#channel-01", "hi via xoxc", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Desktop app token");
+      expect(r.stderr).toContain("session cookie");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("xoxc- + SLACK_COOKIE: send succeeds and the Cookie header reaches chat.postMessage", async () => {
+    const env = { SLACK_MCP_XOXP_TOKEN: "xoxc-fake", SLACK_COOKIE: "xoxd-secret" };
+    const dry = await run(["send", "#channel-01", "hi via xoxc with cookie"], { env });
+    expect(dry.exitCode).toBe(1); // still stops at the confirm gate, same as any other token
+    expect(dry.stderr).not.toContain("Desktop app token");
+
+    const before = mock.requests.length;
+    const r = await run(
+      ["send", "#channel-01", "hi via xoxc with cookie", `--code=${extractCode(dry.stderr)}`],
+      { env },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("✓ Sent");
+    const post = mock.requests.slice(before).find((q) => q.method === "chat.postMessage");
+    expect(post).toBeDefined();
+    expect(post!.headers.cookie).toBe("d=xoxd-secret");
+  });
+
+  test("xoxc- + SLACK_COOKIE: edit/delete/react also attach the Cookie header", async () => {
+    const env = { SLACK_MCP_XOXP_TOKEN: "xoxc-fake", SLACK_COOKIE: "xoxd-secret" };
+
+    const beforeEdit = mock.requests.length;
+    const dryEdit = await run(["edit", MSG_PERMALINK, "edited text"], { env });
+    await run(["edit", MSG_PERMALINK, "edited text", `--code=${extractCode(dryEdit.stderr)}`], { env });
+    const update = mock.requests.slice(beforeEdit).find((q) => q.method === "chat.update");
+    expect(update?.headers.cookie).toBe("d=xoxd-secret");
+
+    const beforeReact = mock.requests.length;
+    await run(["react", MSG_PERMALINK, "eyes"], { env });
+    const add = mock.requests.slice(beforeReact).find((q) => q.method === "reactions.add");
+    expect(add?.headers.cookie).toBe("d=xoxd-secret");
   });
 });
 

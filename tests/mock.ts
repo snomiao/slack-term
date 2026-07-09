@@ -28,6 +28,20 @@ function safeName(key: string): string {
   return key.replace(/[^a-zA-Z0-9_.=&-]/g, "_");
 }
 
+/** A fixture value shaped `{ __byAuth: { "Bearer xoxb-...": {...}, "*": {...} } }`
+ *  branches its response on the request's Authorization header — lets a test
+ *  simulate two tokens hitting the identical method+params (e.g. a bot token
+ *  rejected, a user token accepted) without the mock otherwise inspecting
+ *  headers. Fixtures without `__byAuth` pass through unchanged. */
+function resolveByAuth(fx: unknown, req: IncomingMessage): unknown {
+  if (fx && typeof fx === "object" && !Array.isArray(fx) && "__byAuth" in (fx as Record<string, unknown>)) {
+    const byAuth = (fx as Record<string, unknown>).__byAuth as Record<string, unknown>;
+    const auth = req.headers.authorization ?? "";
+    return byAuth[auth] ?? byAuth["*"] ?? { ok: false, error: `no_fixture_for_auth:${auth}` };
+  }
+  return fx;
+}
+
 async function loadFixtures(): Promise<Fixtures> {
   const map: Fixtures = new Map();
   const files = await readdir(MOCK).catch(() => [] as string[]);
@@ -44,6 +58,9 @@ export type RecordedRequest = {
   httpMethod: string;
   params: Record<string, string>;
   body: string;
+  /** Incoming request headers (lowercased keys, per Node's http module) — lets
+   *  tests assert on Authorization/Cookie forwarding. */
+  headers: Record<string, string | string[] | undefined>;
 };
 
 export type MockHandle = {
@@ -94,7 +111,15 @@ export async function startMock(
       let body = "";
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
-        requests.push({ method, httpMethod: "POST", params, body });
+        requests.push({ method, httpMethod: "POST", params, body, headers: req.headers });
+        // An inline fixture keyed by the bare method name (e.g. "chat.postMessage":
+        // {ok:false,...}) overrides the hardcoded success default below — lets
+        // tests simulate a failure on an otherwise-faked write endpoint.
+        const override = fixtures.get(safeName(method));
+        if (override) {
+          respond(resolveByAuth(override, req));
+          return;
+        }
         // Best-effort lookup: ignore body for fixture lookup. POST endpoints
         // we fake: chat.postMessage, conversations.open.
         if (method === "chat.postMessage") {
@@ -140,13 +165,13 @@ export async function startMock(
         }
         const key = safeName(fixtureKey(method, {}));
         const fx = fixtures.get(key);
-        if (fx) respond(fx);
+        if (fx) respond(resolveByAuth(fx, req));
         else respond({ ok: false, error: `no_fixture:${key}` }, 200);
       });
       return;
     }
 
-    requests.push({ method, httpMethod: "GET", params, body: "" });
+    requests.push({ method, httpMethod: "GET", params, body: "", headers: req.headers });
 
     // Special GET handlers that need dynamic content
     if (method === "files.getUploadURLExternal") {
@@ -157,14 +182,14 @@ export async function startMock(
     const key = safeName(fixtureKey(method, params));
     const fx = fixtures.get(key);
     if (fx) {
-      respond(fx);
+      respond(resolveByAuth(fx, req));
       return;
     }
     // Fall back: ignore params (so minor param drift still returns something).
     const looseKey = safeName(method);
     const loose = fixtures.get(looseKey);
     if (loose) {
-      respond(loose);
+      respond(resolveByAuth(loose, req));
       return;
     }
     respond({ ok: false, error: `no_fixture:${key}` }, 200);

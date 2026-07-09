@@ -48,6 +48,9 @@ slack msgs
 # Full-text search
 slack search "deploy"
 slack search "deploy" --count 50
+# search.messages is user-token-only; if the active profile is a bot token (xoxb-),
+# the CLI auto-falls back to a sibling user-token profile for the same workspace
+# (prints "falling back to profile ..."), or a clear error if none exists.
 
 # Read a specific channel or DM (quote #channel — unquoted # is a shell comment)
 slack read "#general"
@@ -171,6 +174,8 @@ slack news --limit 1
 - **`missing_scope`** — add the scope from the error, then click **Reinstall to Workspace** (scope changes require reinstall).
 - **`token_revoked`** — app uninstalled; reinstall from the app page.
 - **Token starts with `xoxb-`** — that's a Bot Token. Add scopes under **User Token Scopes** instead, reinstall, and copy the **User OAuth Token**.
+- **`xoxc-` desktop session token** — accepted by the public Slack API (send/edit/delete/react/upload/channel create+invite included) as long as its `xoxd` session cookie is attached (`slack auth chrome`/`slack auth firefox`, or `SLACK_COOKIE=...`). Without the cookie it still fails with a clear "needs its session cookie" error.
+- **`conversations.invite` reports success but the member never shows up** — the invited user is likely a single-channel guest (`is_ultra_restricted`); Slack silently no-ops the invite since that account type can only ever belong to the one channel it was created in. `channel create --invite` now warns about this up front.
 - **Send is rejected with "use #channel or @user"** — the CLI enforces human-readable targets. Use `#channel-name` or `@display-name`, not raw IDs.
 - **Confirm code mismatch on `send`** — the message text or destination changed between preview and confirm. Re-run without `--code` for a fresh preview, and re-check the `→` destination line (THREAD REPLY vs NEW top-level message).
 - **Enterprise Grid / admin-locked workspace** — custom app installation may need admin approval or be disabled outright.
