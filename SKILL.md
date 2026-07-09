@@ -95,6 +95,11 @@ When the target is a **thread**, the confirm preview shows the thread's recent m
 (not the channel's last message) and prints `⚠ possible duplicate: …` if your text is
 near-identical to an existing reply — so you can avoid re-posting something already said.
 
+`send` also warns (non-blocking) when the destination's most recent message is your own
+and no one has replied since — `⚠ 相手はまだ返信していません…`, suggesting `slack edit`
+on that message instead of piling on a new one. Reply-status based, not time-based; opt
+out with `SLACK_UNREPLIED_WARN=0`.
+
 **Etiquette:** prefer a `react` over a reply for simple acks (了解 → `eyes`, 完了 →
 `white_check_mark`, 処理中 → `hourglass`) so threads stay short; read the thread with
 `slack thread`/`slack read` before replying to avoid duplicates; consolidate multiple

@@ -201,6 +201,102 @@ describe("send targeting (CLI)", { timeout: 60_000 }, () => {
   });
 });
 
+// "Unreplied" WARN: the destination's most recent message is our own (the
+// other party hasn't replied yet) — non-blocking, points at `slack edit`
+// instead of piling on a new message. Reply-status based, not time-based.
+describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
+  const authSelf = { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" };
+
+  test("channel target: warns when the channel's last message is our own", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": authSelf,
+        "conversations.history__channel=C00000002&limit=1": {
+          ok: true, messages: [{ type: "message", user: "U00000001", text: "my last msg", ts: "1700000200.000100" }],
+        },
+        "chat.getPermalink__channel=C00000002&message_ts=1700000200.000100": {
+          ok: true, channel: "C00000002", permalink: "https://acme.slack.com/archives/C00000002/p1700000200000100",
+        },
+      },
+    });
+    try {
+      const r = await run(["send", "#channel-02", "following up", "--channel-id", "C00000002"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1); // still stops at the confirm gate
+      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000200000100"');
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("channel target: no warn once someone else has replied", async () => {
+    // default `mock` fixtures: last message in C00000001 is bob (U00000002), self is U00000001
+    const r = await run(["send", "#channel-01", "hi there"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).not.toContain("相手はまだ返信していません");
+  });
+
+  test("thread target: warns when the thread's last reply is our own", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": authSelf,
+        "conversations.replies__channel=C00000002&limit=100&ts=1700000000.000100": {
+          ok: true,
+          messages: [
+            { type: "message", user: "U00000002", text: "hello world", ts: "1700000000.000100" },
+            { type: "message", user: "U00000001", text: "my reply", ts: "1700000050.000300" },
+          ],
+        },
+        "chat.getPermalink__channel=C00000002&message_ts=1700000050.000300": {
+          ok: true, channel: "C00000002", permalink: "https://acme.slack.com/archives/C00000002/p1700000050000300",
+        },
+      },
+    });
+    try {
+      const r = await run(
+        ["send", "#channel-02:1700000000.000100", "following up", "--channel-id", "C00000002"],
+        { baseUrl: m.baseUrl },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000050000300"');
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("thread target: no warn once the other party has replied in-thread", async () => {
+    // default `mock` fixtures: thread's last reply is bob (U00000002), self is U00000001
+    const r = await run(["send", MSG_PERMALINK, "something completely unrelated here"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).not.toContain("相手はまだ返信していません");
+  });
+
+  test("SLACK_UNREPLIED_WARN=0 disables the warning", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": authSelf,
+        "conversations.history__channel=C00000002&limit=1": {
+          ok: true, messages: [{ type: "message", user: "U00000001", text: "my last msg", ts: "1700000200.000100" }],
+        },
+        "chat.getPermalink__channel=C00000002&message_ts=1700000200.000100": {
+          ok: true, channel: "C00000002", permalink: "https://acme.slack.com/archives/C00000002/p1700000200000100",
+        },
+      },
+    });
+    try {
+      const r = await run(
+        ["send", "#channel-02", "following up", "--channel-id", "C00000002"],
+        { baseUrl: m.baseUrl, env: { SLACK_UNREPLIED_WARN: "0" } },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).not.toContain("相手はまだ返信していません");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
 describe("delete (CLI)", { timeout: 60_000 }, () => {
   test("gate shows the message being deleted", async () => {
     const r = await run(["delete", MSG_PERMALINK]);

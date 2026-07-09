@@ -1021,6 +1021,11 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   let lastText = "";
   let lastUser = "?";
   let threadMsgs: Record<string, Json>[] = [];
+  // Author + ts of the destination's most recent message (thread-scoped for a
+  // thread reply, channel-scoped for a top-level send) — feeds the unreplied-warn
+  // check below. Undefined when the preview fetch failed (fail-soft).
+  let lastMsgUserId: string | undefined;
+  let lastMsgTs: string | undefined;
   if (threadTs) {
     try {
       // Fetch a generous window and preview its tail. conversations.replies is
@@ -1032,6 +1037,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       // Bind the hash to the thread's most recent message: if someone replies
       // between preview and confirm, the code invalidates and re-previews.
       lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+      lastMsgUserId = typeof lastMsg?.user === "string" ? lastMsg.user : undefined;
+      lastMsgTs = typeof lastMsg?.ts === "string" ? lastMsg.ts : undefined;
     } catch {
       // best-effort preview only
     }
@@ -1048,8 +1055,37 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         : typeof lastMsg?.username === "string"
         ? lastMsg.username
         : "?";
+      lastMsgUserId = typeof lastMsg?.user === "string" ? lastMsg.user : undefined;
+      lastMsgTs = typeof lastMsg?.ts === "string" ? lastMsg.ts : undefined;
     } catch {
       // best-effort preview only
+    }
+  }
+
+  // Unreplied guard: the destination's last message is our own and no one has
+  // replied since (by definition, since it's still the most recent message) —
+  // sending another new message risks spamming the same person twice. Warn
+  // (never block) and point at `slack edit` on that message instead. Reply-status
+  // based, not time-based, so it still fires even long after the last send.
+  // Opt out with SLACK_UNREPLIED_WARN=0.
+  if (process.env.SLACK_UNREPLIED_WARN !== "0" && lastMsgUserId && lastMsgTs) {
+    try {
+      const self = await authTest(token);
+      if (self.userId && self.userId === lastMsgUserId) {
+        let editTarget = `${ref}:${lastMsgTs}`;
+        try {
+          const permalink = await getPermalink(token, channelId, lastMsgTs);
+          if (permalink) editTarget = permalink;
+        } catch {
+          // fall back to ref:ts above
+        }
+        console.error(`⚠ 相手はまだ返信していません(最後のメッセージはあなたのものです)。`);
+        console.error(`  連投を避けるため、新規送信でなく直前のメッセージの edit を検討してください:`);
+        console.error(`    slack edit "${editTarget}" "<新しい本文>"`);
+        console.error(`  このまま送信する場合は --code=XXXX で確定。`);
+      }
+    } catch {
+      // best-effort; a failed self-identity lookup must not block the send
     }
   }
 
