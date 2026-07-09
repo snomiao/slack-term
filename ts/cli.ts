@@ -15,6 +15,7 @@ import { cmdTail } from "./tail.ts";
 
 import {
   authTest,
+  authScopes,
   authTestSession,
   conversationInfoSession,
   createChannel,
@@ -1021,10 +1022,14 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   let lastText = "";
   let lastUser = "?";
   let threadMsgs: Record<string, Json>[] = [];
-  // Author + ts of the destination's most recent message (thread-scoped for a
+  // Author of the destination's TRUE most recent message (thread-scoped for a
   // thread reply, channel-scoped for a top-level send) — feeds the unreplied-warn
-  // check below. Undefined when the preview fetch failed (fail-soft).
+  // check below. Tracks `user` (normal message) and `bot_id` (a `bot_message`
+  // subtype post — e.g. `send --as-bot` — which carries bot_id/username but no
+  // `user`) so ownership can be determined either way. Undefined when the
+  // preview fetch failed (fail-soft).
   let lastMsgUserId: string | undefined;
+  let lastMsgBotId: string | undefined;
   let lastMsgTs: string | undefined;
   if (threadTs) {
     try {
@@ -1038,6 +1043,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       // between preview and confirm, the code invalidates and re-previews.
       lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
       lastMsgUserId = typeof lastMsg?.user === "string" ? lastMsg.user : undefined;
+      lastMsgBotId = typeof lastMsg?.bot_id === "string" ? lastMsg.bot_id : undefined;
       lastMsgTs = typeof lastMsg?.ts === "string" ? lastMsg.ts : undefined;
     } catch {
       // best-effort preview only
@@ -1045,8 +1051,14 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   } else {
     try {
       const ctx = (await history(token, channelId, 1)) as Record<string, Json>;
-      const lastMsg = asArray(ctx.messages).map(asRecord)
-        .filter((m) => m.subtype === undefined || m.subtype === null)[0];
+      // limit=1 already narrows this to exactly the channel's true last message
+      // (subtype or not) — take it raw for the ownership check below. The
+      // subtype filter is only for the human-readable preview text/author: it
+      // deliberately hides system events (channel_join etc.), but a bot_message
+      // post is a real message and must NOT be dropped here, or a bot's own
+      // last post would silently disable the unreplied-warn for --as-bot sends.
+      const rawMsgs = asArray(ctx.messages).map(asRecord);
+      const lastMsg = rawMsgs.filter((m) => m.subtype === undefined || m.subtype === null)[0];
       lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
       // Resolve the author's user ID to a display name for the preview; fall back
       // to the bot username, then the raw ID. userName() is fail-soft.
@@ -1055,8 +1067,10 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         : typeof lastMsg?.username === "string"
         ? lastMsg.username
         : "?";
-      lastMsgUserId = typeof lastMsg?.user === "string" ? lastMsg.user : undefined;
-      lastMsgTs = typeof lastMsg?.ts === "string" ? lastMsg.ts : undefined;
+      const rawLast = rawMsgs[0];
+      lastMsgUserId = typeof rawLast?.user === "string" ? rawLast.user : undefined;
+      lastMsgBotId = typeof rawLast?.bot_id === "string" ? rawLast.bot_id : undefined;
+      lastMsgTs = typeof rawLast?.ts === "string" ? rawLast.ts : undefined;
     } catch {
       // best-effort preview only
     }
@@ -1067,21 +1081,33 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // sending another new message risks spamming the same person twice. Warn
   // (never block) and point at `slack edit` on that message instead. Reply-status
   // based, not time-based, so it still fires even long after the last send.
-  // Opt out with SLACK_UNREPLIED_WARN=0.
-  if (process.env.SLACK_UNREPLIED_WARN !== "0" && lastMsgUserId && lastMsgTs) {
+  // Self-identity covers both a normal post (`user` = our user id) and a
+  // `bot_message`-subtype post (`bot_id` = our app's bot id, no `user`), the
+  // shape `send --as-bot` produces. Opt out with SLACK_UNREPLIED_WARN=0.
+  if (process.env.SLACK_UNREPLIED_WARN !== "0" && lastMsgTs && (lastMsgUserId || lastMsgBotId)) {
     try {
-      const self = await authTest(token);
-      if (self.userId && self.userId === lastMsgUserId) {
-        let editTarget = `${ref}:${lastMsgTs}`;
+      const self = await authScopes(token);
+      const isSelfAuthor =
+        (!!lastMsgUserId && !!self.userId && self.userId === lastMsgUserId) ||
+        (!!lastMsgBotId && !!self.botId && self.botId === lastMsgBotId);
+      if (isSelfAuthor) {
+        // Prefer a real permalink (exact, copy-pasteable). If that lookup fails,
+        // fall back to a form guaranteed parseable by `slack edit` regardless of
+        // what shape `ref` is in (a bare channel/user name, a raw ID resolved
+        // from a permalink, or a thread ref) — `#<channelId>:<ts>` always yields
+        // a ts split, and `--channel-id` makes the leading "#name" irrelevant to
+        // resolution, so it never depends on ref's original prefix or an
+        // embedded thread_ts colliding with the appended message ts.
+        let editCmd = `slack edit "#${channelId}:${lastMsgTs}" "<新しい本文>" --channel-id ${channelId}`;
         try {
           const permalink = await getPermalink(token, channelId, lastMsgTs);
-          if (permalink) editTarget = permalink;
+          if (permalink) editCmd = `slack edit "${permalink}" "<新しい本文>"`;
         } catch {
-          // fall back to ref:ts above
+          // fall back to the --channel-id form above
         }
         console.error(`⚠ 相手はまだ返信していません(最後のメッセージはあなたのものです)。`);
         console.error(`  連投を避けるため、新規送信でなく直前のメッセージの edit を検討してください:`);
-        console.error(`    slack edit "${editTarget}" "<新しい本文>"`);
+        console.error(`    ${editCmd}`);
         console.error(`  このまま送信する場合は --code=XXXX で確定。`);
       }
     } catch {

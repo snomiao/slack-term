@@ -272,6 +272,76 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
     expect(r.stderr).not.toContain("相手はまだ返信していません");
   });
 
+  test("channel target (--as-bot): warns on our own bot_message post (no `user` field, only bot_id)", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000BOT", bot_id: "B00000001", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+        "conversations.history__channel=C00000002&limit=1": {
+          ok: true,
+          messages: [{ type: "message", subtype: "bot_message", bot_id: "B00000001", username: "CRM Bot", text: "my last bot msg", ts: "1700000300.000100" }],
+        },
+        "chat.getPermalink__channel=C00000002&message_ts=1700000300.000100": {
+          ok: true, channel: "C00000002", permalink: "https://acme.slack.com/archives/C00000002/p1700000300000100",
+        },
+      },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const r = await run(
+        ["send", "#channel-02", "following up", "--channel-id", "C00000002", "--as-bot"],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000300000100"');
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("channel target (--as-bot): a bot_message from a DIFFERENT bot does not warn", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000BOT", bot_id: "B00000001", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+        "conversations.history__channel=C00000002&limit=1": {
+          ok: true,
+          messages: [{ type: "message", subtype: "bot_message", bot_id: "B99999999", username: "Some Other Bot", text: "unrelated", ts: "1700000300.000100" }],
+        },
+      },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const r = await run(
+        ["send", "#channel-02", "following up", "--channel-id", "C00000002", "--as-bot"],
+        { baseUrl: m.baseUrl, env },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).not.toContain("相手はまだ返信していません");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("falls back to a --channel-id target when the permalink lookup fails", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": authSelf,
+        "conversations.history__channel=C00000002&limit=1": {
+          ok: true, messages: [{ type: "message", user: "U00000001", text: "my last msg", ts: "1700000200.000100" }],
+        },
+        // no chat.getPermalink fixture → mock returns {ok:false}, getPermalink throws
+      },
+    });
+    try {
+      const r = await run(["send", "#channel-02", "following up", "--channel-id", "C00000002"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain('slack edit "#C00000002:1700000200.000100" "<新しい本文>" --channel-id C00000002');
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("SLACK_UNREPLIED_WARN=0 disables the warning", async () => {
     const m = await startMock({
       inline: {
