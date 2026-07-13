@@ -137,6 +137,9 @@ const fixtures = {
   "drafts.create": { ok: true, draft: { id: "D00000001" } },
   "drafts.update": { ok: true },
   "drafts.delete": { ok: true },
+
+  "reactions.add": { ok: true },
+  "reactions.remove": { ok: true },
 };
 
 beforeAll(async () => {
@@ -406,6 +409,18 @@ describe("slack.ts", () => {
     const del = mock.requests.filter((r) => r.method === "chat.delete");
     expect(del).toHaveLength(1);
     expect(JSON.parse(del[0]!.body)).toEqual({ channel: "C00000001", ts: "1700000000.000100" });
+  });
+
+  test("reactionAdd posts reactions.add with the emoji name", async () => {
+    await expect(slack.reactionAdd(token, "C00000001", "1700000000.000100", "eyes")).resolves.toBeUndefined();
+    const add = mock.requests.filter((r) => r.method === "reactions.add").at(-1);
+    expect(JSON.parse(add!.body)).toEqual({ channel: "C00000001", timestamp: "1700000000.000100", name: "eyes" });
+  });
+
+  test("reactionRemove posts reactions.remove with the emoji name", async () => {
+    await expect(slack.reactionRemove(token, "C00000001", "1700000000.000100", "eyes")).resolves.toBeUndefined();
+    const rm = mock.requests.filter((r) => r.method === "reactions.remove").at(-1);
+    expect(JSON.parse(rm!.body)).toEqual({ channel: "C00000001", timestamp: "1700000000.000100", name: "eyes" });
   });
 
   test("parseSlackPermalink extracts channel from app.slack.com URL", () => {
