@@ -140,6 +140,19 @@ const fixtures = {
 
   "reactions.add": { ok: true },
   "reactions.remove": { ok: true },
+
+  "files.list__count=100&page=1": {
+    ok: true,
+    files: [
+      { id: "F00000001", name: "invoice.pdf", filetype: "pdf", size: 12345, user: "U00000001", permalink: "https://acme.slack.com/files/U1/F1/invoice.pdf" },
+    ],
+    paging: { count: 100, total: 1, page: 1, pages: 1 },
+  },
+  "files.list__count=50&page=2&types=pdfs": {
+    ok: true,
+    files: [],
+    paging: { count: 50, total: 1, page: 2, pages: 1 },
+  },
 };
 
 beforeAll(async () => {
@@ -409,6 +422,17 @@ describe("slack.ts", () => {
     const del = mock.requests.filter((r) => r.method === "chat.delete");
     expect(del).toHaveLength(1);
     expect(JSON.parse(del[0]!.body)).toEqual({ channel: "C00000001", ts: "1700000000.000100" });
+  });
+
+  test("filesList returns files with default paging params", async () => {
+    const resp = (await slack.filesList(token)) as { files?: Array<{ id: string }> };
+    expect(resp.files).toHaveLength(1);
+    expect(resp.files?.[0]?.id).toBe("F00000001");
+  });
+
+  test("filesList threads page/count/types params through", async () => {
+    const resp = (await slack.filesList(token, { page: 2, count: 50, types: "pdfs" })) as { files?: unknown[] };
+    expect(resp.files).toEqual([]);
   });
 
   test("reactionAdd posts reactions.add with the emoji name", async () => {

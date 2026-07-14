@@ -213,6 +213,27 @@ export async function filesInfo(token: string, fileId: string, cookie?: string):
   return get(token, "files.info", { file: fileId }, cookie);
 }
 
+// files.list — list files visible to the token. Paginated by page number (not a
+// cursor); the response's `paging.pages` tells the caller how many pages exist.
+// `types` is Slack's comma-separated filter (images,pdfs,gdocs,snippets,zips,
+// spaces,all). Note: canvases and Slack Lists shown in the web "unified files"
+// view are largely NOT returned here — those live behind internal APIs the CLI's
+// token type can't reach — so this surfaces conventional file uploads.
+export async function filesList(
+  token: string,
+  opts: { page?: number; count?: number; types?: string; channel?: string; user?: string } = {},
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = {
+    count: String(Math.min(Math.max(opts.count ?? 100, 1), 200)),
+    page: String(Math.max(opts.page ?? 1, 1)),
+  };
+  if (opts.types) params.types = opts.types;
+  if (opts.channel) params.channel = opts.channel;
+  if (opts.user) params.user = opts.user;
+  return get(token, "files.list", params, cookie);
+}
+
 export async function searchPage(
   token: string,
   query: string,

@@ -28,6 +28,7 @@ import {
   reactionAdd,
   reactionRemove,
   filesInfo,
+  filesList,
   history,
   listConversations,
   listDrafts,
@@ -1418,6 +1419,54 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   }
 }
 
+// --- files ls — list files visible to the token (files.list, read-only) ---
+// Walks files.list pages until it has `limit` rows or runs out. Canvases and
+// Slack Lists from the web "unified files" view mostly don't appear here (the
+// token can't reach those internal APIs) — this lists real file uploads.
+async function cmdFilesList(
+  token: string,
+  cookie: string | undefined,
+  opts: { limit: number; types?: string; channel?: string; user?: string; format: string },
+): Promise<void> {
+  const channelId = opts.channel ? await resolveChannel(token, opts.channel, cookie) : undefined;
+  const files: Record<string, Json>[] = [];
+  let page = 1;
+  let pages = 1;
+  do {
+    const listOpts: { page: number; count: number; types?: string; channel?: string; user?: string } = { page, count: 200 };
+    if (opts.types) listOpts.types = opts.types;
+    if (channelId) listOpts.channel = channelId;
+    if (opts.user) listOpts.user = opts.user;
+    const resp = asRecord((await filesList(token, listOpts, cookie)) as Json);
+    for (const f of asArray(resp.files)) files.push(asRecord(f));
+    pages = Number(asRecord(resp.paging).pages ?? 1);
+    page++;
+  } while (files.length < opts.limit && page <= pages);
+  const shown = files.slice(0, opts.limit);
+
+  if (opts.format === "jsonl") {
+    for (const f of shown) {
+      console.log(JSON.stringify({
+        id: f.id ?? null,
+        name: f.name ?? f.title ?? null,
+        filetype: f.filetype ?? null,
+        size: f.size ?? null,
+        user: f.user ?? null,
+        created: f.created ?? null,
+        permalink: f.permalink ?? null,
+      }));
+    }
+    return;
+  }
+  for (const f of shown) {
+    const id = String(f.id ?? "");
+    const name = typeof f.name === "string" ? f.name : typeof f.title === "string" ? f.title : id;
+    const ft = typeof f.filetype === "string" ? f.filetype : "?";
+    const size = typeof f.size === "number" ? fmtSize(f.size) : "";
+    console.log(`${id}  ${ft.padEnd(7)}  ${size.padStart(9)}  ${name}`);
+  }
+}
+
 // --- download <ref> [dest] — fetch an attachment's bytes to disk (read-only) ---
 // ref: a file ID (F…) or a Slack file permalink (…/files/<UID>/<FID>/<name>).
 function parseFileId(ref: string): string | undefined {
@@ -1990,6 +2039,35 @@ async function main(): Promise<void> {
         if (cookie) args.cookie = cookie;
         await cmdUpload(tok(argv as W), args);
       },
+    )
+    .command(
+      "files",
+      "File commands",
+      (y) => y
+        .command(
+          ["ls", "list"],
+          "List files visible to you (files.list)",
+          (y2) => y2
+            .option("limit", { alias: "l", type: "number", default: 100, describe: "Max files to list" })
+            .option("type", { alias: "t", type: "string", describe: "Slack type filter: images, pdfs, gdocs, snippets, zips, spaces, all" })
+            .option("channel", { alias: "c", type: "string", describe: "Only files in this channel (#name, @user, ID, or permalink)" })
+            .option("user", { alias: "u", type: "string", describe: "Only files from this raw user ID" })
+            .option("format", { type: "string", choices: ["text", "jsonl"], default: "text" })
+            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+          async (argv) => {
+            const o: { limit: number; types?: string; channel?: string; user?: string; format: string } = {
+              limit: argv.limit as number,
+              format: argv.json ? "jsonl" : (argv.format as string),
+            };
+            if (argv.type) o.types = argv.type as string;
+            if (argv.channel) o.channel = argv.channel as string;
+            if (argv.user) o.user = argv.user as string;
+            await cmdFilesList(tok(argv as W), ck(argv as W), o);
+          },
+        )
+        .demandCommand(1, "")
+        .showHelpOnFail(true),
+      () => {},
     )
     .command(
       "download <ref> [dest]",
