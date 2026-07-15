@@ -92,6 +92,9 @@ slack tail "#general" --since=10m   # backfill last 10 minutes first
 slack tail "#general" --thread=<ts> # follow a single thread
 slack tail "#general" --me          # only messages that mention you
 slack tail "@bob" --exit-on-message --timeout 30m   # wait for a reply, then exit
+# Use the separately configured xoxb / SLACK_BOT_TOKEN for bot DMs:
+slack read D0B0W2FGNHH --as-bot
+slack tail D0B0W2FGNHH --as-bot
 ```
 
 ### tail — real-time message stream
@@ -105,6 +108,7 @@ slack tail "#general"               # follow new messages from now
 slack tail "#general" --since=30m   # backfill 30 minutes, then stream
 slack tail "#general" --thread=1700000000.000100   # one thread only
 slack tail "#general" --me          # only messages mentioning you
+slack tail D0B0W2FGNHH --as-bot    # authenticate with SLACK_BOT_TOKEN
 ```
 
 For automation, `--exit-on-message` stops as soon as the first message from

@@ -55,6 +55,9 @@ slack search "deploy" --count 50
 # Read a specific channel or DM (quote #channel — unquoted # is a shell comment)
 slack read "#general"
 slack read @username
+# Read or tail a bot DM with the separately configured xoxb token:
+slack read D0B0W2FGNHH --as-bot
+slack tail D0B0W2FGNHH --as-bot
 
 # Send a message (two-step confirm)
 slack send "#general" "Hello team"

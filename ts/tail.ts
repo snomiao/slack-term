@@ -199,6 +199,7 @@ export type TailOpts = {
   exitOnMessage?: boolean;
   cookie?: string;
   noRtm?: boolean;
+  asBot?: boolean;
 };
 
 // Normalize a --watch-thread argument into a Slack ts ("1700000000.000000").
@@ -306,10 +307,10 @@ export async function cmdTail(
     ...(myUserId !== undefined ? { myUserId } : {}),
   };
 
-  // RTM path: xoxc token + cookie + no backfill requested. Skipped when a
-  // deadline or exit-on-message is set so that logic stays in the poll loop.
+  // RTM path: xoxc token + cookie + no backfill requested. Bot-token mode has
+  // no RTM cookie, and deadlines/exit-on-message stay in the polling loop.
   if (
-    token.startsWith("xoxc-") && opts.cookie !== undefined && opts.noRtm !== true &&
+    opts.asBot !== true && token.startsWith("xoxc-") && opts.cookie !== undefined && opts.noRtm !== true &&
     opts.since === undefined && opts.timeout === undefined && opts.exitOnMessage !== true
   ) {
     await _internals.tailRTM(token, opts.cookie, channelId, pollOpts, seen, cache, signal);

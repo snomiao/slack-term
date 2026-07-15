@@ -1,4 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
+import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseSince, pollCycle, cmdTail, resolveThreadTs, _internals } from "../ts/tail.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 
@@ -950,6 +955,23 @@ describe("cmdTail", () => {
     expect(output.join("")).toContain("new message"); // polling ran
   });
 
+  test("RTM path: skips RTM when asBot is true", async () => {
+    let rtmCallCount = 0;
+    const origTailRTM = _internals.tailRTM;
+    _internals.tailRTM = async () => { rtmCallCount++; };
+    const ac = new AbortController();
+    const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
+    try {
+      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", asBot: true, interval: 0 }, ac.signal);
+    } catch {
+      // ignore abort
+    } finally {
+      _internals.tailRTM = origTailRTM;
+      writeSpy.mockRestore();
+    }
+    expect(rtmCallCount).toBe(0);
+  });
+
   test("RTM path: skips RTM when token is not xoxc-", async () => {
     let rtmCallCount = 0;
     const origTailRTM = _internals.tailRTM;
@@ -1141,6 +1163,80 @@ describe("cmdTail", () => {
     } finally {
       process.env.SLACK_API_BASE = origBase;
       await mockRethrow.stop();
+    }
+  });
+});
+
+const CLI_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const TS_ENTRY = join(CLI_ROOT, "ts", "cli.ts");
+
+function runTailCli(
+  home: string,
+  args: string[],
+  baseUrl: string,
+  envOverrides: Record<string, string> = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const {
+    SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
+    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
+    ...rest
+  } = process.env as Record<string, string>;
+  const env = {
+    ...rest,
+    HOME: home,
+    SLACK_API_BASE: `${baseUrl}/api`,
+    ...envOverrides,
+  };
+  return new Promise((resolve, reject) => {
+    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: home, env });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (d: Buffer) => { stdout += String(d); });
+    child.stderr.on("data", (d: Buffer) => { stderr += String(d); });
+    child.on("close", (exitCode: number | null) => resolve({ exitCode: exitCode ?? -1, stdout, stderr }));
+    child.on("error", reject);
+  });
+}
+
+describe("tail --as-bot (CLI)", { timeout: 30_000 }, () => {
+  test("resolves SLACK_BOT_TOKEN without a user profile", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slack-tail-bot-"));
+    const botMock = await startMock({
+      inline: {
+        "conversations.info__channel=D0B0W2FGNHH": {
+          ok: true,
+          channel: { id: "D0B0W2FGNHH", is_im: true },
+        },
+      },
+    });
+    try {
+      const result = await runTailCli(
+        home,
+        ["tail", "D0B0W2FGNHH", "--as-bot", "--since=1s", "--timeout=0s"],
+        botMock.baseUrl,
+        { SLACK_BOT_TOKEN: "xoxb-tail-test" },
+      );
+      expect(result.exitCode).toBe(0);
+      const infoRequest = botMock.requests.find((request) => request.method === "conversations.info");
+      expect(infoRequest?.headers.authorization).toBe("Bearer xoxb-tail-test");
+    } finally {
+      await botMock.stop();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("errors cleanly when no bot token is configured", async () => {
+    const home = mkdtempSync(join(tmpdir(), "slack-tail-no-bot-"));
+    const botMock = await startMock();
+    try {
+      const result = await runTailCli(home, ["tail", "D0B0W2FGNHH", "--as-bot"], botMock.baseUrl);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("Error: --as-bot needs a bot token");
+      expect(result.stderr).toContain("Set SLACK_BOT_TOKEN=xoxb-...");
+      expect(result.stderr).not.toContain("No Slack token found");
+    } finally {
+      await botMock.stop();
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

@@ -1511,6 +1511,17 @@ async function main(): Promise<void> {
   type W = { workspace?: string };
   const tok = (a: W) => resolveToken(a.workspace);
   const ck = (a: W) => resolveCookie(a.workspace);
+  const botTok = (): string => {
+    const token = resolveBotToken();
+    if (!token) {
+      console.error(
+        "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+        "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+      );
+      process.exit(1);
+    }
+    return token;
+  };
 
   await yargs(hideBin(process.argv))
     .scriptName("slack")
@@ -1533,6 +1544,7 @@ async function main(): Promise<void> {
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
       if (!cmd || cmd === "auth" || cmd === "login") return;
+      if (argv["as-bot"] === true && (cmd === "read" || cmd === "msgs" || cmd === "tail")) return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -1552,9 +1564,10 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", describe: "#channel, @user, or URL" })
         .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" })
         .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
-        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Use the bot token (xoxb / SLACK_BOT_TOKEN) instead of the resolved profile token" }),
       async (argv) => {
-        const token = tok(argv as W);
+        const token = argv["as-bot"] ? botTok() : tok(argv as W);
         const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
         if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format);
         else await cmdMsgs(token);
@@ -1842,14 +1855,7 @@ async function main(): Promise<void> {
         }
         let sendToken: string;
         if (argv["as-bot"]) {
-          const botToken = resolveBotToken();
-          if (!botToken) {
-            console.error(
-              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
-              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
-            );
-            process.exit(1);
-          }
+          const botToken = botTok();
           // Resolve @user → user_id with the *user* token (has users:read), then
           // let cmdSend open the DM with the bot token (im:write). This avoids
           // requiring users:read on the bot and guarantees the DM is bot↔user
@@ -2266,6 +2272,7 @@ async function main(): Promise<void> {
       "Stream new messages in real time (like tail -f)",
       (y) => y
         .positional("target", { type: "string", describe: "#channel or @user to follow" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Use the bot token (xoxb / SLACK_BOT_TOKEN) instead of the resolved profile token" })
         .option("since", { type: "string", describe: "Backfill from N ago (e.g. 10m, 2h, 1d)" })
         .option("thread", { type: "string", describe: "Follow a single thread by timestamp" })
         .option("watch-thread", { type: "string", describe: "Watch the channel's top-level timeline AND one thread's replies together (ts or permalink)" })
@@ -2275,8 +2282,9 @@ async function main(): Promise<void> {
         .option("exit-on-message", { type: "boolean", default: false, describe: "Stop as soon as the first new message from someone else arrives (wait-for-reply)" })
         .option("rtm", { type: "boolean", default: true, describe: "Use RTM WebSocket when available (xoxc + cookie); pass --no-rtm to force polling" }),
       async (argv) => {
-        const token = tok(argv as W);
-        const cookie = ck(argv as W);
+        const asBot = argv["as-bot"] === true;
+        const token = asBot ? botTok() : tok(argv as W);
+        const cookie = asBot ? undefined : ck(argv as W);
         const signal = new AbortController();
         process.on("SIGINT", () => { signal.abort(); process.exit(0); });
         await cmdTail(token, argv.target, {
@@ -2289,6 +2297,7 @@ async function main(): Promise<void> {
           ...(argv["exit-on-message"] === true ? { exitOnMessage: true } : {}),
           ...(cookie !== undefined ? { cookie } : {}),
           ...(argv.rtm === false ? { noRtm: true } : {}),
+          ...(asBot ? { asBot: true } : {}),
         }, signal.signal);
       },
     )
