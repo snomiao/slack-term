@@ -62,6 +62,7 @@ async function formatTailLine(
   m: Record<string, Json>,
   cache: Map<string, string>,
   chLabel?: string,
+  cookie?: string,
 ): Promise<string> {
   const rawTs = typeof m.ts === "string" ? m.ts : "0.000000";
   const stamp = slackTsToIso(rawTs);
@@ -70,7 +71,7 @@ async function formatTailLine(
     const uid = m.user;
     const handleKey = "@" + uid;
     if (!cache.has(handleKey)) {
-      const [, h] = await userInfoPair(token, uid);
+      const [, h] = await userInfoPair(token, uid, cookie);
       cache.set(handleKey, h);
     }
     handle = cache.get(handleKey) ?? uid;
@@ -78,7 +79,7 @@ async function formatTailLine(
     handle = m.username;
   }
   const raw = typeof m.text === "string" ? m.text : "";
-  const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
+  const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache, cookie));
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map((l) => `  ${l}`).join("\n") : "");
   // Annotate thread replies so a merged channel+thread stream stays readable.
@@ -95,6 +96,7 @@ type PollOpts = {
   watchThread?: string;
   me?: boolean;
   myUserId?: string;
+  cookie?: string;
 };
 
 export async function pollCycle(
@@ -112,6 +114,7 @@ export async function pollCycle(
     20,
     pageCursor ? undefined : (cursor || undefined),
     pageCursor,
+    opts.cookie,
   )) as Json);
   // history returns newest-first; reverse to emit oldest-first
   const histMsgs = asArray(histResp.messages).map(asRecord).reverse();
@@ -128,7 +131,7 @@ export async function pollCycle(
   // history — drop it to avoid double-emit.
   let replyMsgs: Record<string, Json>[] = [];
   if (opts.watchThread && !pageCursor) {
-    const repResp = asRecord((await replies(token, channelId, opts.watchThread, 50)) as Json);
+    const repResp = asRecord((await replies(token, channelId, opts.watchThread, 50, opts.cookie)) as Json);
     replyMsgs = asArray(repResp.messages).map(asRecord)
       .filter((m) => (typeof m.ts === "string" ? m.ts : "") !== opts.watchThread);
   }
@@ -176,7 +179,7 @@ export async function pollCycle(
       if (oldest !== undefined) seen.delete(oldest);
     }
 
-    lines.push(await formatTailLine(token, m, cache));
+    lines.push(await formatTailLine(token, m, cache, undefined, opts.cookie));
     // Advance the history cursor only on top-level messages — thread replies
     // are never returned by history(), so their ts must not move `oldest`.
     if (fromHistory) newCursor = ts;
@@ -244,7 +247,7 @@ export async function cmdTail(
 
   // Preflight: verify channel access before entering the poll loop
   try {
-    const info = asRecord(await conversationInfo(token, channelId) as Json);
+    const info = asRecord(await conversationInfo(token, channelId, opts.cookie) as Json);
     const ch = asRecord(info.channel as Json);
     if (ch.is_archived === true) {
       console.error(`Warning: this channel is archived — no new messages will arrive.`);
@@ -273,7 +276,7 @@ export async function cmdTail(
     cursor = (_internals.now() / 1000 - secondsBack).toFixed(6);
   } else {
     // Seed with most recent message so we only emit new messages going forward
-    const histResp = asRecord((await history(token, channelId, 1)) as Json);
+    const histResp = asRecord((await history(token, channelId, 1, undefined, undefined, opts.cookie)) as Json);
     const msgs = asArray(histResp.messages).map(asRecord);
     if (msgs.length > 0 && typeof msgs[0]?.ts === "string") {
       cursor = msgs[0].ts;
@@ -285,7 +288,7 @@ export async function cmdTail(
 
   let myUserId: string | undefined;
   if (opts.me || opts.exitOnMessage) {
-    const info = await authTest(token);
+    const info = await authTest(token, opts.cookie);
     myUserId = info.userId || undefined;
   }
 
@@ -304,6 +307,7 @@ export async function cmdTail(
     ...(watchThreadTs !== undefined ? { watchThread: watchThreadTs } : {}),
     ...(opts.me !== undefined ? { me: opts.me } : {}),
     ...(myUserId !== undefined ? { myUserId } : {}),
+    ...(opts.cookie !== undefined ? { cookie: opts.cookie } : {}),
   };
 
   // RTM path: xoxc token + cookie + no backfill requested. Skipped when a

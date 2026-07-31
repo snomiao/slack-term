@@ -1143,4 +1143,43 @@ describe("cmdTail", () => {
       await mockRethrow.stop();
     }
   });
+
+  // Regression: an xoxc- desktop token is only accepted by the public Web API
+  // when every call carries its xoxd session cookie. Each call site in tail.ts
+  // (preflight conversations.info, seed history, auth.test, poll-loop history,
+  // and the per-message users.info in formatTailLine) independently forwards
+  // `opts.cookie` — a single site forgetting it silently breaks that specific
+  // call for xoxc tokens without ever showing up in xoxp-token test runs.
+  test("forwards the session cookie on every API call an xoxc token makes", async () => {
+    const mockCookie = await startMock({ inline: fixtures });
+    const origBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${mockCookie.baseUrl}/api`;
+    const ac = new AbortController();
+    vi.spyOn(process.stdout, "write").mockImplementation(() => {
+      ac.abort();
+      return true;
+    });
+    try {
+      await cmdTail(
+        "xoxc-fake",
+        "#general",
+        { interval: 0, cookie: "session-cookie-abc", exitOnMessage: true },
+        ac.signal,
+      );
+    } catch {
+      // ignore abort
+    } finally {
+      vi.restoreAllMocks();
+      process.env.SLACK_API_BASE = origBase;
+      await mockCookie.stop();
+    }
+    const methodsThatMustCarryCookie = ["conversations.info", "conversations.history", "auth.test", "users.info"];
+    for (const method of methodsThatMustCarryCookie) {
+      const calls = mockCookie.requests.filter((r) => r.method === method);
+      expect(calls.length, `expected at least one ${method} call`).toBeGreaterThan(0);
+      for (const call of calls) {
+        expect(call.headers.cookie, `${method} call missing session cookie`).toBe("d=session-cookie-abc");
+      }
+    }
+  });
 });
