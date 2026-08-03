@@ -74,6 +74,16 @@ slack delete "<permalink>"
 slack react "#general:1700000000.000100" white_check_mark
 slack react "<permalink>" eyes --remove   # take it back
 
+# Task tracking on reactions — 📌 marks a task, a second reaction holds progress
+slack todo ls                                     # my open tasks (read-only, 1 search)
+slack todo ls --state untriaged --in "#general"   # marked but no progress yet
+slack todo ls --state stuck                       # unfinished + a reason flag
+slack todo set "#general:1700000000.000100" doing # pending|doing|done|dropped
+slack todo ls --state stuck --from "@alice"        # …and alice wrote it
+slack todo flag "<permalink>" waiting             # alert|needs-discussion|waiting|blocked
+                                                  # waiting = their ball, blocked = outside
+slack todo doctor --in "#general" [--fix]         # messages stuck in two states
+
 # Bulk export a channel's history
 slack dump "#channel-name"
 
@@ -102,6 +112,50 @@ near-identical to an existing reply — so you can avoid re-posting something al
 and no one has replied since — `⚠ 相手はまだ返信していません…`, suggesting `slack edit`
 on that message instead of piling on a new one. Reply-status based, not time-based; opt
 out with `SLACK_UNREPLIED_WARN=0`.
+
+### todo — tasks as reactions
+
+A task is any message carrying the marker reaction 📌 `:pushpin:`. Progress lives in a
+second reaction, ranked by priority — **1** ✅ `white_check_mark` done, **2** 🚫
+`no_entry_sign` dropped, **3** 👀 `eyes` doing, **4** ⏳ `hourglass` pending, **5** marker
+only = undefined. A message may carry more than one progress reaction — readers collapse
+to the highest priority, so ✅+👀 reads as *done*.
+
+Reason flags stack independently of progress and of each other: ❗ `exclamation` alert,
+❓ `question` needs-discussion, and two that say **whose ball it is** —
+
+- 💬 `speech_balloon` **waiting** — someone **in this conversation** owes the next move
+  (asked a question, waiting on a review/approval). Their ball.
+- 🔒 `lock` **blocked** — stuck on something **outside** it: another task, a third party,
+  an external dependency. Nobody here can unstick it by replying.
+
+(⏳ `hourglass` pending already means "my ball", which is why only these two are needed.)
+
+- `todo ls` is read-only and issues **one** `search.messages` call; priority is encoded as
+  negated `hasmy:` terms. Default is `hasmy:` (my reactions only), `--shared` uses `has:`.
+  `search.messages` returns no reaction data, so this filtering can only happen in the
+  query. The search index lags slightly behind `reactions.add`.
+- `todo set` adds the target reaction **first**, then removes the stale ones one at a time.
+  Never remove-then-add: an interruption in between leaves the task with no progress
+  reaction and it vanishes from every query. Two reactions is the safe failure mode, and
+  `todo doctor --fix` repairs it (also add-first).
+- `todo ls --from <@user|me>` adds search's `from:` modifier (missing `@` supplied, `me`
+  left bare) and composes with `--in` in the same single search. Reactions can't point at
+  *who* a task waits on, but the sender usually is that person.
+- Deliberately NOT implemented: a machine-readable token in a thread reply to carry the
+  actual reference. Measured — Slack's index splits on punctuation, so quoted `"blocked-on"`
+  gets 0 hits and `"1.91"` matches `1.91.0`; `todo:v1 blocked-on=@alice` is unsearchable.
+  A future attempt needs one alphanumeric marker word (e.g. `tdblock`) + a bare `@mention`.
+- `todo doctor` scans at most `--limit` messages (default 1000), pages sequentially, and
+  explicitly reports when it hits the limit.
+- Emoji overrides: `~/.config/slack-cli/todo.json`, e.g.
+  `{ "marker": "round_pushpin", "progress": { "doing": "construction" } }`.
+- Channel/user lookups are cached for 1h in `~/.config/slack-cli/cache.json`, keyed by
+  workspace `team_id` (`--no-cache` to bypass). Reaction state and search results are never
+  cached; a broken cache is ignored. Message listings read this cache too, behind their
+  in-process map.
+- Rate limits: `todo` commands catch Slack's 429, wait `Retry-After`, and retry up to 3
+  times before failing loudly.
 
 **Etiquette:** prefer a `react` over a reply for simple acks (了解 → `eyes`, 完了 →
 `white_check_mark`, 処理中 → `hourglass`) so threads stay short; read the thread with

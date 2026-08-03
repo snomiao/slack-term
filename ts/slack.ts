@@ -389,6 +389,24 @@ export async function reactionAdd(
   await post(token, "reactions.add", { channel, timestamp: ts, name }, cookie);
 }
 
+// Read the reactions currently on a message. Returns one entry per emoji with
+// the user IDs that reacted, so callers can tell "someone reacted" from "I
+// reacted". Never cached — reaction state is exactly what todo commands mutate.
+export async function reactionsGet(
+  token: string,
+  channel: string,
+  ts: string,
+  cookie?: string,
+): Promise<{ name: string; users: string[] }[]> {
+  const resp = (await get(token, "reactions.get", { channel, timestamp: ts, full: "true" }, cookie)) as {
+    message?: { reactions?: Array<{ name?: string; users?: string[] }> };
+  };
+  return (resp.message?.reactions ?? []).map((r) => ({
+    name: String(r.name ?? ""),
+    users: Array.isArray(r.users) ? r.users.map(String) : [],
+  }));
+}
+
 export async function reactionRemove(
   token: string,
   channel: string,

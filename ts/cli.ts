@@ -53,6 +53,22 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
+import {
+  buildTodoQuery,
+  loadTodoConfig,
+  resolveChannelCached,
+  todoDoctor,
+  todoFlag,
+  userHandleCached,
+  todoSet,
+  withRateLimitRetry,
+  DOCTOR_DEFAULT_LIMIT,
+  type FlagName,
+  type LsQueryOpts,
+  type LsState,
+  type ProgressState,
+} from "./todo.ts";
+import { setCacheEnabled } from "./cache.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 
 function loadDotenv(path: string): void {
@@ -162,6 +178,9 @@ async function formatMsgLine(
   m: Record<string, Json>,
   cache: Map<string, string>,
   chLabel?: string,
+  // Session cookie (xoxd) for `token` — required for an xoxc- desktop session
+  // token; without it users.info 401s and every author renders as a raw ID.
+  cookie?: string,
 ): Promise<string> {
   const rawTs = typeof m.ts === "string" ? m.ts : `${tsNum(m)}.000000`;
   const stamp = slackTsToIso(rawTs);
@@ -169,8 +188,11 @@ async function formatMsgLine(
   if (typeof m.user === "string") {
     const uid = m.user;
     const handleKey = "@" + uid;
+    // Two-tier: this call's in-process Map → ~/.config/slack-cli/cache.json
+    // (1h TTL, workspace-scoped) → users.info. Handles barely change, and a
+    // long listing re-resolves the same few authors on every run.
     if (!cache.has(handleKey)) {
-      const [, h] = await userInfoPair(token, uid);
+      const h = await userHandleCached(token, uid, async (t, u, c) => (await userInfoPair(t, u, c))[1], cookie);
       cache.set(handleKey, h);
     }
     handle = cache.get(handleKey) ?? uid;
@@ -458,6 +480,100 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
       chLabel = `#${rawName}`;
     }
     console.log(await formatMsgLine(searchToken, m, cache, chLabel));
+  }
+}
+
+// --- todo — reaction-backed task tracking (see ts/todo.ts for the state model) ---
+
+/** Resolve a `#chan:<ts>` / permalink target to (channelId, ts) for todo writes. */
+async function todoTarget(
+  token: string,
+  target: string,
+  channelIdOpt: string | undefined,
+  cookie: string | undefined,
+): Promise<{ channelId: string; ts: string }> {
+  const { ref, ts } = splitRefTs(target);
+  if (!ts) {
+    console.error("Error: target must embed a message ts (e.g. #chan:1700000000.000100 or a Slack permalink URL)");
+    process.exit(2);
+  }
+  const channelId = channelIdOpt ?? (await resolveChannelCached(token, ref, resolveChannel, cookie));
+  return { channelId, ts };
+}
+
+async function cmdTodoLs(
+  token: string,
+  opts: { state: LsState; in?: string; from?: string; shared?: boolean; count: number; json: boolean; cookie?: string },
+): Promise<void> {
+  const cfg = loadTodoConfig();
+  const queryOpts: LsQueryOpts = {};
+  if (opts.shared) queryOpts.shared = true;
+  if (opts.in) queryOpts.in = opts.in;
+  if (opts.from) queryOpts.from = opts.from;
+  const query = buildTodoQuery(opts.state, cfg, queryOpts);
+  if (!opts.json) console.error(`(query: ${query})`);
+  // One search per invocation — search.messages is Tier 2 (~20 req/min), so the
+  // priority rule is encoded as negations in the query, not as extra searches.
+  await withRateLimitRetry("search.messages", () => cmdSearch(token, query, opts.count, opts.json, opts.cookie));
+}
+
+async function cmdTodoSet(
+  token: string,
+  args: { target: string; state: ProgressState; channelId?: string; cookie?: string },
+): Promise<void> {
+  const cfg = loadTodoConfig();
+  const { channelId, ts } = await todoTarget(token, args.target, args.channelId, args.cookie);
+  const res = await todoSet(token, channelId, ts, args.state, cfg, args.cookie);
+  if (res.noop) {
+    console.log(`= Already ${args.state} (ts: ${ts})`);
+    return;
+  }
+  const removedNote = res.removed.length ? `, removed ${res.removed.map((e) => `:${e}:`).join(" ")}` : "";
+  console.log(`✓ ${args.state} :${cfg.progress[args.state]}: (ts: ${ts})${removedNote}`);
+  if (res.leftover.length) {
+    console.error(
+      `⚠ ${res.leftover.map((e) => `:${e}:`).join(" ")} could not be removed — this message now carries more than one ` +
+      `progress reaction. Readers collapse by priority so nothing is lost; repair with:  slack todo doctor --in <#chan> --fix`,
+    );
+  }
+}
+
+async function cmdTodoFlag(
+  token: string,
+  args: { target: string; flag: FlagName; remove?: boolean; channelId?: string; cookie?: string },
+): Promise<void> {
+  const cfg = loadTodoConfig();
+  const { channelId, ts } = await todoTarget(token, args.target, args.channelId, args.cookie);
+  const emoji = await todoFlag(token, channelId, ts, args.flag, cfg, args.remove === true, args.cookie);
+  console.log(`✓ ${args.remove ? "Cleared" : "Flagged"} ${args.flag} :${emoji}: (ts: ${ts})`);
+}
+
+async function cmdTodoDoctor(
+  token: string,
+  args: { channel: string; fix?: boolean; limit: number; channelId?: string; cookie?: string },
+): Promise<void> {
+  const cfg = loadTodoConfig();
+  const channelId = args.channelId ?? (await resolveChannelCached(token, args.channel, resolveChannel, args.cookie));
+  const doctorOpts: { fix?: boolean; limit: number; cookie?: string } = { limit: args.limit };
+  if (args.fix) doctorOpts.fix = true;
+  if (args.cookie) doctorOpts.cookie = args.cookie;
+  const report = await todoDoctor(token, channelId, cfg, doctorOpts);
+  if (report.findings.length === 0) {
+    console.log(`✓ No multi-state tasks in ${report.scanned} message(s).`);
+  } else {
+    for (const f of report.findings) {
+      const status = f.fixed === true ? "fixed" : f.fixed === false ? `FAILED: ${f.error ?? "?"}` : "needs --fix";
+      console.log(
+        `${f.ts}  ${f.emoji.map((e) => `:${e}:`).join(" ")} → keep :${f.keep}:  [${status}]  ` +
+        `${stripTerminalControls(f.text).slice(0, 60)}`,
+      );
+    }
+    console.log(`${report.findings.length} multi-state task(s) in ${report.scanned} message(s).`);
+  }
+  if (report.truncated) {
+    console.error(
+      `⚠ Scan limit reached (${args.limit} messages) — older history was NOT checked. Raise it with --limit N.`,
+    );
   }
 }
 
@@ -2016,6 +2132,118 @@ async function main(): Promise<void> {
           process.exit(1);
         }
       },
+    )
+    .command(
+      "todo",
+      "Reaction-backed task tracking (:pushpin: marks a task, progress lives in a second reaction)",
+      (y) => y
+        // yargs turns this into --no-cache automatically (boolean negation).
+        .option("cache", { type: "boolean", default: true, describe: "Use ~/.config/slack-cli/cache.json for channel/user lookups (--no-cache to bypass)" })
+        .middleware((argv) => { if (argv.cache === false) setCacheEnabled(false); })
+        .command(
+          ["ls", "list"],
+          "List tasks (read-only; one search per run)",
+          (y2) => y2
+            .option("state", {
+              type: "string",
+              choices: ["open", "untriaged", "pending", "doing", "done", "dropped", "stuck"],
+              default: "open",
+              describe: "open (default) = marked and not done/dropped; untriaged = marked with no progress; stuck = unfinished with a reason flag",
+            })
+            .option("in", { type: "string", describe: "Limit to a channel (#chan)" })
+            .option("from", { type: "string", describe: "Limit to a sender (@user, or 'me') — usually the person a task is waiting on" })
+            .option("shared", { type: "boolean", default: false, describe: "Match anyone's reactions (has:) instead of only yours (hasmy:)" })
+            .option("n", { alias: "count", type: "number", default: 50, describe: "Max results" })
+            .option("json", { type: "boolean", default: false }),
+          async (argv) => {
+            const opts: { state: LsState; in?: string; from?: string; shared?: boolean; count: number; json: boolean; cookie?: string } = {
+              state: argv.state as LsState,
+              count: argv.n,
+              json: argv.json,
+            };
+            if (argv.in) opts.in = argv.in;
+            if (argv.from) opts.from = argv.from;
+            if (argv.shared) opts.shared = true;
+            const cookie = ck(argv as W);
+            if (cookie) opts.cookie = cookie;
+            await cmdTodoLs(tok(argv as W), opts);
+          },
+        )
+        .command(
+          "set <target> <state>",
+          "Move a task to a progress state (adds the new reaction before removing the old one)",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "#chan:ts or permalink" })
+            .positional("state", { type: "string", demandOption: true, choices: ["pending", "doing", "done", "dropped"] })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+          async (argv) => {
+            const args: { target: string; state: ProgressState; channelId?: string; cookie?: string } = {
+              target: argv.target!,
+              state: argv.state as ProgressState,
+            };
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            const cookie = ck(argv as W);
+            if (cookie) args.cookie = cookie;
+            try {
+              await cmdTodoSet(tok(argv as W), args);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "flag <target> <flag>",
+          "Add (or --remove) a reason flag (alert | needs-discussion | waiting | blocked) — flags stack, independent of progress",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "#chan:ts or permalink" })
+            .positional("flag", {
+              type: "string",
+              demandOption: true,
+              choices: ["alert", "needs-discussion", "waiting", "blocked"],
+              describe: "waiting = the other party in this conversation owes a reply; blocked = stuck on something outside it",
+            })
+            .option("remove", { type: "boolean", default: false, describe: "Remove the flag instead of adding it" })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+          async (argv) => {
+            const args: { target: string; flag: FlagName; remove?: boolean; channelId?: string; cookie?: string } = {
+              target: argv.target!,
+              flag: argv.flag as FlagName,
+            };
+            if (argv.remove) args.remove = true;
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            const cookie = ck(argv as W);
+            if (cookie) args.cookie = cookie;
+            try {
+              await cmdTodoFlag(tok(argv as W), args);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "doctor",
+          "Find messages carrying two or more progress reactions (--fix repairs them)",
+          (y2) => y2
+            .option("in", { type: "string", demandOption: true, describe: "Channel to scan (#chan)" })
+            .option("fix", { type: "boolean", default: false, describe: "Repair findings (keeps the highest-priority state)" })
+            .option("limit", { type: "number", default: DOCTOR_DEFAULT_LIMIT, describe: "Max messages to scan" })
+            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+          async (argv) => {
+            const args: { channel: string; fix?: boolean; limit: number; channelId?: string; cookie?: string } = {
+              channel: argv.in!,
+              limit: argv.limit,
+            };
+            if (argv.fix) args.fix = true;
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            const cookie = ck(argv as W);
+            if (cookie) args.cookie = cookie;
+            await cmdTodoDoctor(tok(argv as W), args);
+          },
+        )
+        .demandCommand(1, "Specify a todo subcommand (ls, set, flag, doctor)"),
+      () => {},
     )
     .command(
       "upload <target> <file..>",

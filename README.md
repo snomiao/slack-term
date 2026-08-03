@@ -83,6 +83,14 @@ slack delete "<permalink>"
 slack react "#general:1700000000.000100" white_check_mark
 slack react "<permalink>" eyes --remove   # take a reaction back
 
+# Task tracking on top of reactions — :pushpin: marks a message as a task,
+# a second reaction carries its progress (see "todo" below)
+slack todo ls                                  # my open tasks
+slack todo ls --state untriaged --in "#general"
+slack todo set "#general:1700000000.000100" doing
+slack todo flag "<permalink>" blocked
+slack todo doctor --in "#general"              # find messages stuck in two states
+
 # Bulk export channel history
 slack dump --days 7 --filter eng
 
@@ -93,6 +101,89 @@ slack tail "#general" --thread=<ts> # follow a single thread
 slack tail "#general" --me          # only messages that mention you
 slack tail "@bob" --exit-on-message --timeout 30m   # wait for a reply, then exit
 ```
+
+### todo — task tracking on reactions
+
+Tasks are just messages. A **marker** reaction (📌 `:pushpin:`) says "this is a task";
+a **progress** reaction says where it stands; **reason flags** stack on top:
+
+| axis | reaction | meaning |
+| --- | --- | --- |
+| progress 1 | ✅ `white_check_mark` | done |
+| progress 2 | 🚫 `no_entry_sign` | dropped |
+| progress 3 | 👀 `eyes` | doing |
+| progress 4 | ⏳ `hourglass` | pending |
+| progress 5 | *(marker only)* | undefined / untriaged |
+| flag | ❗ `exclamation` | alert |
+| flag | ❓ `question` | needs discussion |
+| flag | 💬 `speech_balloon` | waiting — the other party in this conversation owes a reply |
+| flag | 🔒 `lock` | blocked — stuck on something *outside* this conversation |
+
+The invariant is **"at least one progress reaction, readers collapse by priority"** —
+not "exactly one". A message carrying both ✅ and 👀 reads as *done*.
+
+**Whose ball is it?** There are only three answers, and `pending` ⏳ already means *mine*.
+The other two are the flags:
+
+- 💬 **waiting** — I've done my part; someone **in this conversation** owes the next move
+  (I asked a question, I'm waiting on a review, I sent it and need a yes/no).
+- 🔒 **blocked** — the hold-up is **outside this conversation**: another task, a third
+  party, an external dependency, a deploy window.
+
+They stack with each other and with ❗/❓; `--state stuck` matches a task with any of them.
+
+```sh
+slack todo ls                              # --state open (default): marked, not done/dropped
+slack todo ls --state untriaged            # marked, no progress reaction yet
+slack todo ls --state doing --in "#eng"    # scoped to a channel
+slack todo ls --state stuck                # unfinished AND carrying a reason flag
+slack todo ls --state stuck --from "@alice" # …and it was alice who wrote it
+slack todo ls --from me                    # tasks on my own messages
+slack todo ls --state done --shared        # anyone's reactions, not just mine
+slack todo set "#eng:1700000000.000100" doing
+slack todo flag "<permalink>" waiting          # their ball now
+slack todo flag "<permalink>" needs-discussion
+slack todo flag "<permalink>" blocked --remove
+slack todo doctor --in "#eng"              # report messages in two progress states
+slack todo doctor --in "#eng" --fix        # keep the highest-priority one
+```
+
+Notes:
+
+- `todo ls` is read-only and runs **exactly one** `search.messages` call — priority is
+  expressed as negated `hasmy:` terms in the query, not as multiple searches
+  (`search.messages` is Tier 2, ~20 req/min). By default it matches only *your* reactions
+  (`hasmy:`); `--shared` switches to anyone's (`has:`). Slack's search index lags a little
+  behind `reactions.add`, so a just-set task may take a moment to appear.
+- `todo set` **adds the new reaction before removing the old ones**, and removes serially.
+  The reverse order would leave a window with no progress reaction at all — a crash or a
+  429 there would drop the task out of every query with nothing left pointing at it.
+  Worst case here is a message with two progress reactions, which reads correctly and is
+  repairable with `todo doctor --fix`.
+- `--from <@user|me>` maps to search's `from:` modifier (a missing `@` is supplied; `me`
+  passes through as-is). Reactions carry no reference to *whom* a task waits on, but the
+  sender is usually that person — so filtering by author answers most of the question for
+  free. It composes with `--in` in the same single search.
+- **Not implemented, deliberately:** encoding the actual reference ("blocked on @alice" /
+  "blocked on task X") as a machine-readable token in a thread reply. Measured: Slack's
+  full-text index splits on punctuation, so a quoted search for `"blocked-on"` returns 0
+  hits, and `"1.91"` matches `1.91.0`. A token like `todo:v1 blocked-on=@alice` is therefore
+  unsearchable. Any future attempt needs a single alphanumeric marker word (e.g. `tdblock`)
+  plus a bare `@mention`.
+- `todo doctor` pages history sequentially and scans at most `--limit` messages
+  (default 1000); if it hits the limit it says so rather than silently stopping.
+- Emoji are configurable in `~/.config/slack-cli/todo.json` (same directory as
+  `profiles.json`); anything omitted falls back to the defaults above:
+
+  ```json
+  { "marker": "round_pushpin", "progress": { "doing": "construction" } }
+  ```
+
+- Channel-name→ID and user-ID→handle lookups are cached in
+  `~/.config/slack-cli/cache.json` for 1 hour, namespaced by workspace (`team_id`) since
+  both are workspace-scoped; `--no-cache` bypasses it. Reaction state and search results
+  are **never** cached — they are exactly the values that change, and Slack's search index
+  already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
 ### tail — real-time message stream
 
