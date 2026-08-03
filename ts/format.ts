@@ -391,6 +391,9 @@ export async function resolveMentions(
   token: string,
   text: string,
   cache: Map<string, string>,
+  // Session cookie (xoxd) for `token` — an xoxc- desktop token is rejected by
+  // users.info without it, which would leave every mention unresolved.
+  cookie?: string,
 ): Promise<string> {
   let result = text;
   const ids: string[] = [];
@@ -406,7 +409,7 @@ export async function resolveMentions(
     searchOffset = pos + 1;
   }
   for (const uid of ids) {
-    if (!cache.has(uid)) cache.set(uid, await userName(token, uid));
+    if (!cache.has(uid)) cache.set(uid, await userName(token, uid, cookie));
     const display = cache.get(uid) ?? uid;
     result = result.replaceAll(`<@${uid}>`, `@${display}`);
     // Handle <@UID|label> form — drop label.
