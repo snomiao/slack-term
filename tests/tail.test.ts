@@ -73,11 +73,11 @@ describe("pollCycle", () => {
     },
     "conversations.list__exclude_archived=true&limit=200&types=public_channel_private_channel": {
       ok: true,
-      channels: [{ id: "C00000001", name: "general" }],
+      channels: [{ id: "C00000001", name: "channel-01" }],
     },
     "conversations.list__limit=200&types=public_channel_private_channel&exclude_archived=true": {
       ok: true,
-      channels: [{ id: "C00000001", name: "general" }],
+      channels: [{ id: "C00000001", name: "channel-01" }],
     },
   };
 
@@ -396,15 +396,15 @@ describe("cmdTail", () => {
     },
     "conversations.list__exclude_archived=true&limit=200&types=public_channel_private_channel": {
       ok: true,
-      channels: [{ id: "C00000001", name: "general" }],
+      channels: [{ id: "C00000001", name: "channel-01" }],
     },
     "conversations.list__limit=200&types=public_channel_private_channel&exclude_archived=true": {
       ok: true,
-      channels: [{ id: "C00000001", name: "general" }],
+      channels: [{ id: "C00000001", name: "channel-01" }],
     },
     "conversations.info__channel=C00000001": {
       ok: true,
-      channel: { id: "C00000001", name: "general", is_member: true, is_archived: false },
+      channel: { id: "C00000001", name: "channel-01", is_member: true, is_archived: false },
     },
     "conversations.history__channel=C00000001&limit=1": {
       ok: true,
@@ -437,7 +437,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: 0 }, ac.signal);
     } catch {
       // abort can cause rejection in some paths — ignore
     } finally {
@@ -468,7 +468,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { since: "10m", interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { since: "10m", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -507,7 +507,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { me: true, interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { me: true, interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -530,7 +530,7 @@ describe("cmdTail", () => {
       return calls <= 1 ? 1700000000000 : 1700000000000 + 999999;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { timeout: "1s", interval: 0 });
+      await cmdTail("xoxp-fake", "#channel-01", { timeout: "1s", interval: 0 });
     } finally {
       nowSpy.mockRestore();
     }
@@ -543,11 +543,11 @@ describe("cmdTail", () => {
         ...fixtures,
         "conversations.history__channel=C00000001&limit=20&oldest=1700000005.000000": {
           ok: true,
-          messages: [{ ts: "1700000006.000000", user: "U00000002", text: "yamada reply" }],
+          messages: [{ ts: "1700000006.000000", user: "U00000002", text: "bob reply" }],
         },
         "users.info__user=U00000002": {
           ok: true,
-          user: { id: "U00000002", name: "yamada", profile: { display_name: "Yamada" } },
+          user: { id: "U00000002", name: "bob", profile: { display_name: "Bob" } },
         },
       },
     });
@@ -560,13 +560,13 @@ describe("cmdTail", () => {
     });
     try {
       // No abort signal: must return on its own once the reply arrives.
-      await cmdTail("xoxp-fake", "#general", { exitOnMessage: true, interval: 0 });
+      await cmdTail("xoxp-fake", "#channel-01", { exitOnMessage: true, interval: 0 });
     } finally {
       spy.mockRestore();
       process.env.SLACK_API_BASE = origBase;
       await mockR.stop();
     }
-    expect(output.join("")).toContain("yamada reply");
+    expect(output.join("")).toContain("bob reply");
   });
 
   test("--exit-on-message ignores my own posts, exits on someone else's", async () => {
@@ -597,7 +597,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { exitOnMessage: true, interval: 0 });
+      await cmdTail("xoxp-fake", "#channel-01", { exitOnMessage: true, interval: 0 });
     } finally {
       spy.mockRestore();
       process.env.SLACK_API_BASE = origBase;
@@ -635,7 +635,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { watchThread: "1700000005.000000", interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { watchThread: "1700000005.000000", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -652,7 +652,7 @@ describe("cmdTail", () => {
     }) as () => never);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(cmdTail("xoxp-fake", "#general", { watchThread: "garbage", interval: 0 }))
+      await expect(cmdTail("xoxp-fake", "#channel-01", { watchThread: "garbage", interval: 0 }))
         .rejects.toThrow("process.exit");
       expect(errSpy.mock.calls.flat().join(" ")).toContain("not a valid ts or permalink");
     } finally {
@@ -714,7 +714,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -743,7 +743,7 @@ describe("cmdTail", () => {
     }) as () => never);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      await expect(cmdTail("xoxp-fake", "#channel-01", { interval: 0 })).rejects.toThrow("process.exit");
       expect(errSpy.mock.calls.flat().join(" ")).toContain("not a member");
     } finally {
       exitSpy.mockRestore();
@@ -770,7 +770,7 @@ describe("cmdTail", () => {
     }) as () => never);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      await expect(cmdTail("xoxp-fake", "#channel-01", { interval: 0 })).rejects.toThrow("process.exit");
       expect(errSpy.mock.calls.flat().join(" ")).toContain("scope");
     } finally {
       exitSpy.mockRestore();
@@ -802,7 +802,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { since: "10m", interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { since: "10m", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -839,7 +839,7 @@ describe("cmdTail", () => {
       errors.push(String(msg));
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: 60000 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: 60000 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -894,7 +894,7 @@ describe("cmdTail", () => {
     });
 
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: INTERVAL }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: INTERVAL }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -916,7 +916,7 @@ describe("cmdTail", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+      await cmdTail("xoxc-fake", "#channel-01", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -939,7 +939,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", noRtm: true, interval: 0 }, ac.signal);
+      await cmdTail("xoxc-fake", "#channel-01", { cookie: "xoxd-fake", noRtm: true, interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -957,7 +957,7 @@ describe("cmdTail", () => {
     const ac = new AbortController();
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
     try {
-      await cmdTail("xoxp-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -986,7 +986,7 @@ describe("cmdTail", () => {
     const ac = new AbortController();
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => { ac.abort(); return true; });
     try {
-      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", since: "10m", interval: 0 }, ac.signal);
+      await cmdTail("xoxc-fake", "#channel-01", { cookie: "xoxd-fake", since: "10m", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -1013,7 +1013,7 @@ describe("cmdTail", () => {
     });
     const errSpy = vi.spyOn(console, "error").mockImplementation((msg) => errMsgs.push(String(msg)));
     try {
-      await cmdTail("xoxc-fake", "#general", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
+      await cmdTail("xoxc-fake", "#channel-01", { cookie: "xoxd-fake", interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -1033,7 +1033,7 @@ describe("cmdTail", () => {
         ...fixtures,
         "conversations.info__channel=C00000001": {
           ok: true,
-          channel: { id: "C00000001", name: "general", is_member: true, is_archived: true },
+          channel: { id: "C00000001", name: "channel-01", is_member: true, is_archived: true },
         },
       },
     });
@@ -1051,7 +1051,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -1079,7 +1079,7 @@ describe("cmdTail", () => {
     }) as () => never);
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow("process.exit");
+      await expect(cmdTail("xoxp-fake", "#channel-01", { interval: 0 })).rejects.toThrow("process.exit");
       expect(errSpy.mock.calls.flat().join(" ")).toContain("channel not found");
     } finally {
       exitSpy.mockRestore();
@@ -1110,7 +1110,7 @@ describe("cmdTail", () => {
       return true;
     });
     try {
-      await cmdTail("xoxp-fake", "#general", { interval: 0 }, ac.signal);
+      await cmdTail("xoxp-fake", "#channel-01", { interval: 0 }, ac.signal);
     } catch {
       // ignore abort
     } finally {
@@ -1137,7 +1137,7 @@ describe("cmdTail", () => {
     const origBase = process.env.SLACK_API_BASE;
     process.env.SLACK_API_BASE = `${mockRethrow.baseUrl}/api`;
     try {
-      await expect(cmdTail("xoxp-fake", "#general", { interval: 0 })).rejects.toThrow(/Slack error/);
+      await expect(cmdTail("xoxp-fake", "#channel-01", { interval: 0 })).rejects.toThrow(/Slack error/);
     } finally {
       process.env.SLACK_API_BASE = origBase;
       await mockRethrow.stop();
@@ -1162,7 +1162,7 @@ describe("cmdTail", () => {
     try {
       await cmdTail(
         "xoxc-fake",
-        "#general",
+        "#channel-01",
         { interval: 0, cookie: "session-cookie-abc", exitOnMessage: true },
         ac.signal,
       );

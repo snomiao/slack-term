@@ -76,15 +76,21 @@ function mockText(real: string, seed: number): string {
   return LOREM[seed % LOREM.length] ?? "lorem ipsum";
 }
 
+/** Remap every Slack ID in a string through the shared maps, so the same real ID
+ *  becomes the same mock ID everywhere it appears. */
+function mockIds(s: string, maps: Maps): string {
+  return s
+    .replace(/U[A-Z0-9]{6,}/g, (m) => mockId(maps, "U", m))
+    .replace(/C[A-Z0-9]{6,}/g, (m) => mockId(maps, "C", m))
+    .replace(/T[A-Z0-9]{6,}/g, (m) => mockId(maps, "T", m))
+    .replace(/B[A-Z0-9]{6,}/g, (m) => mockId(maps, "B", m));
+}
+
 function walk(val: unknown, maps: Maps, depth = 0): unknown {
   if (val === null || val === undefined) return val;
   if (typeof val === "string") {
     // Replace embedded <@UID> mentions
-    return val
-      .replace(/U[A-Z0-9]{6,}/g, (m) => mockId(maps, "U", m))
-      .replace(/C[A-Z0-9]{6,}/g, (m) => mockId(maps, "C", m))
-      .replace(/T[A-Z0-9]{6,}/g, (m) => mockId(maps, "T", m))
-      .replace(/B[A-Z0-9]{6,}/g, (m) => mockId(maps, "B", m))
+    return mockIds(val, maps)
       .replace(/[a-zA-Z0-9._-]+@[a-zA-Z0-9.-]+/g, "user@example.com")
       .replace(/https:\/\/[a-z0-9-]+\.slack\.com/g, "https://example.slack.com");
   }
@@ -118,8 +124,13 @@ const files = (await readdir(RAW)).filter((f) => f.endsWith(".json"));
 for (const f of files) {
   const raw = JSON.parse(await readFile(join(RAW, f), "utf8"));
   const mock = walk(raw, maps);
-  await writeFile(join(MOCK, f), JSON.stringify(mock, null, 2));
-  console.error(`anonymized ${f}`);
+  // The FILENAME is a fixture key built from the recorded request params
+  // (`conversations.history__channel=C0ABCDEF12&limit=20.json`), so it carries
+  // real channel/user IDs too — anonymize it with the same maps, or the ID
+  // survives in the committed filename even though the body was scrubbed.
+  const outName = mockIds(f, maps);
+  await writeFile(join(MOCK, outName), JSON.stringify(mock, null, 2));
+  console.error(`anonymized ${f}${outName === f ? "" : ` → ${outName}`}`);
 }
 console.error(
   `done. ${maps.users.size} users, ${maps.channels.size} channels, ${maps.teams.size} teams, ${maps.bots.size} bots remapped.`,

@@ -236,7 +236,7 @@ describe("encodeMentions — Japanese display names", () => {
         "users.list__limit=200": {
           ok: true,
           members: [
-            { id: "U_KASHIWA", name: "h.suzuki", real_name: "鈴木 陽菜", profile: { display_name: "鈴木陽菜" } },
+            { id: "U_SUZUKI", name: "h.suzuki", real_name: "鈴木 陽菜", profile: { display_name: "鈴木陽菜" } },
             { id: "U_TARO", name: "tanaka.taro", real_name: "田中 太郎", profile: { display_name: "田中太郎" } },
             // Two members whose full name is exactly 田中 → an @田中 mention is ambiguous.
             { id: "U_TANAKA1", name: "tanaka1", real_name: "田中", profile: { display_name: "田中" } },
@@ -320,12 +320,12 @@ describe("encodeMentions — Japanese display names", () => {
 
   test("resolves a kanji display name written as @名前", async () => {
     const out = await encodeMentions("xoxp-fake", "@鈴木陽菜 資料お願いします", undefined);
-    expect(out).toBe("<@U_KASHIWA> 資料お願いします");
+    expect(out).toBe("<@U_SUZUKI> 資料お願いします");
   });
 
   test("leaves a trailing honorific outside the tag (@名前さん)", async () => {
     const out = await encodeMentions("xoxp-fake", "@鈴木陽菜さん 確認お願いします", undefined);
-    expect(out).toBe("<@U_KASHIWA>さん 確認お願いします");
+    expect(out).toBe("<@U_SUZUKI>さん 確認お願いします");
   });
 
   test("longest-match beats a shorter ambiguous prefix (@田中太郎)", async () => {
@@ -355,12 +355,12 @@ describe("encodeMentions — Japanese display names", () => {
 
   test("still resolves ASCII handles unchanged alongside kanji", async () => {
     const out = await encodeMentions("xoxp-fake", "@alice and @鈴木陽菜", undefined);
-    expect(out).toBe("<@U_ALICE> and <@U_KASHIWA>");
+    expect(out).toBe("<@U_ALICE> and <@U_SUZUKI>");
   });
 
   test("detailed report lists resolved surface, display and id", async () => {
     const rep = await encodeMentionsDetailed("xoxp-fake", "@鈴木陽菜さん", undefined);
-    expect(rep.resolved).toEqual([{ surface: "@鈴木陽菜", display: "鈴木陽菜", userId: "U_KASHIWA" }]);
+    expect(rep.resolved).toEqual([{ surface: "@鈴木陽菜", display: "鈴木陽菜", userId: "U_SUZUKI" }]);
     expect(rep.unresolved).toEqual([]);
   });
 });
