@@ -1,5 +1,23 @@
 # slack-term dev rules
 
+## No real workspace data in this repo
+
+This repo is public (GitHub + npm), and its fixtures come from **real** Slack
+recordings — so real names, workspace subdomains and channel IDs have leaked in
+before. Nothing that identifies a real person or workspace may be committed:
+in test data, in fixture **filenames**, or in source comments.
+
+Use placeholders: `alice` / `bob` / `山田` / `鈴木`, `acme.slack.com`,
+`C00000001` / `U00000001` (a `0000` run marks an ID as fake).
+
+A `.githooks/pre-commit` hook enforces this and blocks the commit. `bun install`
+points `core.hooksPath` at it; set it manually with
+`git config core.hooksPath .githooks`. Run it on demand with `bun run scan-pii`.
+`--no-verify` bypasses it — only for a genuine false positive.
+
+Re-record fixtures with `bun run record` and **always** `bun run anonymize`
+before committing them; the anonymizer scrubs bodies *and* filenames.
+
 ## QA / Testing
 
 **Read-only only.** Never run `send`, `edit`, `upload`, `react`, `drafts` (create/send), or any other write command against real Slack during QA or verification.

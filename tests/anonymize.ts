@@ -125,7 +125,7 @@ for (const f of files) {
   const raw = JSON.parse(await readFile(join(RAW, f), "utf8"));
   const mock = walk(raw, maps);
   // The FILENAME is a fixture key built from the recorded request params
-  // (`conversations.history__channel=C0ABCDEF12&limit=20.json`), so it carries
+  // (`conversations.history__channel=C0EXAMPLE1&limit=20.json`), so it carries
   // real channel/user IDs too — anonymize it with the same maps, or the ID
   // survives in the committed filename even though the body was scrubbed.
   const outName = mockIds(f, maps);
