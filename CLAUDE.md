@@ -10,10 +10,17 @@ in test data, in fixture **filenames**, or in source comments.
 Use placeholders: `alice` / `bob` / `山田` / `鈴木`, `acme.slack.com`,
 `C00000001` / `U00000001` (a `0000` run marks an ID as fake).
 
-A `.githooks/pre-commit` hook enforces this and blocks the commit. `bun install`
-points `core.hooksPath` at it; set it manually with
-`git config core.hooksPath .githooks`. Run it on demand with `bun run scan-pii`.
-`--no-verify` bypasses it — only for a genuine false positive.
+Two gates enforce this:
+
+- `bun run scan-pii` — the `.githooks/pre-commit` hook, on the **staged diff**.
+  `bun install` points `core.hooksPath` at it (or `git config core.hooksPath
+  .githooks`). `--no-verify` bypasses it — only for a genuine false positive.
+- `bun run scan-pii:all` — the **whole tree**, wired into `prepublishOnly` and CI.
+
+Both are needed, and the second is the one that matters most: the commit hook
+only sees *added* lines, so data already sitting in the tree is invisible to it.
+That is exactly how real workspace data reached npm — it was committed once,
+never re-added by any later diff, and nothing scanned the tree before publish.
 
 Re-record fixtures with `bun run record` and **always** `bun run anonymize`
 before committing them; the anonymizer scrubs bodies *and* filenames.

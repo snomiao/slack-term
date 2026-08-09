@@ -66,8 +66,9 @@
     "record": "bun run tests/record.ts",
     "anonymize": "bun run tests/anonymize.ts",
     "scan-pii": "bash .githooks/pre-commit",
+    "scan-pii:all": "bash .githooks/pre-commit --all",
     "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
-    "prepublishOnly": "bun run typecheck && bun run build"
+    "prepublishOnly": "bun run scan-pii:all && bun run typecheck && bun run build"
   },
   "type": "module",
   "dependencies": {

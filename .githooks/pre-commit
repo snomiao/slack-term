@@ -11,32 +11,61 @@
 # is protecting, and a plaintext list would also be rewritten by any future
 # history scrub (which would silently invert what this hook blocks).
 #
+# Two modes:
+#   (default)  staged diff — the commit gate. Fast, but sees ONLY added lines.
+#   --all      whole tree  — the release gate. Catches data that is ALREADY in
+#              the tree, which the staged mode is structurally blind to.
+#
+# Both are needed. The leak this hook exists to prevent reached npm through the
+# blind spot: the data was already committed, so no later diff ever re-added it,
+# and only a whole-tree scan before publishing would have stopped it.
+#
 # Install:  git config core.hooksPath .githooks   (bun install does this for you)
-# Check:    bun run scan-pii
+# Check:    bun run scan-pii        (staged)   /   bun run scan-pii:all  (tree)
 # Bypass:   git commit --no-verify                (only for a false positive)
 
 set -uo pipefail
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DENYLIST="$HOOK_DIR/denylist.sha256"
+MODE="staged"
+[ "${1:-}" = "--all" ] && MODE="all"
 
-# Scan staged content only — what is actually about to be committed.
-# Lockfiles are excluded: their base64 integrity hashes contain random runs that
-# read as Slack IDs, and they hold no workspace data.
-staged=$(git diff --cached --name-only --diff-filter=ACMR \
-  | grep -vE '(^|/)(bun\.lock|bun\.lockb|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock)$')
-[ -z "$staged" ] && exit 0
+# Lockfiles are excluded from both modes: their base64 integrity hashes contain
+# random runs that read as Slack IDs, and they hold no workspace data.
+LOCKFILES='(^|/)(bun\.lock|bun\.lockb|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock)$'
 
-# One staged diff, reused by every check below. -I skips binary files.
-diff_of_staged() {
-  # shellcheck disable=SC2086
-  git diff --cached -U0 -I --diff-filter=ACMR -- $staged
+if [ "$MODE" = "all" ]; then
+  files=$(git ls-files | grep -vE "$LOCKFILES")
+else
+  files=$(git diff --cached --name-only --diff-filter=ACMR | grep -vE "$LOCKFILES")
+fi
+[ -z "$files" ] && exit 0
+
+# The lines every check below consumes, as `location:line:content`.
+# staged → added lines of the staged diff; all → every line of every tracked file.
+scan_input() {
+  if [ "$MODE" = "all" ]; then
+    echo "$files" | while IFS= read -r f; do
+      [ -f "$f" ] && grep -aIHn "" "$f"
+    done
+  else
+    # shellcheck disable=SC2086
+    git diff --cached -U0 -I --diff-filter=ACMR -- $files | grep -E '^\+'
+  fi
 }
+
+# Materialize once — every check reads it, and in --all mode it is the whole tree.
+SCAN=$(scan_input)
 
 fail=0
 report() {
   if [ "$fail" -eq 0 ]; then
-    echo "pre-commit: refusing to commit real workspace data" >&2
+    if [ "$MODE" = "all" ]; then
+      echo "scan-pii --all: real workspace data present in the tree" >&2
+    else
+      echo "pre-commit: refusing to commit real workspace data" >&2
+    fi
     echo >&2
   fi
   fail=1
@@ -52,7 +81,7 @@ patterns=(
 for entry in "${patterns[@]}"; do
   pat="${entry%%|*}"
   why="${entry#*|}"
-  hits=$(diff_of_staged | grep -nE "^\+.*($pat)" | head -5) || true
+  hits=$(echo "$SCAN" | grep -E "$pat" | head -5) || true
   if [ -n "$hits" ]; then
     report "$why — matched /$pat/:"
     echo "$hits" | sed 's/^/      /' >&2
@@ -65,7 +94,7 @@ done
 # a longer dotted handle), and CJK 2/3-grams (so a kanji surname is found inside
 # a longer run of Japanese text).
 if [ -f "$DENYLIST" ]; then
-  deny_hits=$(diff_of_staged | grep -E '^\+' | python3 -c '
+  deny_hits=$(echo "$SCAN" | python3 -c '
 import hashlib, re, sys
 deny = set()
 with open(sys.argv[1], encoding="utf-8") as fh:
@@ -107,7 +136,7 @@ looks_like_real_id() {
     | grep -vE 'EXAMPLE|FAKE|TEST|GUEST|ALICE|BOB|REG|OTHER|YAMADA|SUZUKI|KOBAYASHI|TANAKA|SATO|KENJI|DAVE|BOT|MIX|TARO'
 }
 
-id_hits=$(diff_of_staged | grep -E '^\+' | grep -oE "$id_pattern" | looks_like_real_id | sort -u | head -5) || true
+id_hits=$(echo "$SCAN" | grep -oE "$id_pattern" | looks_like_real_id | sort -u | head -5) || true
 if [ -n "$id_hits" ]; then
   report "looks like a real Slack channel/user/team ID (use C00000001 / U00000001):"
   echo "$id_hits" | sed 's/^/      /' >&2
@@ -116,7 +145,7 @@ fi
 # --- 4. Fixture filenames -------------------------------------------------
 # Recorded fixtures carry real IDs in their FILENAME as well as their body;
 # the anonymizer scrubs both, but a hand-copied file would slip through.
-name_hits=$(echo "$staged" | grep -E 'tests/fixtures/mock/' | looks_like_real_id | sort -u | head -5) || true
+name_hits=$(echo "$files" | grep -E "tests/fixtures/mock/" | looks_like_real_id | sort -u | head -5) || true
 if [ -n "$name_hits" ]; then
   report "fixture FILENAME carries a real ID — re-run 'bun run anonymize':"
   echo "$name_hits" | sed 's/^/      /' >&2
