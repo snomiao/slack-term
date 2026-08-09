@@ -195,6 +195,63 @@ describe("send targeting (CLI)", { timeout: 60_000 }, () => {
     expect(r.stdout).toContain("#channel-01");
   });
 
+  test("gate names the sending identity (handle, user id, workspace)", async () => {
+    const r = await run(["send", "#channel-01", "hi there"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("From: @user1 (U00000001) — Acme");
+    // …and it sits inside the Sending block, above the destination
+    expect(r.stdout.indexOf("--- Sending")).toBeLessThan(r.stdout.indexOf("From: @user1"));
+    expect(r.stdout.indexOf("From: @user1")).toBeLessThan(r.stdout.indexOf("— NEW top-level message"));
+  });
+
+  test("thread gate names the sending identity too", async () => {
+    const r = await run(["send", MSG_PERMALINK, "hi there"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("From: @user1 (U00000001) — Acme");
+    expect(r.stdout).toContain("— THREAD REPLY");
+  });
+
+  test("identity is bound to the code: switching workspace between preview and confirm re-previews", async () => {
+    const dry = await run(["send", "#channel-01", "identity-bound"]);
+    const code = extractCode(dry.stderr);
+    // Same channel, same text, same last message — only the token's identity differs.
+    const other = await startMock({
+      inline: {
+        ...fixtures,
+        "auth.test": { ok: true, user_id: "U0000OTHER", user: "someone-else", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+      },
+    });
+    try {
+      const before = other.requests.length;
+      const r = await run(["send", "#channel-01", "identity-bound", `--code=${code}`], { baseUrl: other.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(r.stdout).toContain("From: @someone-else (U0000OTHER)");
+      // nothing was posted under the wrong identity
+      expect(other.requests.slice(before).find((q) => q.method === "chat.postMessage")).toBeUndefined();
+    } finally {
+      await other.stop();
+    }
+  });
+
+  test("identity lookup failure is fail-soft: gate still renders and the send goes through", async () => {
+    const m = await startMock({
+      inline: { ...fixtures, "auth.test": { ok: false, error: "invalid_auth" } },
+    });
+    try {
+      const dry = await run(["send", "#channel-01", "hi there"], { baseUrl: m.baseUrl });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("From: (unknown — auth.test failed)");
+      expect(dry.stdout).toContain("— NEW top-level message");
+
+      const r = await run(["send", "#channel-01", "hi there", `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Sent");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("channel-only permalink stays top-level", async () => {
     const before = mock.requests.length;
     const dry = await run(["send", "https://acme.slack.com/archives/C00000001", "hi there"]);
@@ -449,6 +506,13 @@ describe("delete (CLI)", { timeout: 60_000 }, () => {
     expect(r.stderr).toMatch(/--code=[0-9a-f]{4}/);
   });
 
+  test("gate names the deleting identity, above the target line", async () => {
+    const r = await run(["delete", MSG_PERMALINK]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("From: @user1 (U00000001) — Acme");
+    expect(r.stdout.indexOf("From: @user1")).toBeLessThan(r.stdout.indexOf("→ #channel-01"));
+  });
+
   test("confirmed delete calls chat.delete with channel and ts", async () => {
     const dry = await run(["delete", MSG_PERMALINK]);
     const before = mock.requests.length;
@@ -470,6 +534,118 @@ describe("delete (CLI)", { timeout: 60_000 }, () => {
     const r = await run(["delete", "#channel-01:1700000000.000100"]);
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toContain("hello world");
+  });
+});
+
+describe("edit (CLI)", { timeout: 60_000 }, () => {
+  test("gate names the editing identity above the original/replacement diff", async () => {
+    const r = await run(["edit", MSG_PERMALINK, "fixed wording"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("--- Editing as ---");
+    expect(r.stdout).toContain("From: @user1 (U00000001) — Acme");
+    expect(r.stdout.indexOf("From: @user1")).toBeLessThan(r.stdout.indexOf("--- Original message"));
+    expect(r.stdout).toContain("hello world");
+    expect(r.stdout).toContain("fixed wording");
+  });
+
+  test("confirmed edit still goes through with the identity-bound code", async () => {
+    const dry = await run(["edit", MSG_PERMALINK, "fixed wording"]);
+    const before = mock.requests.length;
+    const r = await run(["edit", MSG_PERMALINK, "fixed wording", `--code=${extractCode(dry.stderr)}`]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("✓ Edited");
+    const update = mock.requests.slice(before).find((q) => q.method === "chat.update");
+    expect(JSON.parse(update!.body).text).toBe("fixed wording");
+  });
+
+  test("switching identity between preview and confirm invalidates the code", async () => {
+    const dry = await run(["edit", MSG_PERMALINK, "fixed wording"]);
+    const code = extractCode(dry.stderr);
+    const other = await startMock({
+      inline: {
+        ...fixtures,
+        "auth.test": { ok: true, user_id: "U0000OTHER", user: "someone-else", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+      },
+    });
+    try {
+      const before = other.requests.length;
+      const r = await run(["edit", MSG_PERMALINK, "fixed wording", `--code=${code}`], { baseUrl: other.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(other.requests.slice(before).find((q) => q.method === "chat.update")).toBeUndefined();
+    } finally {
+      await other.stop();
+    }
+  });
+});
+
+// A scheduled message goes out later, unattended, as whoever the token was at
+// schedule time — so the gate has to name that identity and bind it to the code.
+describe("schedule send (CLI)", { timeout: 60_000 }, () => {
+  const AT = "2026-08-10T09:00:00Z";
+
+  test("gate names the scheduling identity, on the same column as To:/At:/Message:", async () => {
+    const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("--- Scheduling message");
+    expect(r.stdout).toContain("  From:    @user1 (U00000001) — Acme");
+    expect(r.stdout).toContain("  To:      #channel-01");
+    expect(r.stdout).toContain("  Message: morning reminder");
+  });
+
+  test("At: shows local and UTC — a UTC --at renders in the sender's zone too", async () => {
+    const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT], { env: { TZ: "Asia/Tokyo" } });
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("  At:      2026-08-10 18:00:00 GMT+9 (local) / 2026-08-10T09:00:00.000Z (Unix: 1786352400)");
+  });
+
+  test("At: a bare local --at renders its UTC equivalent — the off-by-a-timezone case", async () => {
+    // 09:00 in New York (EDT, UTC-4) is 13:00Z — the gate must show both.
+    const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", "2026-08-10 09:00"], { env: { TZ: "America/New_York" } });
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("  At:      2026-08-10 09:00:00 GMT-4 (local) / 2026-08-10T13:00:00.000Z");
+    // west-of-UTC offsets use an ASCII hyphen, not U+2212
+    expect(r.stdout).not.toContain("−");
+  });
+
+  test("confirmed schedule calls chat.scheduleMessage", async () => {
+    const dry = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT]);
+    const before = mock.requests.length;
+    const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT, `--code=${extractCode(dry.stderr)}`]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain("✓ Scheduled");
+    const sched = mock.requests.slice(before).find((q) => q.method === "chat.scheduleMessage");
+    expect(sched).toBeDefined();
+    expect(JSON.parse(sched!.body).text).toBe("morning reminder");
+  });
+
+  test("schedule rm gate names the identity whose scheduled message is being dropped", async () => {
+    const r = await run(["schedule", "rm", "#channel-01", "Q00000001"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("--- Deleting scheduled message");
+    expect(r.stdout).toContain("  From:    @user1 (U00000001) — Acme");
+    expect(r.stdout).toContain("  ID:      Q00000001");
+  });
+
+  test("switching identity between preview and confirm invalidates the code", async () => {
+    const dry = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT]);
+    const code = extractCode(dry.stderr);
+    const other = await startMock({
+      inline: {
+        ...fixtures,
+        "auth.test": { ok: true, user_id: "U0000OTHER", user: "someone-else", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+      },
+    });
+    try {
+      const before = other.requests.length;
+      const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT, `--code=${code}`], { baseUrl: other.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(r.stdout).toContain("From:    @someone-else (U0000OTHER)");
+      expect(other.requests.slice(before).find((q) => q.method === "chat.scheduleMessage")).toBeUndefined();
+    } finally {
+      await other.stop();
+    }
   });
 });
 
@@ -547,7 +723,7 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
   function botFixtures(scopes: string) {
     return {
       "auth.test": {
-        ok: true, user_id: "U00000BOT", bot_id: "B00000001", team: "Acme",
+        ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
         url: "https://acme.slack.com/", __headers: { "x-oauth-scopes": scopes },
       },
       "bots.info__bot=B00000001": { ok: true, bot: { app_id: "A00000001", user_id: "U00000BOT" } },
@@ -597,6 +773,20 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     const r = await run(["send", "@bob", "hi", "--as-bot"]);
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("--as-bot needs a bot token");
+  });
+
+  test("--as-bot gate names the BOT identity, not the user's", async () => {
+    const m = await startMock({ inline: botFixtures("chat:write,im:write,im:history,im:read") });
+    try {
+      const r = await run(
+        ["send", "@bob", "escalation", "--as-bot", "--channel-id", "D00000001"],
+        { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toContain("From: @acmebot (U00000BOT) — Acme [as bot]");
+    } finally {
+      await m.stop();
+    }
   });
 
   test("send --as-bot to a DM runs post-send diagnosis (missing scopes warn)", async () => {

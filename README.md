@@ -54,13 +54,23 @@ slack news --limit 5
 # Recent messages across joined channels
 slack msgs
 
+# Channel/DM history. Thread parents are marked `[+N replies]`, so a line with
+# replies is distinguishable from one without — open it with `slack thread`.
+# --json adds reply_count / reply_users_count / latest_reply.
+slack read "#general"
+slack read "#general" --unreplied   # only threads/posts whose last word isn't yours
+
 # Search messages
 slack search "deploy"
 slack search "deploy" --count 50
 
 # Send a message (two-step confirm — quote #channel)
 slack send "#general" "Hello team"
-# Prints a destination preview + confirm code; rerun with --code=<code> to actually send
+# Prints who you're acting as (From: @handle (Uxxxx) — Workspace) + a destination
+# preview + confirm code; rerun with --code=<code> to actually send. Every gated write
+# (send/edit/delete/upload/schedule/channel create/drafts) shows that From: line and
+# binds it into the code, so a profile switch mid-flow invalidates it instead of acting
+# as the wrong account.
 slack send "#general" "Hello team" --code=<code>
 
 # Reply in a thread — #chan:<thread_ts>, or just paste a message permalink
@@ -112,7 +122,7 @@ a **progress** reaction says where it stands; **reason flags** stack on top:
 | progress 1 | ✅ `white_check_mark` | done |
 | progress 2 | 🚫 `no_entry_sign` | dropped |
 | progress 3 | 👀 `eyes` | doing |
-| progress 4 | ⏳ `hourglass` | pending |
+| progress 4 | ⏳ `hourglass_flowing_sand` | pending |
 | progress 5 | *(marker only)* | undefined / untriaged |
 | flag | ❗ `exclamation` | alert |
 | flag | ❓ `question` | needs discussion |
@@ -204,7 +214,7 @@ For automation, `--exit-on-message` stops as soon as the first message from
 make a "wait for a reply, then act" primitive that won't hang:
 
 ```sh
-slack tail "@yamada" --exit-on-message --timeout 30m --interval 15000
+slack tail "@alice" --exit-on-message --timeout 30m --interval 15000
 ```
 
 **Note:** Cross-channel mention streaming (`--me` without a target) is not yet

@@ -153,6 +153,14 @@ const fixtures = {
     files: [],
     paging: { count: 50, total: 1, page: 2, pages: 1 },
   },
+
+  "lists.records.list": {
+    ok: true,
+    items: [
+      { id: "Rec00000001", list_id: "F00000LIST", fields: [{ key: "name", text: "Task one" }, { key: "done", value: true }] },
+    ],
+    response_metadata: { next_cursor: "" },
+  },
 };
 
 beforeAll(async () => {
@@ -433,6 +441,15 @@ describe("slack.ts", () => {
   test("filesList threads page/count/types params through", async () => {
     const resp = (await slack.filesList(token, { page: 2, count: 50, types: "pdfs" })) as { files?: unknown[] };
     expect(resp.files).toEqual([]);
+  });
+
+  test("listRecords posts lists.records.list with the list_id", async () => {
+    const resp = (await slack.listRecords(token, "F00000LIST", { limit: 50 })) as { items?: Array<{ id: string }> };
+    expect(resp.items).toHaveLength(1);
+    expect(resp.items?.[0]?.id).toBe("Rec00000001");
+    const req = mock.requests.filter((r) => r.method === "lists.records.list").at(-1);
+    expect(req?.body).toContain("list_id=F00000LIST");
+    expect(req?.body).toContain("limit=50");
   });
 
   test("reactionAdd posts reactions.add with the emoji name", async () => {

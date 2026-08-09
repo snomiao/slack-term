@@ -29,6 +29,7 @@ import {
   reactionRemove,
   filesInfo,
   filesList,
+  listRecords,
   history,
   listConversations,
   listDrafts,
@@ -200,7 +201,7 @@ async function formatMsgLine(
     handle = m.username;
   }
   const raw = typeof m.text === "string" ? m.text : "";
-  const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache));
+  const resolved = resolveDateMarkup(await resolveMentions(token, raw, cache, cookie));
   const lines = resolved.split("\n");
   const body = lines[0] + (lines.length > 1 ? "\n" + lines.slice(1).map(l => `  ${l}`).join("\n") : "");
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
@@ -222,8 +223,12 @@ async function formatMsgLine(
       return `\n   📎 ${name}${sz}${id}`;
     })
     .join("");
+  // Thread parents carry reply_count; surface it inline so a reader of
+  // top-level history can see there is more to read without opening each ts.
+  const replyCount = Number(m.reply_count ?? 0);
+  const threadMark = replyCount > 0 ? `  [+${replyCount} ${replyCount === 1 ? "reply" : "replies"}]` : "";
   const tail = (reactions ? `\n   ${reactions}` : "") + attachTail;
-  return `${stamp}  ${who}:  ${body}${tail}`;
+  return `${stamp}  ${who}:  ${body}${threadMark}${tail}`;
 }
 
 // Human-readable byte size, shared by upload/download/attachment rendering.
@@ -258,39 +263,73 @@ function slimMsg(m: Record<string, Json>): Record<string, Json> {
     bot_id: m.bot_id ?? null,
     thread_ts: m.thread_ts ?? null,
     text: typeof m.text === "string" ? m.text : "",
+    // Thread stats, present only on thread parents. Without these a caller
+    // reading top-level history cannot tell a post with replies from one
+    // without, and silently misses everything said inside the thread.
+    ...(m.reply_count !== undefined ? { reply_count: m.reply_count } : {}),
+    ...(m.reply_users_count !== undefined ? { reply_users_count: m.reply_users_count } : {}),
+    ...(m.latest_reply !== undefined ? { latest_reply: m.latest_reply } : {}),
     // Present only when the message carries attachments, so scripts can reliably
     // detect files without the key adding noise to every plain-text line.
     ...(files.length > 0 ? { files } : {}),
   };
 }
 
+// Keep only conversations whose last word is somebody else's — i.e. still
+// awaiting our answer. For a thread parent that means the newest reply, which
+// costs one conversations.replies call per thread (latest_reply gives the ts but
+// not its author, so it cannot answer this on its own).
+async function filterUnreplied(
+  token: string,
+  channelId: string,
+  msgs: Record<string, Json>[],
+  selfId: string,
+  cookie?: string,
+): Promise<Record<string, Json>[]> {
+  const out: Record<string, Json>[] = [];
+  for (const m of msgs) {
+    let last = m;
+    if (Number(m.reply_count ?? 0) > 0 && typeof m.ts === "string") {
+      const resp = (await replies(token, channelId, m.ts, 200, cookie)) as Record<string, Json>;
+      const all = asArray(resp.messages).map(asRecord);
+      last = all[all.length - 1] ?? m;
+    }
+    if (last.user !== selfId) out.push(m);
+  }
+  return out;
+}
+
 // --- msgs <target> — channel/DM history with timestamps ---
-async function cmdMsgsTarget(token: string, target: string, limit: number, format: "text" | "jsonl" = "text"): Promise<void> {
+async function cmdMsgsTarget(token: string, target: string, limit: number, format: "text" | "jsonl" = "text", unreplied = false, cookie?: string): Promise<void> {
   const parsed = parseSlackPermalink(target);
-  const channelId = await resolveChannel(token, target);
+  const channelId = await resolveChannel(token, target, cookie);
   const cache = new Map<string, string>();
   const fetchMsgs = async (): Promise<Record<string, Json>[]> => {
     if (parsed?.threadTs) {
-      const resp = (await replies(token, channelId, parsed.threadTs, limit)) as Record<string, Json>;
+      const resp = (await replies(token, channelId, parsed.threadTs, limit, cookie)) as Record<string, Json>;
       return asArray(resp.messages).map(asRecord);
     }
-    const hist = (await history(token, channelId, limit)) as Record<string, Json>;
+    const hist = (await history(token, channelId, limit, undefined, undefined, cookie)) as Record<string, Json>;
     return asArray(hist.messages).map(asRecord).reverse();
   };
-  const msgs = await fetchMsgs();
+  let msgs = await fetchMsgs();
+  if (unreplied) {
+    const { userId } = await authTest(token, cookie);
+    msgs = await filterUnreplied(token, channelId, msgs, userId, cookie);
+  }
   if (format === "jsonl") {
     for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
     return;
   }
   for (const m of msgs) {
-    console.log(await formatMsgLine(token, m, cache));
+    console.log(await formatMsgLine(token, m, cache, undefined, cookie));
   }
 }
 
 // --- thread ---
-async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" = "text"): Promise<void> {
-  const channelId = await resolveChannel(token, target);
-  const resp = (await replies(token, channelId, parseInputTs(ts), limit)) as Record<string, Json>;
+async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" = "text", cookie?: string): Promise<void> {
+  const channelId = await resolveChannel(token, target, cookie);
+  const resp = (await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>;
   const msgs = asArray(resp.messages).map(asRecord);
   if (format === "jsonl") {
     for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
@@ -298,7 +337,7 @@ async function cmdThread(token: string, target: string, ts: string, limit: numbe
   }
   const cache = new Map<string, string>();
   for (const m of msgs) {
-    console.log(await formatMsgLine(token, m, cache));
+    console.log(await formatMsgLine(token, m, cache, undefined, cookie));
   }
 }
 
@@ -479,7 +518,10 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
     } else {
       chLabel = `#${rawName}`;
     }
-    console.log(await formatMsgLine(searchToken, m, cache, chLabel));
+    // Pass searchCookie: an xoxc- desktop token is rejected by users.info without
+    // its session cookie, and both the author handle and every <@UID> mention
+    // silently degrade to raw IDs. The DM-label lookup above already forwards it.
+    console.log(await formatMsgLine(searchToken, m, cache, chLabel, searchCookie));
   }
 }
 
@@ -863,7 +905,7 @@ function parseTargetThread(s: string): { ref: string; threadTs?: string } {
   return { ref: s };
 }
 
-/** Human-readable destination label for confirm gates, e.g. "#general (C00000001)".
+/** Human-readable destination label for confirm gates, e.g. "#general (C0123456789)".
  *  When ref is already a #channel/@user label, keep it; otherwise resolve the channel
  *  name via conversations.info (fail-soft: a raw ID is still unambiguous). */
 async function destLabel(token: string, channelId: string, ref: string, cookie?: string): Promise<string> {
@@ -883,6 +925,55 @@ async function destLabel(token: string, channelId: string, ref: string, cookie?:
     }
   }
   return name === channelId ? channelId : `${name} (${channelId})`;
+}
+
+/** Identity behind the token a write command will act with. */
+type Self = { userId: string; user: string; botId: string; team: string };
+
+/** `auth.test` for the token that will perform a write. Every confirm gate names
+ *  the acting identity and binds it into the safety hash. Resolves to null
+ *  (never throws) when the lookup fails, so a gate still renders and the write
+ *  still goes through. */
+async function selfIdentity(token: string, cookie?: string): Promise<Self | null> {
+  try {
+    return await authScopes(token, cookie);
+  } catch {
+    return null;
+  }
+}
+
+/** Memoized `selfIdentity`, for commands that consult it more than once (`send`
+ *  needs it for the unreplied guard as well as the gate) — a command must never
+ *  pay for more than one lookup. */
+function selfLookup(token: string, cookie?: string): () => Promise<Self | null> {
+  let cache: Self | null | undefined;
+  return async () => {
+    if (cache === undefined) cache = await selfIdentity(token, cookie);
+    return cache;
+  };
+}
+
+/** Name the identity a write will be performed AS, for confirm gates:
+ *  "@snomiao (U0123ABC) — Acme". Slack shows only the author on the resulting
+ *  message, so a wrong profile / stale SLACK_TOKEN / unintended --as-bot is
+ *  otherwise invisible until after it lands — handle, user id and workspace pin
+ *  all three down. `self` is null when the auth.test lookup failed (fail-soft:
+ *  the gate still renders, it just can't name the actor). */
+function senderLabel(self: Self | null, asBot?: boolean): string {
+  const suffix = asBot ? " [as bot]" : "";
+  if (!self) return `(unknown — auth.test failed)${suffix}`;
+  // Display text is workspace-controlled; strip control chars like the other gates.
+  const name = stripTerminalControls(self.user || self.userId || "?");
+  const id = self.userId ? ` (${self.userId})` : "";
+  const team = self.team ? ` — ${stripTerminalControls(self.team)}` : "";
+  return `@${name}${id}${team}${suffix}`;
+}
+
+/** The `From:` line every write gate opens its action block with. `pad` is the
+ *  label field width, for gates whose other labels sit on a wider column
+ *  (`To:`/`At:`/`Message:` on schedule, `Title:`/`Size:` on upload). */
+function fromLine(self: Self | null, opts: { asBot?: boolean | undefined; pad?: number } = {}): string {
+  return `  ${"From:".padEnd(opts.pad ?? 6)}${senderLabel(self, opts.asBot)}`;
 }
 
 /** One-line description of a single thread message for confirm gates:
@@ -966,6 +1057,7 @@ interface EditArgs {
   cookie?: string;
 }
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
+  const getSelf = selfLookup(token, args.cookie);
   const { ref, ts } = splitRefTs(args.target);
   if (!ts) {
     console.error("Error: target must embed a message ts (e.g. #chan:2026-05-11T06:01:04.000100 or a Slack permalink URL)");
@@ -991,9 +1083,16 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     ? await encodeMentions(token, args.newText, channelId, args.cookie ? { cookie: args.cookie } : {})
     : args.newText;
 
-  const code = safetyCode(originalText, newText);
+  // Identity is part of the hash for the same reason it is on `send`: a code
+  // minted while previewing as one identity must not confirm the write as
+  // another (Slack only lets you edit your own messages, so a silent profile
+  // switch between preview and confirm otherwise turns into a bare API error).
+  const self = await getSelf();
+  const code = safetyCode(originalText, newText, self?.userId ?? "");
   if (args.code !== code) {
     requireCode(args.code, code, [
+      `--- Editing as -------------------------------`,
+      fromLine(self),
       `--- Original message -------------------------`,
       ...originalText.split("\n").map((l) => `  ${l}`),
       `--- Replacing with ---------------------------`,
@@ -1014,6 +1113,7 @@ interface DeleteArgs {
   cookie?: string;
 }
 async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
+  const getSelf = selfLookup(token, args.cookie);
   const { ref, ts } = splitRefTs(args.target);
   if (!ts) {
     console.error("Error: target must embed a message ts (e.g. #chan:2026-05-11T06:01:04.000100 or a Slack permalink URL)");
@@ -1034,11 +1134,15 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
   }
   const originalText = typeof original.text === "string" ? original.text : "";
 
-  const code = safetyCode(channelId, ts, originalText);
+  // Identity in the hash: same rule as send/edit — a code minted as one
+  // identity can't confirm the delete as another.
+  const self = await getSelf();
+  const code = safetyCode(channelId, ts, originalText, self?.userId ?? "");
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, args.cookie);
     requireCode(args.code, code, [
       `--- Deleting message -------------------------`,
+      fromLine(self),
       `  → ${dest} at ${slackTsToIso(ts)}`,
       ...originalText.split("\n").map((l) => `  ${l}`),
       `---------------------------------------------`,
@@ -1125,6 +1229,10 @@ async function isSelfDm(token: string, ref: string, cookie?: string): Promise<bo
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
   const cookie = args.cookie;
+
+  // Identity of the token that will actually post — the bot token under
+  // --as-bot, the user token otherwise.
+  const getSelf = selfLookup(token, cookie);
 
   // Guard the self-DM footgun before doing anything else, unless sending as the
   // bot (which delivers a notifiable DM from a different identity).
@@ -1257,10 +1365,12 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // shape `send --as-bot` produces. Opt out with SLACK_UNREPLIED_WARN=0.
   if (process.env.SLACK_UNREPLIED_WARN !== "0" && lastMsgTs && (lastMsgUserId || lastMsgBotId)) {
     try {
-      const self = await authScopes(token, cookie);
-      const isSelfAuthor =
+      const self = await getSelf();
+      // `self` is null when the identity lookup failed — can't tell whose
+      // message it is, so stay quiet rather than guess.
+      const isSelfAuthor = !!self && (
         (!!lastMsgUserId && !!self.userId && self.userId === lastMsgUserId) ||
-        (!!lastMsgBotId && !!self.botId && self.botId === lastMsgBotId);
+        (!!lastMsgBotId && !!self.botId && self.botId === lastMsgBotId));
       if (isSelfAuthor) {
         // Prefer a real permalink (exact, copy-pasteable). If that lookup fails,
         // fall back to a form guaranteed parseable by `slack edit` regardless of
@@ -1303,12 +1413,17 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     }
   }
 
-  // Hash covers the destination too — a code minted for one channel/thread
-  // cannot confirm a send to another.
-  const code = safetyCode(channelId, threadTs ?? "", lastText, message);
+  // Hash covers the destination and the sending identity too — a code minted
+  // for one channel/thread cannot confirm a send to another, and one minted
+  // while previewing as identity A cannot confirm a send as identity B (a
+  // profile / SLACK_TOKEN / --as-bot switch between preview and confirm
+  // re-previews instead). Empty on lookup failure, same fail-soft as lastText.
+  const self = await getSelf();
+  const code = safetyCode(channelId, threadTs ?? "", lastText, message, self?.userId ?? "");
 
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, cookie);
+    const from = fromLine(self, { asBot: args.asBot });
     if (threadTs) {
       const parentLine = await threadParentLine(token, threadTs, threadMsgs, cookie);
       // Preview the tail of the thread (up to 3 most recent messages) so the
@@ -1322,6 +1437,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         ...recentLines,
         ...mentionLines,
         `--- Sending ----------------------------------`,
+        from,
         `  → ${dest} thread of ${parentLine} — THREAD REPLY`,
         `  Message: ${message}`,
         `--------------------------------────────────`,
@@ -1332,6 +1448,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
         ...mentionLines,
         `--- Sending ----------------------------------`,
+        from,
         `  → ${dest} — NEW top-level message`,
         `  Message: ${message}`,
         `--------------------------------────────────`,
@@ -1388,6 +1505,26 @@ function parsePostAt(at: string): number {
   return Math.floor(d.getTime() / 1000);
 }
 
+/** Render a scheduled post time as local AND UTC: "2026-08-10 18:00:00 GMT+9
+ *  (local) / 2026-08-10T09:00:00.000Z (Unix: 1786352400)". A schedule gate is
+ *  exactly where an off-by-a-timezone mistake gets locked in — `--at` accepts
+ *  both bare local times and `Z`-suffixed UTC, so showing only one form leaves
+ *  the reader doing the conversion in their head. Local is first: it's the form
+ *  the sender thinks in. */
+function fmtPostAt(postAt: number): string {
+  const d = new Date(postAt * 1000);
+  const local = new Intl.DateTimeFormat("sv-SE", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, timeZoneName: "short",
+  })
+    .format(d)
+    // sv-SE renders a west-of-UTC offset with U+2212 MINUS SIGN ("GMT−4"), which
+    // survives copy/paste into a shell or a grep as a non-ASCII byte. Plain hyphen.
+    .replace(/−/g, "-");
+  return `${local} (local) / ${d.toISOString()} (Unix: ${postAt})`;
+}
+
 interface ScheduleSendArgs {
   target: string;
   message: string;
@@ -1398,6 +1535,7 @@ interface ScheduleSendArgs {
   cookie?: string;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
+  const getSelf = selfLookup(token, args.cookie);
   const { ref, threadTs } = parseTargetThread(args.target);
 
   let channelId: string;
@@ -1407,13 +1545,18 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
 
   const postAt = parsePostAt(args.at);
   const postAtDate = new Date(postAt * 1000).toISOString();
-  const code = safetyCode(channelId, args.message, String(postAt));
+  // Identity in the hash, same as the other gated writes. It matters more here
+  // than anywhere else: the message goes out later, unattended, under whichever
+  // identity was current at schedule time.
+  const self = await getSelf();
+  const code = safetyCode(channelId, args.message, String(postAt), self?.userId ?? "");
 
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Scheduling message -----------------------`,
+      fromLine(self, { pad: 9 }),
       `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
-      `  At:      ${postAtDate} (Unix: ${postAt})`,
+      `  At:      ${fmtPostAt(postAt)}`,
       `  Message: ${args.message}`,
       `---------------------------------------------`,
     ]);
@@ -1452,10 +1595,12 @@ async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void>
   if (args.channelId) channelId = args.channelId;
   else channelId = await resolveChannel(token, args.target, args.cookie);
 
-  const code = safetyCode(channelId, args.id);
+  const self = await selfIdentity(token, args.cookie);
+  const code = safetyCode(channelId, args.id, self?.userId ?? "");
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Deleting scheduled message ---------------`,
+      fromLine(self, { pad: 9 }),
       `  Channel: ${args.target}`,
       `  ID:      ${args.id}`,
       `---------------------------------------------`,
@@ -1477,6 +1622,7 @@ interface UploadArgs {
   cookie?: string;
 }
 async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
+  const getSelf = selfLookup(token, args.cookie);
   const { statSync, existsSync } = await import("node:fs");
   const { basename } = await import("node:path");
 
@@ -1501,19 +1647,23 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     return { fp, filename, title, sizeFmt: fmtSize(statSync(fp).size) };
   });
 
-  // Safety code covers the full batch — single-file code is identical to the old formula.
-  const code = safetyCode(channelId, ...files.flatMap((f) => [f.fp, f.title]));
+  // Safety code covers the full batch, plus the uploading identity (same rule
+  // as send/edit/delete — the file lands under whoever the token is).
+  const self = await getSelf();
+  const code = safetyCode(channelId, ...files.flatMap((f) => [f.fp, f.title]), self?.userId ?? "");
   if (args.code !== code) {
     const destLine = `  To:    ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`;
     const lines = isBatch
       ? [
           `--- Uploading ${files.length} files ------------------------`,
+          fromLine(self, { pad: 7 }),
           destLine,
           ...files.map((f) => `    ${f.filename}  (${f.sizeFmt})`),
           `--------------------------------────────────`,
         ]
       : [
           `--- Uploading file ---------------------------`,
+          fromLine(self, { pad: 7 }),
           destLine,
           `  File:  ${files[0]!.fp}`,
           `  Title: ${files[0]!.title}`,
@@ -1580,6 +1730,74 @@ async function cmdFilesList(
     const ft = typeof f.filetype === "string" ? f.filetype : "?";
     const size = typeof f.size === "number" ? fmtSize(f.size) : "";
     console.log(`${id}  ${ft.padEnd(7)}  ${size.padStart(9)}  ${name}`);
+  }
+}
+
+// --- lists <ref> — read a Slack List's rows (read-only) ---
+// ref: a list URL (…/lists/<TEAM>/<F-id> or …/lists/<F-id>) or a bare F-id.
+// There is no list-enumeration API, so the id must come from the list's URL.
+function parseListId(ref: string): string | undefined {
+  if (/^F[A-Z0-9]+$/i.test(ref)) return ref;
+  return ref.match(/\/lists\/[A-Za-z0-9]+\/(F[A-Za-z0-9]+)/i)?.[1]
+    ?? ref.match(/\/lists\/(F[A-Za-z0-9]+)/i)?.[1];
+}
+
+// Best-effort display of a Slack List cell across the value shapes the API uses
+// (plain text, typed value, arrays of {text|name|value}, typed sub-objects).
+function listFieldValue(f: Record<string, Json>): string {
+  if (typeof f.text === "string" && f.text) return f.text;
+  const v = f.value;
+  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) {
+    return v.map((x) => typeof x === "string" ? x : String(asRecord(x).text ?? asRecord(x).name ?? asRecord(x).value ?? "")).filter(Boolean).join(", ");
+  }
+  for (const k of ["rich_text", "select", "user", "date", "number", "checkbox", "email", "phone"]) {
+    const tv = f[k];
+    if (tv != null) return typeof tv === "object" ? JSON.stringify(tv) : String(tv);
+  }
+  return "";
+}
+
+async function cmdLists(
+  token: string,
+  cookie: string | undefined,
+  ref: string,
+  opts: { limit: number; format: string },
+): Promise<void> {
+  const listId = parseListId(ref);
+  if (!listId) {
+    throw new Error(
+      `Not a list ID or list URL: ${ref}\n` +
+      `Expected F… or https://<ws>.slack.com/lists/<TEAM>/<F-id>`,
+    );
+  }
+  const records: Record<string, Json>[] = [];
+  let cursor: string | undefined;
+  do {
+    const listOpts: { limit: number; cursor?: string } = { limit: 200 };
+    if (cursor) listOpts.cursor = cursor;
+    const resp = asRecord((await listRecords(token, listId, listOpts, cookie)) as Json);
+    for (const it of asArray(resp.items ?? resp.records)) records.push(asRecord(it));
+    const next = asRecord(resp.response_metadata).next_cursor;
+    cursor = typeof next === "string" && next ? next : undefined;
+  } while (cursor && records.length < opts.limit);
+  const shown = records.slice(0, opts.limit);
+
+  if (opts.format === "jsonl") {
+    for (const r of shown) console.log(JSON.stringify(r));
+    return;
+  }
+  for (const r of shown) {
+    const id = String(r.id ?? "");
+    const cells = asArray(r.fields)
+      .map(asRecord)
+      .map((f) => {
+        const col = String(f.key ?? f.column_id ?? "?");
+        const val = listFieldValue(f);
+        return val ? `${col}=${val}` : "";
+      })
+      .filter(Boolean);
+    console.log(`${id}  ${cells.join(" | ")}`);
   }
 }
 
@@ -1668,11 +1886,12 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", describe: "#channel, @user, or URL" })
         .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" })
         .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
-        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
+        .option("unreplied", { type: "boolean", default: false, describe: "Only messages whose last word (incl. thread replies) is not yours — i.e. awaiting your answer" }),
       async (argv) => {
         const token = tok(argv as W);
         const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
-        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format);
+        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format, argv.unreplied, ck(argv as W));
         else await cmdMsgs(token);
       },
     )
@@ -1687,7 +1906,7 @@ async function main(): Promise<void> {
         .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
       async (argv) => {
         const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
-        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format);
+        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format, ck(argv as W));
       },
     )
     .command(
@@ -1747,9 +1966,13 @@ async function main(): Promise<void> {
             const name = argv.name!.replace(/^#/, "").toLowerCase();
             const isPrivate = argv.private === true;
             const invites = (argv.invite as string[]).filter(Boolean);
-            const code = safetyCode(name, String(isPrivate), invites.join(","));
+            // The creator becomes the channel's owner and the inviter of record —
+            // so the gate names them, and the code is bound to them.
+            const self = await selfIdentity(token, cookie);
+            const code = safetyCode(name, String(isPrivate), invites.join(","), self?.userId ?? "");
             if (argv.code !== code) requireCode(argv.code, code, [
               `--- Creating channel -------------------------`,
+              fromLine(self, { pad: 9 }),
               `  name:    ${isPrivate ? "🔒 " : "#"}${name}`,
               `  private: ${isPrivate}`,
               ...(invites.length ? [`  invite:  ${invites.join(", ")}`] : []),
@@ -2298,6 +2521,24 @@ async function main(): Promise<void> {
       () => {},
     )
     .command(
+      "lists <ref>",
+      "Read a Slack List's rows (by list URL or F-id) — read-only",
+      (y) => y
+        .positional("ref", { type: "string", demandOption: true, describe: "List URL (…/lists/<TEAM>/<F-id>) or bare F-id" })
+        .option("limit", { alias: "l", type: "number", default: 100, describe: "Max rows to show" })
+        .option("format", { type: "string", choices: ["text", "jsonl"], default: "text" })
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl (raw records)" }),
+      async (argv) => {
+        const format = argv.json ? "jsonl" : (argv.format as string);
+        try {
+          await cmdLists(tok(argv as W), ck(argv as W), argv.ref!, { limit: argv.limit as number, format });
+        } catch (e: unknown) {
+          console.error(friendlySlackError(e));
+          process.exit(1);
+        }
+      },
+    )
+    .command(
       "download <ref> [dest]",
       "Download a file attachment (by file ID or file permalink) to disk",
       (y) => y
@@ -2368,8 +2609,11 @@ async function main(): Promise<void> {
             const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
             if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }
             const prevText = draftText(d);
-            const code = safetyCode(prevText, text);
+            const self = await selfIdentity(token, cookie);
+            const code = safetyCode(prevText, text, self?.userId ?? "");
             if (argv.code !== code) requireCode(argv.code, code, [
+              `--- Editing draft as -------------------------`,
+              fromLine(self),
               `--- Current draft ----------------------------`,
               ...prevText.split("\n").map((l) => `  ${l}`),
               `--- Replacing with ---------------------------`,
@@ -2392,9 +2636,11 @@ async function main(): Promise<void> {
             const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
             if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }
             const prevText = draftText(d);
-            const code = safetyCode(argv.id!, prevText);
+            const self = await selfIdentity(token, cookie);
+            const code = safetyCode(argv.id!, prevText, self?.userId ?? "");
             if (argv.code !== code) requireCode(argv.code, code, [
               `─-- Deleting draft ───────────────────────────`,
+              fromLine(self),
               `  id: ${argv.id}`,
               ...prevText.split("\n").map((l) => `  ${l}`),
               `--------------------------------────────────`,

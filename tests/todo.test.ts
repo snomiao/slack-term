@@ -109,13 +109,13 @@ describe("buildTodoQuery", () => {
       "hasmy::eyes: -hasmy::white_check_mark: -hasmy::no_entry_sign:",
     );
     expect(buildTodoQuery("pending", cfg)).toBe(
-      "hasmy::hourglass: -hasmy::white_check_mark: -hasmy::no_entry_sign: -hasmy::eyes:",
+      "hasmy::hourglass_flowing_sand: -hasmy::white_check_mark: -hasmy::no_entry_sign: -hasmy::eyes:",
     );
   });
 
   test("untriaged = marker with no progress emoji", () => {
     expect(buildTodoQuery("untriaged", cfg)).toBe(
-      "hasmy::pushpin: -hasmy::white_check_mark: -hasmy::no_entry_sign: -hasmy::eyes: -hasmy::hourglass:",
+      "hasmy::pushpin: -hasmy::white_check_mark: -hasmy::no_entry_sign: -hasmy::eyes: -hasmy::hourglass_flowing_sand:",
     );
   });
 
@@ -156,9 +156,9 @@ describe("buildTodoQuery", () => {
   });
 
   test("a custom waiting emoji flows into the stuck OR clause", () => {
-    const custom = { ...cfg, flags: { ...cfg.flags, waiting: "hourglass_flowing_sand" } };
+    const custom = { ...cfg, flags: { ...cfg.flags, waiting: "raising_hand" } };
     const q = buildTodoQuery("stuck", custom);
-    expect(q).toContain("hasmy::hourglass_flowing_sand:");
+    expect(q).toContain("hasmy::raising_hand:");
     expect(q).not.toContain("hasmy::speech_balloon:");
     expect(q).toContain("hasmy::lock:"); // blocked untouched
   });
@@ -203,19 +203,19 @@ describe("loadTodoConfig", () => {
 
 describe("todoSet", () => {
   test("(a) adds the new reaction before removing any old one", async () => {
-    behaviour.reactionsGet = [{ name: "hourglass", users: ["U_ME"] }];
+    behaviour.reactionsGet = [{ name: "hourglass_flowing_sand", users: ["U_ME"] }];
     const res = await todoSet("tok", "C1", "1.1", "doing", cfg);
     const addIdx = calls.indexOf("add:eyes");
     const removeIdx = calls.findIndex((c) => c.startsWith("remove:"));
     expect(addIdx).toBeGreaterThanOrEqual(0);
     expect(removeIdx).toBeGreaterThan(addIdx);
-    expect(res.removed).toEqual(["hourglass"]);
+    expect(res.removed).toEqual(["hourglass_flowing_sand"]);
     expect(res.leftover).toEqual([]);
   });
 
   test("(b) removes are awaited serially, never Promise.all", async () => {
     behaviour.reactionsGet = [
-      { name: "hourglass", users: ["U_ME"] },
+      { name: "hourglass_flowing_sand", users: ["U_ME"] },
       { name: "eyes", users: ["U_ME"] },
       { name: "no_entry_sign", users: ["U_ME"] },
     ];
@@ -229,18 +229,18 @@ describe("todoSet", () => {
     }
     // Priority order: dropped before doing before pending.
     expect(removes.filter((c) => c.endsWith(":start"))).toEqual([
-      "remove:no_entry_sign:start", "remove:eyes:start", "remove:hourglass:start",
+      "remove:no_entry_sign:start", "remove:eyes:start", "remove:hourglass_flowing_sand:start",
     ]);
   });
 
   test("only considers MY reactions, not other people's", async () => {
     behaviour.reactionsGet = [
-      { name: "hourglass", users: ["U_OTHER"] },
+      { name: "hourglass_flowing_sand", users: ["U_OTHER"] },
       { name: "eyes", users: ["U_ME"] },
     ];
     const res = await todoSet("tok", "C1", "1.1", "done", cfg);
     expect(res.removed).toEqual(["eyes"]);
-    expect(calls).not.toContain("remove:hourglass:start");
+    expect(calls).not.toContain("remove:hourglass_flowing_sand:start");
   });
 
   test("no-op when already exactly in the target state (no add, no remove)", async () => {
@@ -252,13 +252,13 @@ describe("todoSet", () => {
 
   test("a failing remove is swallowed and reported as leftover", async () => {
     behaviour.reactionsGet = [
-      { name: "hourglass", users: ["U_ME"] },
+      { name: "hourglass_flowing_sand", users: ["U_ME"] },
       { name: "eyes", users: ["U_ME"] },
     ];
     behaviour.removeFails = new Set(["eyes"]);
     const res = await todoSet("tok", "C1", "1.1", "done", cfg);
     expect(res.leftover).toEqual(["eyes"]);
-    expect(res.removed).toEqual(["hourglass"]); // kept going after the failure
+    expect(res.removed).toEqual(["hourglass_flowing_sand"]); // kept going after the failure
   });
 
   test("skips the add when the target reaction is already present alongside a stale one", async () => {
@@ -335,12 +335,12 @@ describe("withRateLimitRetry", () => {
 
   test("todoSet retries a rate-limited reactions.add without losing add→remove order", async () => {
     const spy = vi.spyOn(_internals, "sleep").mockResolvedValue(undefined);
-    behaviour.reactionsGet = [{ name: "hourglass", users: ["U_ME"] }];
+    behaviour.reactionsGet = [{ name: "hourglass_flowing_sand", users: ["U_ME"] }];
     behaviour.addRateLimits = 1;
     await todoSet("tok", "C1", "1.1", "doing", cfg);
     expect(calls).toEqual([
       "auth.test", "get", "add:eyes:429", "add:eyes",
-      "remove:hourglass:start", "remove:hourglass:end",
+      "remove:hourglass_flowing_sand:start", "remove:hourglass_flowing_sand:end",
     ]);
     spy.mockRestore();
   });
@@ -500,7 +500,7 @@ describe("todoDoctor", () => {
         ] },
         { ts: "2.2", text: "clean", reactions: [{ name: "eyes", users: ["U_ME"] }] },
         { ts: "3.3", text: "others only", reactions: [
-          { name: "eyes", users: ["U_OTHER"] }, { name: "hourglass", users: ["U_OTHER"] },
+          { name: "eyes", users: ["U_OTHER"] }, { name: "hourglass_flowing_sand", users: ["U_OTHER"] },
         ] },
       ],
     }];
@@ -516,7 +516,7 @@ describe("todoDoctor", () => {
     behaviour.historyPages = [{
       messages: [{ ts: "1.1", text: "x", reactions: [
         { name: "eyes", users: ["U_ME"] },
-        { name: "hourglass", users: ["U_ME"] },
+        { name: "hourglass_flowing_sand", users: ["U_ME"] },
         { name: "white_check_mark", users: ["U_ME"] },
       ] }],
     }];
@@ -527,7 +527,7 @@ describe("todoDoctor", () => {
     expect(mutations).toEqual([
       "add:white_check_mark",
       "remove:eyes:start", "remove:eyes:end",
-      "remove:hourglass:start", "remove:hourglass:end",
+      "remove:hourglass_flowing_sand:start", "remove:hourglass_flowing_sand:end",
     ]);
   });
 

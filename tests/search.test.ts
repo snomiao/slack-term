@@ -161,6 +161,18 @@ describe("search token-type fallback (CLI)", { timeout: 60_000 }, () => {
         // the fallback actually used the user-token profile's request, not the bot's
         const searchReqs = m.requests.filter((q) => q.method === "search.messages");
         expect(searchReqs.some((q) => q.headers.authorization === "Bearer xoxc-fake")).toBe(true);
+
+        // Authors render as @handle, not the raw U-id: search results go through
+        // users.info like every other listing…
+        expect(r.stdout).toContain("@alice");
+        expect(r.stdout).not.toContain("@U00000001");
+        // …and that lookup MUST carry the search token's session cookie. An xoxc-
+        // token without its xoxd cookie is rejected by users.info, and the failure
+        // is silent (userInfoPair falls back to the raw ID), so assert the header.
+        const infoReqs = m.requests.filter((q) => q.method === "users.info");
+        expect(infoReqs.length).toBeGreaterThan(0);
+        expect(infoReqs.every((q) => q.headers.authorization === "Bearer xoxc-fake")).toBe(true);
+        expect(infoReqs.every((q) => String(q.headers.cookie ?? "").includes("xoxd-secret"))).toBe(true);
       } finally {
         await m.stop();
       }

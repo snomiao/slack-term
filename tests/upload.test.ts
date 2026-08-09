@@ -94,3 +94,69 @@ describe("upload cookie forwarding (CLI)", { timeout: 60_000 }, () => {
     }
   });
 });
+
+// The gate must name whoever the file will be uploaded AS — a file posted from
+// the wrong profile is as wrong as a message sent from it, and unlike a message
+// it can't be edited afterwards.
+describe("upload identity in the confirm gate (CLI)", { timeout: 60_000 }, () => {
+  const authFixture = {
+    "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+  };
+
+  test("single-file gate shows the uploading identity above the destination", async () => {
+    const m = await startMock({ inline: authFixture });
+    try {
+      const filePath = join(tmpHome, "identity-single.txt");
+      writeFileSync(filePath, "hello world");
+      const r = await run(["upload", "#channel-01", filePath, "--channel-id", "C00000001"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toContain("  From:  @user1 (U00000001) — Acme");
+      expect(r.stdout.indexOf("From:  @user1")).toBeLessThan(r.stdout.indexOf("To:    #channel-01"));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("batch gate shows it too, and the code stays valid for the confirmed upload", async () => {
+    const m = await startMock({ inline: authFixture });
+    try {
+      const a = join(tmpHome, "identity-a.txt");
+      const b = join(tmpHome, "identity-b.txt");
+      writeFileSync(a, "a");
+      writeFileSync(b, "b");
+      const dry = await run(["upload", "#channel-01", a, b, "--channel-id", "C00000001"], { baseUrl: m.baseUrl });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("--- Uploading 2 files");
+      expect(dry.stdout).toContain("  From:  @user1 (U00000001) — Acme");
+
+      const r = await run(
+        ["upload", "#channel-01", a, b, "--channel-id", "C00000001", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("[2/2] ✓ Uploaded");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("identity lookup failure is fail-soft: gate renders and the upload still runs", async () => {
+    const m = await startMock({ inline: { "auth.test": { ok: false, error: "invalid_auth" } } });
+    try {
+      const filePath = join(tmpHome, "identity-failsoft.txt");
+      writeFileSync(filePath, "hello");
+      const dry = await run(["upload", "#channel-01", filePath, "--channel-id", "C00000001"], { baseUrl: m.baseUrl });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("  From:  (unknown — auth.test failed)");
+
+      const r = await run(
+        ["upload", "#channel-01", filePath, "--channel-id", "C00000001", `--code=${extractCode(dry.stderr)}`],
+        { baseUrl: m.baseUrl },
+      );
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Uploaded");
+    } finally {
+      await m.stop();
+    }
+  });
+});

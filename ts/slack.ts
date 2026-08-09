@@ -150,7 +150,7 @@ export async function authTest(
 // scopes in the `X-OAuth-Scopes` response header on every Web API call, which is
 // the only way to learn what a token can do without probing each endpoint.
 export async function authScopes(token: string, cookie?: string): Promise<{
-  userId: string; botId: string; team: string; url: string; scopes: string[];
+  userId: string; user: string; botId: string; team: string; url: string; scopes: string[];
 }> {
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (cookie) headers["Cookie"] = `d=${cookie}`;
@@ -161,11 +161,14 @@ export async function authScopes(token: string, cookie?: string): Promise<{
   }
   const scopesHeader = res.headers.get("x-oauth-scopes") ?? "";
   const body = (await res.json()) as {
-    ok?: boolean; error?: string; user_id?: string; bot_id?: string; team?: string; url?: string;
+    ok?: boolean; error?: string; user_id?: string; user?: string; bot_id?: string; team?: string; url?: string;
   };
   if (body.ok !== true) throw new Error(`Slack error on auth.test: ${body.error ?? "unknown"}`);
   return {
     userId: body.user_id ?? "",
+    // The token owner's @handle (for a bot token, the bot user's name) — lets a
+    // caller name the sending identity without a second auth.test round-trip.
+    user: body.user ?? "",
     botId: body.bot_id ?? "",
     team: body.team ?? "",
     url: body.url ?? "",
@@ -232,6 +235,25 @@ export async function filesList(
   if (opts.channel) params.channel = opts.channel;
   if (opts.user) params.user = opts.user;
   return get(token, "files.list", params, cookie);
+}
+
+// Slack Lists ("tasklist"). The public slackLists.* Web API rejects the CLI's
+// xoxc desktop token (not_allowed_token_type) and needs a bot token with
+// lists:read; the web client instead uses the internal lists.records.list, which
+// DOES accept an xoxc token + the d cookie — so this reuses the CLI's existing
+// session auth. `listId` is the list's file id (F…), taken from its URL; there
+// is no list-enumeration API, so the caller must supply the id. Paginated by
+// cursor via response_metadata.next_cursor.
+export async function listRecords(
+  token: string,
+  listId: string,
+  opts: { limit?: number; cursor?: string } = {},
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = { list_id: listId };
+  if (opts.limit) params.limit = String(opts.limit);
+  if (opts.cursor) params.cursor = opts.cursor;
+  return postSession(token, "lists.records.list", params, cookie);
 }
 
 export async function searchPage(

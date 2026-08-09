@@ -7,7 +7,7 @@
 //     1 done            :white_check_mark:
 //     2 dropped         :no_entry_sign:
 //     3 doing           :eyes:
-//     4 pending         :hourglass:
+//     4 pending         :hourglass_flowing_sand:
 //     5 undefined       (marker only, no progress reaction)
 //
 //   reason flags (any number, independent of progress)
@@ -70,7 +70,9 @@ export const DEFAULT_TODO_CONFIG: TodoConfig = {
     done: "white_check_mark",
     dropped: "no_entry_sign",
     doing: "eyes",
-    pending: "hourglass",
+    // ⏳ hourglass_flowing_sand, NOT ⌛ hourglass: measured against a live
+    // workspace, real usage is 21× :hourglass_flowing_sand: and 0× :hourglass:.
+    pending: "hourglass_flowing_sand",
   },
   flags: {
     alert: "exclamation",

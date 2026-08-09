@@ -90,6 +90,47 @@ describe("channel create --invite (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  // The creator owns the channel and is the inviter of record, so the gate has
+  // to name them — creating a channel from the wrong profile is not undoable.
+  test("gate names the creating identity", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+        "conversations.create": { ok: true, channel: { id: "C00000042", name: "new-channel" } },
+      },
+    });
+    try {
+      const r = await run(["channel", "create", "new-channel", "--invite", "U0REG00001"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toContain("  From:    @user1 (U00000001) — Acme");
+      expect(r.stdout.indexOf("From:    @user1")).toBeLessThan(r.stdout.indexOf("name:    #new-channel"));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("identity is bound to the code: a code minted as someone else is rejected", async () => {
+    const inline = {
+      "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+      "conversations.create": { ok: true, channel: { id: "C00000042", name: "new-channel" } },
+    };
+    const m = await startMock({ inline });
+    const other = await startMock({
+      inline: { ...inline, "auth.test": { ok: true, user_id: "U0000OTHER", user: "someone-else", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" } },
+    });
+    try {
+      const dry = await run(["channel", "create", "new-channel"], { baseUrl: m.baseUrl });
+      const before = other.requests.length;
+      const r = await run(["channel", "create", "new-channel", `--code=${extractCode(dry.stderr)}`], { baseUrl: other.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(other.requests.slice(before).find((q) => q.method === "conversations.create")).toBeUndefined();
+    } finally {
+      await m.stop();
+      await other.stop();
+    }
+  });
+
   test("no warning for a regular (non-restricted) member", async () => {
     const m = await startMock({
       inline: {

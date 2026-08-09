@@ -14,7 +14,7 @@ These rules keep threads readable and avoid noise. They apply to real usage, not
 - **Prefer a reaction over a message for simple acknowledgements.** Don't post "了解"/"見ました"/"やっておきます" as a reply — react instead, so the thread doesn't grow:
   - 了解 / 受領 → `slack react "<target>" eyes` (👀)
   - 完了 / done → `slack react "<target>" white_check_mark` (✅)
-  - 処理中 / working on it → `slack react "<target>" hourglass` (⏳)
+  - 処理中 / working on it → `slack react "<target>" hourglass_flowing_sand` (⏳)
   - `target` is the same `#chan:<ts>` / permalink form as `send`/`edit`. Use `--remove` to take a reaction back.
 - **Read the thread before replying.** Run `slack thread "#chan" <ts>` (or `slack read` on the permalink) first to see what's already been said — don't repeat a point someone (including you) already made. The `send` confirm gate previews the thread's recent messages and warns when your text is near-identical to an existing reply, but reading first is still the rule.
 - **Consolidate.** When you have several things to say, put them in one message rather than firing off multiple replies.

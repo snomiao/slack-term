@@ -55,6 +55,10 @@ slack search "deploy" --count 50
 # Read a specific channel or DM (quote #channel — unquoted # is a shell comment)
 slack read "#general"
 slack read @username
+# Thread parents are marked `[+N replies]` — a marked line means there is more to
+# read inside the thread (`slack thread "#general" <ts>`); top-level output alone
+# never shows thread replies. --json carries reply_count/reply_users_count/latest_reply.
+slack read "#general" --unreplied   # only what's still awaiting your answer
 
 # Send a message (two-step confirm)
 slack send "#general" "Hello team"
@@ -95,11 +99,24 @@ slack download "https://acme.slack.com/files/U1/F0123ABC/invoice.pdf"
 
 Targets for `send` are `#channel`, `@user`, `#channel:<thread_ts>`, or a Slack URL —
 a message permalink replies in that message's thread; a channel-only URL posts top-level.
-The confirm preview prints the resolved destination (`→ ... — THREAD REPLY` or
-`→ ... — NEW top-level message`); verify it before re-running with `--code`.
+The confirm preview prints who it will be sent **as** (`From: @handle (Uxxxx) — Workspace`,
+plus `[as bot]` under `--as-bot`) and the resolved destination (`→ ... — THREAD REPLY` or
+`→ ... — NEW top-level message`); verify both before re-running with `--code`.
+
+**Every** gated write opens its preview with that same `From:` line — `send`, `edit`,
+`delete`, `upload`, `schedule send`, `schedule rm`, `channel create`, `drafts edit`,
+`drafts delete` — and the identity is part of the confirm hash: switching
+profile/token between preview and confirm invalidates the code instead of acting as
+someone else. It matters most on `schedule send`, where the message goes out later,
+unattended, as whoever the token was at schedule time.
+
+`schedule send` prints its fire time in both zones —
+`At:  2026-08-10 18:00:00 GMT+9 (local) / 2026-08-10T09:00:00.000Z (Unix: 1786352400)` —
+because `--at` accepts both bare local times (`"2026-08-10 09:00"`) and `Z`-suffixed
+UTC, and the two are easy to mix up. Check the side you meant before confirming.
 
 `send` also runs a **warn-only untagged-mention lint**: if the body names a workspace
-member in plain text (honorifics like `山田さん` / `張老师`, or `Hi Dave`) without a
+member in plain text (honorifics like `山田さん` / `王老师`, or `Hi Dave`) without a
 matching `<@USERID>` tag, it prints `⚠ possible untagged mention: …` alongside the
 confirm code. It never blocks — third-party/external references are expected to trip it.
 To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see below).
@@ -117,7 +134,7 @@ out with `SLACK_UNREPLIED_WARN=0`.
 
 A task is any message carrying the marker reaction 📌 `:pushpin:`. Progress lives in a
 second reaction, ranked by priority — **1** ✅ `white_check_mark` done, **2** 🚫
-`no_entry_sign` dropped, **3** 👀 `eyes` doing, **4** ⏳ `hourglass` pending, **5** marker
+`no_entry_sign` dropped, **3** 👀 `eyes` doing, **4** ⏳ `hourglass_flowing_sand` pending, **5** marker
 only = undefined. A message may carry more than one progress reaction — readers collapse
 to the highest priority, so ✅+👀 reads as *done*.
 
@@ -129,7 +146,7 @@ Reason flags stack independently of progress and of each other: ❗ `exclamation
 - 🔒 `lock` **blocked** — stuck on something **outside** it: another task, a third party,
   an external dependency. Nobody here can unstick it by replying.
 
-(⏳ `hourglass` pending already means "my ball", which is why only these two are needed.)
+(⏳ `hourglass_flowing_sand` pending already means "my ball", which is why only these two are needed.)
 
 - `todo ls` is read-only and issues **one** `search.messages` call; priority is encoded as
   negated `hasmy:` terms. Default is `hasmy:` (my reactions only), `--shared` uses `has:`.
@@ -158,7 +175,7 @@ Reason flags stack independently of progress and of each other: ❗ `exclamation
   times before failing loudly.
 
 **Etiquette:** prefer a `react` over a reply for simple acks (了解 → `eyes`, 完了 →
-`white_check_mark`, 処理中 → `hourglass`) so threads stay short; read the thread with
+`white_check_mark`, 処理中 → `hourglass_flowing_sand`) so threads stay short; read the thread with
 `slack thread`/`slack read` before replying to avoid duplicates; consolidate multiple
 points into one message.
 
@@ -231,7 +248,7 @@ slack news --limit 1
 - **`xoxc-` desktop session token** — accepted by the public Slack API (send/edit/delete/react/upload/channel create+invite included) as long as its `xoxd` session cookie is attached (`slack auth chrome`/`slack auth firefox`, or `SLACK_COOKIE=...`). Without the cookie it still fails with a clear "needs its session cookie" error.
 - **`conversations.invite` reports success but the member never shows up** — the invited user is likely a single-channel guest (`is_ultra_restricted`); Slack silently no-ops the invite since that account type can only ever belong to the one channel it was created in. `channel create --invite` now warns about this up front.
 - **Send is rejected with "use #channel or @user"** — the CLI enforces human-readable targets. Use `#channel-name` or `@display-name`, not raw IDs.
-- **Confirm code mismatch on `send`** — the message text or destination changed between preview and confirm. Re-run without `--code` for a fresh preview, and re-check the `→` destination line (THREAD REPLY vs NEW top-level message).
+- **Confirm code mismatch on any gated write** — the content, target or acting identity changed between preview and confirm (a different profile/`SLACK_TOKEN`, or `--as-bot` added or dropped). Re-run without `--code` for a fresh preview, and re-check the `From:` line and the `→` destination line (THREAD REPLY vs NEW top-level message).
 - **Enterprise Grid / admin-locked workspace** — custom app installation may need admin approval or be disabled outright.
 
 ## Safety
