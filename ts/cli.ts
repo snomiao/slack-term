@@ -6,7 +6,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import yargs from "yargs";
+import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
@@ -545,15 +545,26 @@ async function todoTarget(
 
 async function cmdTodoLs(
   token: string,
-  opts: { state: LsState; in?: string; from?: string; shared?: boolean; count: number; json: boolean; cookie?: string },
+  opts: { state: LsState; in?: string; from?: string; mine: boolean; count: number; json: boolean; cookie?: string },
 ): Promise<void> {
   const cfg = loadTodoConfig();
   const queryOpts: LsQueryOpts = {};
-  if (opts.shared) queryOpts.shared = true;
+  // `mine` is the narrow view (`hasmy:` — only reactions this token's user made).
+  // Anything else searches anyone's reactions (`has:`).
+  if (!opts.mine) queryOpts.shared = true;
   if (opts.in) queryOpts.in = opts.in;
   if (opts.from) queryOpts.from = opts.from;
   const query = buildTodoQuery(opts.state, cfg, queryOpts);
-  if (!opts.json) console.error(`(query: ${query})`);
+  if (!opts.json) {
+    // Name the identity the listing is relative to. `hasmy:` resolves against
+    // whoever the token is, so "my tasks" is only meaningful once you know who
+    // "my" is — a wrong profile silently lists a different person's tasks.
+    // Same From: line the write gates print, for the same reason.
+    const self = await selfIdentity(token, opts.cookie);
+    const scope = opts.mine ? "your reactions only [hasmy:]" : "anyone's reactions [has:]";
+    console.error(`(From: ${senderLabel(self)} · matching ${scope})`);
+    console.error(`(query: ${query})`);
+  }
   // One search per invocation — search.messages is Tier 2 (~20 req/min), so the
   // priority rule is encoded as negations in the query, not as extra searches.
   await withRateLimitRetry("search.messages", () => cmdSearch(token, query, opts.count, opts.json, opts.cookie));
@@ -1846,6 +1857,44 @@ async function main(): Promise<void> {
   const tok = (a: W) => resolveToken(a.workspace);
   const ck = (a: W) => resolveCookie(a.workspace);
 
+  // `todo ls` and `mytodo ls` are the same listing over two different search
+  // scopes — `has:` (anyone's reactions) vs `hasmy:` (only this token's). They
+  // share one definition so the flags can never drift apart; `mine` is the only
+  // difference. Splitting them into separate commands is deliberate: the old
+  // single `todo ls` defaulted to `hasmy:` with a `--shared` opt-in, and "is
+  // this everyone's list or just mine?" is not a question a flag answers at a
+  // glance.
+  const TODO_LS_OPTIONS: Record<string, Options> = {
+    state: {
+      type: "string",
+      choices: ["open", "untriaged", "pending", "doing", "done", "dropped", "stuck"],
+      default: "open",
+      describe: "open (default) = marked and not done/dropped; untriaged = marked with no progress; stuck = unfinished with a reason flag",
+    },
+    in: { type: "string", describe: "Limit to a channel (#chan)" },
+    from: { type: "string", describe: "Limit to a sender (@user, or 'me') — usually the person a task is waiting on" },
+    n: { alias: "count", type: "number", default: 50, describe: "Max results" },
+    json: { type: "boolean", default: false },
+  };
+  // Runs both listings. `mine` fixes the search scope per command; `--mine` on
+  // `todo ls` is the one-off escape hatch to the narrow view.
+  const runTodoLs = async (
+    argv: W & { state?: string; in?: string; from?: string; mine?: boolean; n?: number; json?: boolean },
+    mine: boolean,
+  ) => {
+    const opts: { state: LsState; in?: string; from?: string; mine: boolean; count: number; json: boolean; cookie?: string } = {
+      state: (argv.state ?? "open") as LsState,
+      mine: mine || argv.mine === true,
+      count: argv.n ?? 50,
+      json: argv.json === true,
+    };
+    if (argv.in) opts.in = argv.in;
+    if (argv.from) opts.from = argv.from;
+    const cookie = ck(argv);
+    if (cookie) opts.cookie = cookie;
+    await cmdTodoLs(tok(argv), opts);
+  };
+
   await yargs(hideBin(process.argv))
     .scriptName("slack")
     // A thrown handler error (e.g. a Slack API failure) is a runtime error, not a usage
@@ -2365,32 +2414,15 @@ async function main(): Promise<void> {
         .middleware((argv) => { if (argv.cache === false) setCacheEnabled(false); })
         .command(
           ["ls", "list"],
-          "List tasks (read-only; one search per run)",
+          "List everyone's tasks (has: — read-only, one search per run)",
           (y2) => y2
-            .option("state", {
-              type: "string",
-              choices: ["open", "untriaged", "pending", "doing", "done", "dropped", "stuck"],
-              default: "open",
-              describe: "open (default) = marked and not done/dropped; untriaged = marked with no progress; stuck = unfinished with a reason flag",
-            })
-            .option("in", { type: "string", describe: "Limit to a channel (#chan)" })
-            .option("from", { type: "string", describe: "Limit to a sender (@user, or 'me') — usually the person a task is waiting on" })
-            .option("shared", { type: "boolean", default: false, describe: "Match anyone's reactions (has:) instead of only yours (hasmy:)" })
-            .option("n", { alias: "count", type: "number", default: 50, describe: "Max results" })
-            .option("json", { type: "boolean", default: false }),
-          async (argv) => {
-            const opts: { state: LsState; in?: string; from?: string; shared?: boolean; count: number; json: boolean; cookie?: string } = {
-              state: argv.state as LsState,
-              count: argv.n,
-              json: argv.json,
-            };
-            if (argv.in) opts.in = argv.in;
-            if (argv.from) opts.from = argv.from;
-            if (argv.shared) opts.shared = true;
-            const cookie = ck(argv as W);
-            if (cookie) opts.cookie = cookie;
-            await cmdTodoLs(tok(argv as W), opts);
-          },
+            .options(TODO_LS_OPTIONS)
+            .option("mine", { type: "boolean", default: false, describe: "Only your own reactions (hasmy:) — same as `slack mytodo ls`" })
+            // Accepted for compatibility: it used to opt in to `has:`, which is
+            // now the default here. .strict() rejects unknown flags, so scripts
+            // still passing --shared keep working instead of hard-failing.
+            .option("shared", { type: "boolean", default: false, hidden: true, describe: "Deprecated — anyone's reactions is the default for `todo ls`" }),
+          async (argv) => { await runTodoLs(argv as W & { state?: string }, false); },
         )
         .command(
           "set <target> <state>",
@@ -2466,6 +2498,23 @@ async function main(): Promise<void> {
           },
         )
         .demandCommand(1, "Specify a todo subcommand (ls, set, flag, doctor)"),
+      () => {},
+    )
+    .command(
+      "mytodo",
+      "Tasks carrying YOUR reactions (hasmy:) — the my-only half of `todo`",
+      (y) => y
+        .option("cache", { type: "boolean", default: true, describe: "Use ~/.config/slack-cli/cache.json for channel/user lookups (--no-cache to bypass)" })
+        .middleware((argv) => { if (argv.cache === false) setCacheEnabled(false); })
+        .command(
+          ["ls", "list"],
+          "List tasks you have reacted to (hasmy: — read-only, one search per run)",
+          (y2) => y2.options(TODO_LS_OPTIONS),
+          async (argv) => { await runTodoLs(argv as W & { state?: string }, true); },
+        )
+        // Only `ls` is split. set/flag/doctor act on one identified message, so
+        // "mine vs everyone's" does not apply to them — they stay under `todo`.
+        .demandCommand(1, "Specify a mytodo subcommand (ls)"),
       () => {},
     )
     .command(

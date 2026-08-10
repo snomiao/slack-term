@@ -86,9 +86,10 @@ slack react "#general:1700000000.000100" white_check_mark
 slack react "<permalink>" eyes --remove   # take it back
 
 # Task tracking on reactions — 📌 marks a task, a second reaction holds progress
-slack todo ls                                     # my open tasks (read-only, 1 search)
+slack todo ls                                     # EVERYONE's open tasks (has:)
+slack mytodo ls                                   # only tasks YOU reacted to (hasmy:)
 slack todo ls --state untriaged --in "#general"   # marked but no progress yet
-slack todo ls --state stuck                       # unfinished + a reason flag
+slack mytodo ls --state stuck                     # my unfinished tasks + a reason flag
 slack todo set "#general:1700000000.000100" doing # pending|doing|done|dropped
 slack todo ls --state stuck --from "@alice"        # …and alice wrote it
 slack todo flag "<permalink>" waiting             # alert|needs-discussion|waiting|blocked
@@ -155,8 +156,13 @@ Reason flags stack independently of progress and of each other: ❗ `exclamation
 
 (⏳ `hourglass_flowing_sand` pending already means "my ball", which is why only these two are needed.)
 
-- `todo ls` is read-only and issues **one** `search.messages` call; priority is encoded as
-  negated `hasmy:` terms. Default is `hasmy:` (my reactions only), `--shared` uses `has:`.
+- **`todo ls` = anyone's reactions (`has:`), `mytodo ls` = only yours (`hasmy:`).** Two
+  commands rather than a flag, so the two lists can't be mistaken for each other. Both
+  print `From: @handle (Uxxxx) — Workspace` first: `hasmy:` resolves against whoever the
+  token is, so "my tasks" is only meaningful once you know who *my* is. `todo ls --mine`
+  is a shortcut to the narrow view; `--shared` is accepted but is now the default.
+- Both are read-only and issue **one** `search.messages` call; priority is encoded as
+  negated `has:`/`hasmy:` terms.
   `search.messages` returns no reaction data, so this filtering can only happen in the
   query. The search index lags slightly behind `reactions.add`.
 - `todo set` adds the target reaction **first**, then removes the stale ones one at a time.

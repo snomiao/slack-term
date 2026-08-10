@@ -143,13 +143,17 @@ The other two are the flags:
 They stack with each other and with ❗/❓; `--state stuck` matches a task with any of them.
 
 ```sh
-slack todo ls                              # --state open (default): marked, not done/dropped
+# Two listings, split by whose reactions count — the distinction is the command,
+# not a flag, so "everyone's list" and "my list" can't be confused at a glance.
+slack todo ls                              # EVERYONE's tasks (has:)
+slack mytodo ls                            # only tasks YOU reacted to (hasmy:)
+
 slack todo ls --state untriaged            # marked, no progress reaction yet
 slack todo ls --state doing --in "#eng"    # scoped to a channel
-slack todo ls --state stuck                # unfinished AND carrying a reason flag
+slack mytodo ls --state stuck              # my unfinished tasks carrying a reason flag
 slack todo ls --state stuck --from "@alice" # …and it was alice who wrote it
-slack todo ls --from me                    # tasks on my own messages
-slack todo ls --state done --shared        # anyone's reactions, not just mine
+slack todo ls --from me                    # tasks on my own messages (any reactor)
+slack todo ls --mine                       # same as `slack mytodo ls`
 slack todo set "#eng:1700000000.000100" doing
 slack todo flag "<permalink>" waiting          # their ball now
 slack todo flag "<permalink>" needs-discussion
@@ -160,10 +164,15 @@ slack todo doctor --in "#eng" --fix        # keep the highest-priority one
 
 Notes:
 
-- `todo ls` is read-only and runs **exactly one** `search.messages` call — priority is
-  expressed as negated `hasmy:` terms in the query, not as multiple searches
-  (`search.messages` is Tier 2, ~20 req/min). By default it matches only *your* reactions
-  (`hasmy:`); `--shared` switches to anyone's (`has:`). Slack's search index lags a little
+- **`todo ls` vs `mytodo ls`** — `todo ls` matches anyone's reactions (`has:`), `mytodo ls`
+  only your own (`hasmy:`). Everything else about them is identical. Both print a
+  `From: @handle (Uxxxx) — Workspace` line first, because `hasmy:` resolves against
+  whichever account the token belongs to — "my tasks" means nothing until you know who
+  *my* is, and a stale profile otherwise lists someone else's list without saying so.
+  (`todo ls --mine` is a one-off shortcut to the narrow view.)
+- Both are read-only and run **exactly one** `search.messages` call — priority is expressed
+  as negated `has:`/`hasmy:` terms in the query, not as multiple searches
+  (`search.messages` is Tier 2, ~20 req/min). Slack's search index lags a little
   behind `reactions.add`, so a just-set task may take a moment to appear.
 - `todo set` **adds the new reaction before removing the old ones**, and removes serially.
   The reverse order would leave a window with no progress reaction at all — a crash or a
