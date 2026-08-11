@@ -8,10 +8,14 @@ description: "Terminal Slack CLI — read news/mentions/DMs/channel history, ful
 A lightweight Slack CLI for quick workspace interaction from the terminal.
 Two implementations share one command surface (parity-tested):
 
-- **TypeScript** (bun-first), published as `@snomiao/slack` on npm.
+- **TypeScript** (bun-first), published as `slack-term` on npm.
 - **Rust** native binary, installable via `cargo install`.
 
 Binary name: `slack` (also aliased as `sl` / invoked via `sc sl ...` in some setups).
+
+Part of the [agent-yes](https://github.com/snomiao/agent-yes) ecosystem — this is the CLI an
+agent uses to talk to humans. Design notes:
+[lab.agent-yes.com](https://lab.agent-yes.com/2026-08-11-slack-term-safe-writes).
 
 ## When to use
 
@@ -25,9 +29,12 @@ Binary name: `slack` (also aliased as `sl` / invoked via `sc sl ...` in some set
 TypeScript (recommended — any platform with Node 18+):
 
 ```sh
-npm install -g @snomiao/slack
-# or: bun add -g @snomiao/slack / pnpm add -g @snomiao/slack
+npm install -g slack-term
+# or: bun add -g slack-term / pnpm add -g slack-term
 ```
+
+> Previously published as `@snomiao/slack`; that name is deprecated on npm and
+> no longer updated. Install `slack-term`.
 
 Rust (native binary):
 

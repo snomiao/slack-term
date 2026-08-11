@@ -1,6 +1,6 @@
-# UX Comparison: `@snomiao/slack-cli` vs `slkcli`
+# UX Comparison: `slack-term` vs `slkcli`
 
-A side-by-side look at this project (`slack` / `@snomiao/slack-cli`) and
+A side-by-side look at this project (`slack` / `slack-term`) and
 [`slkcli`](https://www.npmjs.com/package/slkcli)
 ([repo](https://github.com/therohitdas/slkcli)) by
 [@therohitdas](https://github.com/therohitdas).
@@ -10,7 +10,7 @@ but make very different choices about auth, platform reach, and command surface.
 
 ## TL;DR
 
-| Dimension          | `@snomiao/slack-cli` (this repo)                                              | `slkcli`                                                                                                                                            |
+| Dimension          | `slack-term` (this repo)                                                      | `slkcli`                                                                                                                                            |
 | ------------------ | ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Language / runtime | Rust (napi bindings for Node)                                                 | Pure Node.js (zero deps)                                                                                                                            |
 | Platform           | macOS / Linux / Windows                                                       | **macOS only**                                                                                                                                      |
@@ -91,7 +91,7 @@ principles (cross-platform, explicit auth, confirm-hash on send):
 - **slkcli** optimizes for a single macOS user who already has Slack open and
   wants the fastest possible loop. The tradeoff is platform lock-in and
   implicit credential handling.
-- **@snomiao/slack-cli** optimizes for a reproducible, cross-platform,
+- **slack-term** optimizes for a reproducible, cross-platform,
   audit-friendly setup — suitable for CI, Linux servers, and agents where a
   Keychain prompt isn't available. The tradeoff is a heavier first-run.
 
