@@ -287,6 +287,19 @@ delivery (3-second interval). Supports `--since=<duration>` for backfill,
 that mention you. Uses `conversations.history?oldest=<ts>` as a cursor so
 already-seen messages are never re-printed, even across reconnects.
 
+## Ecosystem
+
+This CLI is the human-comms surface of the
+[agent-yes](https://github.com/snomiao/agent-yes) fleet: agent-yes runs, watches and
+delegates to AI coding agents, and `slack` is how they read and answer the humans they
+work with. Neither depends on the other — they share a stance rather than a library:
+file-based state over daemons, one command surface across two runtimes, gates on the
+irreversible and warnings on the merely unwise, and no real operational data in a public
+repo.
+
+A write-up of the design decisions behind the confirm gate lives on the agent-yes lab:
+[A confirm code that goes stale](https://lab.agent-yes.com/2026-08-11-slack-term-safe-writes).
+
 ## Related / prior art
 
 - [`slkcli`](https://www.npmjs.com/package/slkcli) by
