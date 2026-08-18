@@ -10,6 +10,11 @@ jobs:
   ts:
     name: TypeScript
     runs-on: ubuntu-latest
+    # Without this a hang burns the full 6-hour job limit and reports as
+    # "cancelled" — which reads like someone stopped it, not like a failure.
+    # Every run for a month died that way. The suite takes ~30s; 15 minutes is
+    # generous, and a timeout here is a loud, correctly-labelled failure.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -20,4 +25,8 @@ jobs:
       - run: bun run scan-pii:all
       - run: bun run typecheck
       - run: bun run build
-      - run: bunx vitest run --coverage --exclude "tests/parity.test.ts"
+      # `bun run`, not `bunx`: bunx resolves (and may fetch) the package at run
+      # time, and the hung runs produced no output at all — not even vitest's
+      # banner — which points at startup, before any test ran. `bun run` uses the
+      # vitest already installed by `bun install` above, pinned by bun.lock.
+      - run: bun run vitest run --coverage --exclude "tests/parity.test.ts"
