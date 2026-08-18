@@ -160,3 +160,38 @@ describe("upload identity in the confirm gate (CLI)", { timeout: 60_000 }, () =>
     }
   });
 });
+
+// Same silent-delivery footgun as `send`: Slack never notifies you about your
+// own message, so a file uploaded to your own DM lands and is never seen.
+describe("upload self-DM warning (CLI)", { timeout: 60_000 }, () => {
+  const SELF = "U00000001";
+  const inline = {
+    "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+    "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
+    "conversations.info__channel=D00000BOB": { ok: true, channel: { id: "D00000BOB", is_im: true, user: "U00000BOB", name: "" } },
+  };
+
+  test("warns when the destination is your own DM", async () => {
+    const m = await startMock({ inline });
+    try {
+      const filePath = join(tmpHome, "selfdm.txt");
+      writeFileSync(filePath, "hello");
+      const r = await run(["upload", "@me", filePath, "--channel-id", "D00000001"], { baseUrl: m.baseUrl });
+      expect(r.stderr).toContain("DM to yourself");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("stays quiet for a DM to someone else", async () => {
+    const m = await startMock({ inline });
+    try {
+      const filePath = join(tmpHome, "otherdm.txt");
+      writeFileSync(filePath, "hello");
+      const r = await run(["upload", "@bob", filePath, "--channel-id", "D00000BOB"], { baseUrl: m.baseUrl });
+      expect(r.stderr).not.toContain("DM to yourself");
+    } finally {
+      await m.stop();
+    }
+  });
+});

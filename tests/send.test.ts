@@ -987,4 +987,20 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
       await m.stop();
     }
   });
+  test("schedule send warns when the target is your own DM", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
+      },
+    });
+    try {
+      // Worst case for a self-DM: it fires later, unattended, into silence.
+      const r = await run(["schedule", "send", "@me", "standup", "--at", "2026-09-01T09:00:00Z", "--channel-id", "D00000001"], { baseUrl: m.baseUrl });
+      expect(r.stderr).toContain("DM to yourself");
+      expect(r.stderr).toContain("NOT notify you when this fires");
+    } finally {
+      await m.stop();
+    }
+  });
 });

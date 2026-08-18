@@ -1577,6 +1577,16 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   // than anywhere else: the message goes out later, unattended, under whichever
   // identity was current at schedule time.
   const self = await getSelf();
+
+  // Self-DM is worst here: the message fires later, unattended, and Slack never
+  // notifies you about your own post — so a scheduled reminder to yourself is
+  // delivered into silence at exactly the moment you were counting on it.
+  if (await isSelfDmChannel(token, channelId, self?.userId, args.cookie)) {
+    console.error(
+      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you when this fires.`,
+    );
+  }
+
   const code = safetyCode(channelId, args.message, String(postAt), self?.userId ?? "");
 
   if (args.code !== code) {
@@ -1667,6 +1677,12 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
   if (args.channelId) channelId = args.channelId;
   else if (args.userId) channelId = await openDm(token, args.userId, args.cookie);
   else channelId = await resolveChannel(token, ref, args.cookie);
+
+  // Same silent-delivery footgun as `send`: a file uploaded to your own DM
+  // notifies nobody, so it lands and is never seen.
+  if (await isSelfDmChannel(token, channelId, (await getSelf())?.userId, args.cookie)) {
+    console.error(`Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own upload.`);
+  }
 
   const isBatch = args.filePaths.length > 1;
   const files = args.filePaths.map((fp) => {
