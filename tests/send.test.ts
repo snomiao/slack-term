@@ -898,22 +898,91 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
-  test("self-DM without --as-bot warns about no self-notification", async () => {
+  // The self-DM warning is decided on the RESOLVED channel, not on the target
+  // string. Matching the text only catches the spellings someone thought of;
+  // these cases are the same conversation addressed six different ways, and all
+  // six must warn. (Before this was channel-based, four of them were silent.)
+  //
+  // Fixtures are realistic on purpose: Slack's self-DM is an IM whose `user` is
+  // you, and `conversations.open` on your own id returns that same D… channel.
+  const SELF = "U00000001";
+  const selfDmFixtures = {
+    "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+    "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
+    "conversations.list__limit=200&types=im": { ok: true, channels: [{ id: "D00000001", user: SELF }] },
+    "conversations.open": { ok: true, channel: { id: "D00000001" } },
+    "users.list__limit=200": { ok: true, members: [{ id: SELF, name: "user1", real_name: "User One", profile: { display_name: "Uno" } }] },
+    "conversations.history__channel=D00000001&limit=1": {
+      ok: true, messages: [{ type: "message", user: SELF, text: "prev", ts: "1700000100.000200" }],
+    },
+    "chat.getPermalink__channel=D00000001&message_ts=1700000000.000100": {
+      ok: true, permalink: "https://acme.slack.com/archives/D00000001/p1700000000000100",
+    },
+  };
+
+  const selfDmCases: Array<[string, string[]]> = [
+    ["@me", ["send", "@me", "note to self"]],
+    ["own handle", ["send", "@user1", "note to self"]],
+    ["own display name", ["send", "@Uno", "note to self"]],
+    ["--user-id self", ["send", "@anyone", "note to self", "--user-id", SELF]],
+    ["--channel-id self DM", ["send", "@anyone", "note to self", "--channel-id", "D00000001"]],
+    ["own DM permalink", ["send", "https://acme.slack.com/archives/D00000001/p1700000000000100", "note to self"]],
+  ];
+
+  for (const [label, args] of selfDmCases) {
+    test(`self-DM warns when addressed by ${label}`, async () => {
+      const m = await startMock({ inline: selfDmFixtures });
+      try {
+        const r = await run(args, { baseUrl: m.baseUrl });
+        expect(r.stderr).toContain("DM to yourself");
+        expect(r.stderr).toContain("--as-bot");
+      } finally {
+        await m.stop();
+      }
+    });
+  }
+
+  test("self-DM warning stops at the confirm gate, nothing is sent", async () => {
+    const m = await startMock({ inline: selfDmFixtures });
+    try {
+      const before = m.requests.length;
+      const r = await run(["send", "@me", "note to self"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(m.requests.slice(before).find((q) => q.method === "chat.postMessage")).toBeUndefined();
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("no warning for a DM to someone else, or for a channel", async () => {
     const m = await startMock({
       inline: {
-        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
-        "conversations.list__limit=200&types=im": { ok: true, channels: [{ id: "D00000001", user: "U00000001" }] },
-        "conversations.history__channel=D00000001&limit=1": {
-          ok: true, messages: [{ type: "message", user: "U00000001", text: "prev", ts: "1700000100.000200" }],
-        },
-        "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", name: "" } },
+        "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        "conversations.info__channel=D00000BOB": { ok: true, channel: { id: "D00000BOB", is_im: true, user: "U00000BOB", name: "" } },
+        "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
+        "conversations.history__channel=D00000BOB&limit=1": { ok: true, messages: [] },
+        "conversations.history__channel=C00000001&limit=1": { ok: true, messages: [] },
+        "users.info__user=U00000BOB": { ok: true, user: { id: "U00000BOB", name: "bob", real_name: "Bob" } },
       },
     });
     try {
-      const r = await run(["send", "@me", "note to self"], { baseUrl: m.baseUrl });
-      expect(r.exitCode).toBe(1); // stops at confirm gate
-      expect(r.stderr).toContain("DM to yourself");
-      expect(r.stderr).toContain("--as-bot");
+      const dm = await run(["send", "@bob", "hi", "--channel-id", "D00000BOB"], { baseUrl: m.baseUrl });
+      expect(dm.stderr).not.toContain("DM to yourself");
+      const ch = await run(["send", "#channel-01", "hi", "--channel-id", "C00000001"], { baseUrl: m.baseUrl });
+      expect(ch.stderr).not.toContain("DM to yourself");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--as-bot is exempt — posting as the app does notify you", async () => {
+    const m = await startMock({ inline: selfDmFixtures });
+    try {
+      const r = await run(["send", "@me", "note to self", "--as-bot", "--channel-id", "D00000001"], {
+        baseUrl: m.baseUrl,
+        env: { SLACK_BOT_TOKEN: "xoxb-fake" },
+      });
+      expect(r.stderr).not.toContain("DM to yourself");
     } finally {
       await m.stop();
     }

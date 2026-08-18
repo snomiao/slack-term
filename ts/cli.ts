@@ -1224,14 +1224,27 @@ interface SendArgs {
 // Slack does not notify you about messages you sent to yourself, so an
 // escalation DM via `send @me` (or @your-own-handle) is delivered but never
 // surfaces. Returns true when ref names the token's own user.
-async function isSelfDm(token: string, ref: string, cookie?: string): Promise<boolean> {
-  if (!ref.startsWith("@")) return false;
-  const name = ref.slice(1).toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (name === "me" || name === "you") return true;
+/** Is `channelId` the token owner's DM with themselves?
+ *
+ *  Decided on the RESOLVED channel rather than the target string. Matching the
+ *  target text only catches the spellings someone thought of (`@me`, the exact
+ *  handle) and misses every other way the same conversation gets addressed — a
+ *  display name, `--user-id`, `--channel-id`, a permalink. Slack's self-DM is an
+ *  IM whose counterparty is you, which is true regardless of how it was named.
+ *
+ *  Fail-soft: an unreadable channel returns false, so the send is never blocked
+ *  by a lookup failure. Only asked for `D…` ids, so channel sends pay nothing. */
+async function isSelfDmChannel(
+  token: string,
+  channelId: string,
+  selfUserId: string | undefined,
+  cookie?: string,
+): Promise<boolean> {
+  if (!selfUserId || !channelId.startsWith("D")) return false;
   try {
-    const self = await authTest(token, cookie);
-    const selfName = (self.user ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-    return selfName !== "" && selfName === name;
+    const info = asRecord((await conversationInfo(token, channelId, cookie)) as Json);
+    const ch = asRecord(info.channel);
+    return ch.is_im === true && ch.user === selfUserId;
   } catch {
     return false;
   }
@@ -1245,19 +1258,23 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // --as-bot, the user token otherwise.
   const getSelf = selfLookup(token, cookie);
 
-  // Guard the self-DM footgun before doing anything else, unless sending as the
-  // bot (which delivers a notifiable DM from a different identity).
-  if (!args.asBot && !args.channelId && !args.userId && await isSelfDm(token, ref, cookie)) {
-    console.error(
-      `Warning: "${ref}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
-      `  To reach yourself with a notification, send as the bot:  slack send '${ref}' '...' --as-bot`,
-    );
-  }
-
   let channelId: string;
   if (args.channelId) channelId = args.channelId;
   else if (args.userId) channelId = await openDm(token, args.userId, cookie);
   else channelId = await resolveChannel(token, ref, cookie);
+
+  // Self-DM footgun: Slack never notifies you about a message you sent, so a DM
+  // to yourself is delivered and then silently never surfaces — the worst shape
+  // for an escalation ("I told you" / nobody saw it). Checked after resolution
+  // so it fires however the DM was addressed: @me, a handle, a display name,
+  // --user-id, --channel-id, or a permalink. --as-bot is exempt: that posts as
+  // the app, a different identity, which does notify you.
+  if (!args.asBot && await isSelfDmChannel(token, channelId, (await getSelf())?.userId, cookie)) {
+    console.error(
+      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
+      `  To reach yourself with a notification, send as the bot:  slack send '${args.target}' '...' --as-bot`,
+    );
+  }
 
   // Convert @handle / @名前 tokens to <@USERID> before hashing/sending so the
   // safety gate covers exactly what will be posted. Unresolved tokens stay as
