@@ -14,7 +14,7 @@ jobs:
     # "cancelled" — which reads like someone stopped it, not like a failure.
     # Every run for a month died that way. The suite takes ~30s, so 8 minutes is
     # already generous, and a timeout here is a loud, correctly-labelled failure.
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -48,4 +48,4 @@ jobs:
       # provider, `bunx` resolving vitest at run time, the vitest/coverage
       # version mismatch, and bun itself. It also does not reproduce on Linux
       # under the same bun at 2 or 4 visible cores.
-      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --no-file-parallelism --reporter=default --reporter=hanging-process
+      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --no-file-parallelism --reporter=verbose --reporter=hanging-process
