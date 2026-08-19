@@ -18,6 +18,7 @@ const TS_ENTRY = join(ROOT, "ts", "cli.ts");
 const QTS = "1700000000.000100"; // ts the mock's chat.postMessage always returns
 const SELF = "U00000001";
 const BOB = "U00000BOB";
+const ALICE = "U0000ALIC";
 const CHAN = "C00000001";
 const DM = "D00000BOB";
 
@@ -64,6 +65,16 @@ function extractCode(stderr: string): string {
 
 const AUTH = {
   "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+  // The @tags in the question decide who may answer, so every channel ask has
+  // to resolve them against the directory.
+  "users.list__limit=200": {
+    ok: true,
+    members: [
+      { id: SELF, name: "user1", real_name: "User One" },
+      { id: BOB, name: "bob", real_name: "Bob" },
+      { id: ALICE, name: "alice", real_name: "Alice" },
+    ],
+  },
 };
 
 /** The question message as `conversations.history` returns it while polling. */
@@ -90,10 +101,11 @@ describe("ask confirm gate (CLI)", { timeout: 60_000 }, () => {
   test("gate names the asking identity, the destination and every choice", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
-      const r = await run(["ask", "#chan", "deploy してよい?", "はい", "まって", "--channel-id", CHAN], m.baseUrl);
+      const r = await run(["ask", "#chan", "@bob deploy してよい?", "はい", "まって", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(1);
       expect(r.stdout).toContain("  From: @user1 (U00000001) — Acme");
-      expect(r.stdout).toContain("  Question: deploy してよい?");
+      expect(r.stdout).toContain(`  Question: <@${BOB}> deploy してよい?`);
+      expect(r.stdout).toContain(`  Answerable by: @Bob (${BOB})`);
       expect(r.stdout).toContain("1️⃣ はい");
       expect(r.stdout).toContain("2️⃣ まって");
       // Nothing may be posted before the code is supplied.
@@ -107,7 +119,7 @@ describe("ask confirm gate (CLI)", { timeout: 60_000 }, () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
       const choices = Array.from({ length: 11 }, (_, i) => `c${i + 1}`);
-      const r = await run(["ask", "#chan", "どれ?", ...choices, "--channel-id", CHAN], m.baseUrl);
+      const r = await run(["ask", "#chan", "@bob どれ?", ...choices, "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(1);
       expect(r.stdout).toContain("🔟 c10");
       expect(r.stdout).toContain("(11) c11 — text answer only");
@@ -119,13 +131,154 @@ describe("ask confirm gate (CLI)", { timeout: 60_000 }, () => {
   test("changing a choice invalidates a code minted for the old wording", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
-      const dry = await run(["ask", "#chan", "q", "はい", "いいえ", "--channel-id", CHAN], m.baseUrl);
+      const dry = await run(["ask", "#chan", "@bob q", "はい", "いいえ", "--channel-id", CHAN], m.baseUrl);
       const code = extractCode(dry.stderr);
       // Same question, one choice reworded — the hash covers the posted body,
       // so the old code must not confirm it.
-      const r = await run(["ask", "#chan", "q", "はい", "だめ", "--channel-id", CHAN, `--code=${code}`], m.baseUrl);
+      const r = await run(["ask", "#chan", "@bob q", "はい", "だめ", "--channel-id", CHAN, `--code=${code}`], m.baseUrl);
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("Code mismatch");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+// The audience is what makes an answer binding. Posting an unaddressed question
+// into a busy channel means the first person to react has decided something that
+// was never theirs to decide — so `ask` refuses to post one at all.
+describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
+  test("an untagged channel question is refused before anything is posted", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const r = await run(["ask", "#chan", "やっていい?", "はい", "いいえ", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("no one is tagged");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+      expect(m.requests.some((q) => q.method === "reactions.add")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a tag that matches nobody grants nobody — still refused, and says why", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const r = await run(["ask", "#chan", "@nobody やっていい?", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("matched no one");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("tagging only yourself grants nothing — your reactions are the seeds", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const r = await run(["ask", "#chan", "@user1 やっていい?", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("no one is tagged");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a 1:1 DM needs no tag — the other party is the only possible answerer", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM], m.baseUrl);
+      expect(r.exitCode).toBe(1); // reached the gate, i.e. not refused
+      expect(r.stdout).toContain(`  Answerable by: @bob (${BOB})`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("@here opens it to the channel and posts a real broadcast tag", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", "#chan", "@here 誰か見れる?", "見る", "あとで", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("Answerable by: anyone in #chan (@here)");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      // <!here> is what Slack actually broadcasts on; "@here" as plain text
+      // would look like a ping and notify no one.
+      expect(posted).toContain("<!here> 誰か見れる?");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("ask restricts answers to the people tagged (CLI)", { timeout: 90_000 }, () => {
+  const inline = (messages: unknown[]): InlineFixtures => ({
+    ...AUTH,
+    "users.info__user=U0000ALIC": { ok: true, user: { id: ALICE, name: "alice", profile: { display_name: "alice" } } },
+    ...pollFixture(CHAN, messages),
+  });
+
+  test("a bystander's reaction is ignored; the tagged person's answers", async () => {
+    // Bob is not tagged and pressed 1️⃣ first; only Alice's 2️⃣ counts.
+    const m = await startMock({
+      inline: inline([questionMsg({
+        reactions: [
+          { name: "one", users: [SELF, BOB], count: 2 },
+          { name: "two", users: [SELF, ALICE], count: 2 },
+        ],
+      })]),
+    });
+    try {
+      const base = ["ask", "#chan", "@alice どっち?", "A", "B", "--channel-id", CHAN, "--wait", "--timeout", "20"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      // Both pills carry a human, but only one carries an ADDRESSEE — so this is
+      // an answer, not the ambiguous two-answer case.
+      expect(r.stdout.trim()).toBe("B");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a bystander alone is no answer at all", async () => {
+    const m = await startMock({
+      inline: inline([questionMsg({ reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] })]),
+    });
+    try {
+      const base = ["ask", "#chan", "@alice どっち?", "A", "B", "--channel-id", CHAN, "--wait", "--timeout", "2"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("@here lets a bystander answer — that is what it was asked for", async () => {
+    const m = await startMock({
+      inline: {
+        ...AUTH,
+        "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+        ...pollFixture(CHAN, [questionMsg({ reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] })]),
+      },
+    });
+    try {
+      const base = ["ask", "#chan", "@here どっち?", "A", "B", "--channel-id", CHAN, "--wait", "--timeout", "20"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("A");
     } finally {
       await m.stop();
     }
@@ -136,7 +289,7 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
   test("confirmed ask posts once, then adds 1..3 sequentially in that order", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
-      const base = ["ask", "#chan", "どれ?", "A", "B", "C", "--channel-id", CHAN];
+      const base = ["ask", "#chan", "@bob どれ?", "A", "B", "C", "--channel-id", CHAN];
       const dry = await run(base, m.baseUrl);
       expect(dry.exitCode).toBe(1);
       const before = m.requests.length;
@@ -162,7 +315,7 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
   test("no choices means no seeded reactions, and the body asks for a reply", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
-      const base = ["ask", "#chan", "どう思う?", "--channel-id", CHAN];
+      const base = ["ask", "#chan", "@bob どう思う?", "--channel-id", CHAN];
       const dry = await run(base, m.baseUrl);
       const before = m.requests.length;
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
@@ -284,7 +437,7 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
     };
     const m = await startMock({ inline });
     try {
-      const base = ["ask", "#chan", "やっていい?", "--channel-id", CHAN, "--wait", "--timeout", "2"];
+      const base = ["ask", "#chan", "@bob やっていい?", "--channel-id", CHAN, "--wait", "--timeout", "2"];
       const dry = await run(base, m.baseUrl);
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
@@ -310,7 +463,7 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
     };
     const m = await startMock({ inline });
     try {
-      const base = ["ask", "#chan", "やっていい?", "--channel-id", CHAN, "--wait", "--timeout", "20"];
+      const base = ["ask", "#chan", "@bob やっていい?", "--channel-id", CHAN, "--wait", "--timeout", "20"];
       const dry = await run(base, m.baseUrl);
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(0);

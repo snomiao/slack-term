@@ -99,6 +99,13 @@ slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
 # exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure.
+#
+# The question must say WHO may answer — only their reaction/reply is taken as the
+# answer, so a bystander can't decide it for them. `ask` refuses to post otherwise.
+slack ask "#eng" "@alice この PR 出してよい?" "出す" "待つ"     # only alice's answer counts
+slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyone in #eng; real broadcast
+# (In a 1:1 DM the other party counts automatically — no tag needed.)
+#
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
 # Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed

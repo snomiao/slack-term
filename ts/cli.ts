@@ -1573,6 +1573,13 @@ interface AskArgs {
   wait?: boolean;
   timeout?: number;
   cookie?: string;
+  // Token used to resolve the @tags that decide who may answer (needs
+  // users:read). Defaults to the ask token; set to the user token under
+  // --as-bot so the bot token need not carry users:read. There is no
+  // --no-mentions here: the tags ARE the authorization, so leaving them as
+  // plain text would leave the question addressed to nobody.
+  mentionToken?: string;
+  mentionCookie?: string;
 }
 
 type AskFound = { answer: string; how: string; who?: string };
@@ -1614,6 +1621,40 @@ function askBuildText(question: string, body: string, reactable: string[], overf
 // answers.
 const ASK_ANSWERABLE_SUBTYPES = new Set(["thread_broadcast"]);
 
+// `@here` / `@channel` / `@everyone` — Slack's channel-wide tags. Same lookbehind
+// guard as the user-mention regex (skips emails, `<!here>` already encoded, `@@`),
+// and a lookahead rather than `\b` so a CJK character right after the tag still
+// ends it (`\b` is unreliable outside ASCII).
+const ASK_BROADCAST_RE = /(?<![A-Za-z0-9._@<-])@(here|channel|everyone)(?![A-Za-z0-9._-])/giu;
+
+/** Rewrite `@here`/`@channel`/`@everyone` to the `<!here>` form Slack actually
+ *  broadcasts on, and report which were used. Run BEFORE user-mention encoding
+ *  so those tokens are never offered to the directory as if they were handles. */
+function askEncodeBroadcasts(s: string): { text: string; kinds: Set<string> } {
+  const kinds = new Set<string>();
+  const text = s.replace(ASK_BROADCAST_RE, (_m, k: string) => {
+    const kind = k.toLowerCase();
+    kinds.add(kind);
+    return `<!${kind}>`;
+  });
+  return { text, kinds };
+}
+
+/** The other party in a 1:1 DM, or undefined for anything else (including a
+ *  failed lookup). Fail-soft on purpose, but note the caller treats "unknown"
+ *  as "no implicit audience" — fail-closed on WHO MAY ANSWER, which is the
+ *  direction that cannot silently hand a decision to the wrong person. */
+async function imCounterpart(token: string, channelId: string, cookie?: string): Promise<string | undefined> {
+  if (!channelId.startsWith("D")) return undefined;
+  try {
+    const info = asRecord((await conversationInfo(token, channelId, cookie)) as Json);
+    const ch = asRecord(info.channel);
+    return ch.is_im === true && typeof ch.user === "string" ? ch.user : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
   const cookie = args.cookie;
@@ -1624,14 +1665,72 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   else if (args.userId) channelId = await openDm(token, args.userId, cookie);
   else channelId = await resolveChannel(token, ref, cookie);
 
+  const selfId = (await getSelf())?.userId ?? "";
+  const counterpart = await imCounterpart(token, channelId, cookie);
+
   // Same silent-delivery footgun as `send`: Slack never notifies you about your
   // own message, so a question asked in your own DM is delivered and then never
   // seen — and `--wait` would sit there until it timed out.
-  if (!args.asBot && await isSelfDmChannel(token, channelId, (await getSelf())?.userId, cookie)) {
+  if (!args.asBot && !!selfId && counterpart === selfId) {
     console.error(
       `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
       `  To reach yourself with a notification, ask as the bot:  slack ask '${args.target}' '...' --as-bot`,
     );
+  }
+
+  // --- who may answer -------------------------------------------------------
+  //
+  // A question with no addressee is the actual failure mode this guards: post it
+  // into a busy channel and the first person to react has decided something that
+  // was never theirs to decide. So the audience is taken from the @tags in the
+  // text — the same names the reader sees — and an untargeted ask is refused
+  // outright rather than defaulted to "whoever gets there first".
+  const qEnc = askEncodeBroadcasts(args.question);
+  const bEnc = askEncodeBroadcasts(args.body ?? "");
+  const broadcastKinds = new Set([...qEnc.kinds, ...bEnc.kinds]);
+  const mentionToken = args.mentionToken ?? token;
+  const qRep = await encodeMentionsDetailed(mentionToken, qEnc.text, channelId, args.mentionCookie);
+  const bRep = bEnc.text
+    ? await encodeMentionsDetailed(mentionToken, bEnc.text, channelId, args.mentionCookie)
+    : { text: "", resolved: [], unresolved: [] } as MentionEncodeResult;
+  const question = qRep.text;
+  const body = bRep.text;
+  const resolved = [...qRep.resolved, ...bRep.resolved];
+  const unresolved = [...qRep.unresolved, ...bRep.unresolved];
+  // An unresolved tag is not just cosmetic here: it names nobody, so it grants
+  // nobody the right to answer. Say so before the rejection below.
+  for (const line of mentionWarnings(unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
+
+  const broadcast = broadcastKinds.size > 0;
+  // Tagging yourself grants nothing — your own reactions are the seeds.
+  const audience = new Set(resolved.map((r) => r.userId).filter((id) => id !== selfId));
+  const audienceNames = new Map(resolved.map((r) => [r.userId, r.display]));
+  let audienceLabel: string;
+  if (broadcast) {
+    audienceLabel = `anyone in ${ref} (${[...broadcastKinds].map((k) => `@${k}`).join(", ")})`;
+  } else {
+    // 1:1 DM: the other party IS the audience — there is no one else it could
+    // be, so requiring a redundant @tag would buy no clarity. Only here; a group
+    // DM or channel still has to name someone.
+    if (!audience.size && counterpart && counterpart !== selfId) {
+      audience.add(counterpart);
+      audienceNames.set(counterpart, await userName(token, counterpart, cookie));
+    }
+    if (!audience.size) {
+      console.error(
+        `Error: \`ask\` will not post a question nobody is addressed to — no one is tagged.\n` +
+        (unresolved.length
+          ? `  (${unresolved.map((u) => stripTerminalControls(u.surface)).join(", ")} matched no one, so it names nobody.)\n`
+          : "") +
+        `  Tag the person who should answer:  slack ask '${args.target}' '@alice ${args.question}' ...\n` +
+        `  Or open it to the whole channel:   slack ask '${args.target}' '@here ${args.question}' ...\n` +
+        `  (In a 1:1 DM the other person counts automatically.)`,
+      );
+      process.exit(ASK_EXIT_ERROR);
+    }
+    audienceLabel = [...audience]
+      .map((id) => `@${stripTerminalControls(audienceNames.get(id) ?? id)} (${id})`)
+      .join(", ");
   }
 
   const reactable = args.choices.slice(0, ASK_MAX_REACTION_CHOICES);
@@ -1643,7 +1742,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // which makes channel mode unambiguous by construction. A question posted
   // INTO a thread is thread-scoped for the same reason.
   const threadOnly = !channelId.startsWith("D") || !!threadTs;
-  const message = askBuildText(args.question, args.body ?? "", reactable, overflow, threadOnly);
+  const message = askBuildText(question, body, reactable, overflow, threadOnly);
 
   // Preview the destination's last message, exactly as `send` does — the gate's
   // job is to make you look at where this is going before it goes. Fail-soft:
@@ -1681,8 +1780,11 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       `--- Asking -----------------------------------`,
       fromLine(self, { asBot: args.asBot }),
       `  → ${dest}${threadTs ? " — THREAD REPLY" : " — NEW top-level message"}`,
-      `  Question: ${args.question}`,
-      `  Answers:  ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
+      `  Question: ${question}`,
+      // The audience is the part that decides whose answer is binding, so it is
+      // shown as its own line rather than left to be inferred from the body.
+      `  Answerable by: ${audienceLabel}`,
+      `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
       `--------------------------------────────────`,
     ]);
   }
@@ -1722,10 +1824,12 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
 
   const selfUserId = self?.userId ?? "";
   const selfBotId = self?.botId ?? "";
-  // Anyone but us. Our own seeds carry our user id, so this is what stops a
-  // seed being mistaken for an answer.
+  // Only the people the question actually addresses. Excluding ourselves is what
+  // stops a seed being counted as an answer; restricting to `audience` is what
+  // stops a bystander in a busy channel from deciding it. `@here`/`@channel`
+  // deliberately opens it to everyone — that is what the asker asked for.
   const isAnswerer = (user: unknown): user is string =>
-    typeof user === "string" && !!user && user !== selfUserId;
+    typeof user === "string" && !!user && user !== selfUserId && (broadcast || audience.has(user));
 
   /** Every seed an answerer is on — not just the first. Changing your mind
    *  leaves BOTH reactions in place (Slack only drops one when you actively
@@ -1844,7 +1948,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     // and must keep getting the answer body alone.
     if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
     try {
-      await editMessage(token, channelId, ts, `:white_check_mark: *${args.question}*\n_${found.how}で回答済み${who ? ` (${who})` : ""}_\n\n> ${found.answer}`, cookie);
+      await editMessage(token, channelId, ts, `:white_check_mark: *${question}*\n_${found.how}で回答済み${who ? ` (${who})` : ""}_\n\n> ${found.answer}`, cookie);
     } catch (e: unknown) {
       console.error(`  (元メッセージの更新に失敗: ${e instanceof Error ? e.message : String(e)})`);
     }
@@ -2676,7 +2780,7 @@ async function main(): Promise<void> {
       "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate)",
       (y) => y
         .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
-        .positional("question", { type: "string", demandOption: true })
+        .positional("question", { type: "string", demandOption: true, describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
         .positional("choices", { type: "string", array: true, describe: "Up to 10 choices, seeded as 1️⃣..🔟 reactions. Beyond 10 they are listed but answerable only by text. With none, the question asks for a free-text reply." })
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
@@ -2707,6 +2811,11 @@ async function main(): Promise<void> {
         if (argv.wait) args.wait = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
+        // Always resolve @tags with the user token (it has users:read), even
+        // when the question itself is posted by the bot.
+        args.mentionToken = tok(argv as W);
+        const mc = ck(argv as W);
+        if (mc) args.mentionCookie = mc;
 
         let askToken: string;
         if (argv["as-bot"]) {
