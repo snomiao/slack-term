@@ -109,12 +109,24 @@ function run(
     ...(extra.env ?? {}),
   };
   return new Promise((resolve, reject) => {
-    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env });
+    const child = spawn("bun", ["run", TS_ENTRY, ...args], {
+      cwd: tmpHome,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => { stdout += String(d); });
     child.stderr.on("data", (d: Buffer) => { stderr += String(d); });
-    child.on("close", (exitCode: number | null) => resolve({ exitCode: exitCode ?? -1, stdout, stderr }));
+    child.on("close", (exitCode: number | null) => {
+      // The child's stdio pipes are not guaranteed to close on the same tick as
+      // the process itself; leave them open and the parent's event loop can
+      // keep the worker alive after the test has resolved, which then blocks
+      // the next test file from starting.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolve({ exitCode: exitCode ?? -1, stdout, stderr });
+    });
     child.on("error", reject);
   });
 }
