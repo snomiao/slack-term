@@ -25,12 +25,18 @@ jobs:
       - run: bun run scan-pii:all
       - run: bun run typecheck
       - run: bun run build
-      # Diagnostic, not a fix. Every run for a month has died the same way: all
-      # test files complete and pass, then vitest never prints the summary and
-      # the job burns its timeout, leaving orphan bun/node processes behind. So
-      # something keeps the process alive after the run. Two hypotheses have
-      # already been tried and disproved (the v8 coverage provider; `bunx`
-      # resolving vitest at run time), and it does not reproduce on Linux at 2
-      # cores under the same bun. `hanging-process` uses why-is-node-running to
-      # name the open handle instead of guessing at it again.
-      - run: bun run vitest run --coverage --exclude "tests/parity.test.ts" --reporter=default --reporter=hanging-process
+      # Run vitest under NODE, not bun. bun runs the app and the CLI fine, but
+      # vitest is a node tool and its workers are the thing that will not shut
+      # down here: every hung run leaves exactly three orphans behind —
+      # `bun` (the vitest main process) plus two `node` workers — and the main
+      # process then waits on them forever. All test files complete and pass
+      # first, so this is teardown, not a test.
+      #
+      # It does not reproduce on Linux under the same bun at 2 or 4 visible
+      # cores, so it is specific to this runner; running the tool on the runtime
+      # it targets is the fix that does not depend on knowing why.
+      #
+      # `hanging-process` stays on: it uses why-is-node-running, which needs
+      # node's async_hooks and so printed nothing at all under bun. If a hang
+      # survives this, it can finally name the handle.
+      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --reporter=default --reporter=hanging-process
