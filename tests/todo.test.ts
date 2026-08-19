@@ -17,10 +17,21 @@ const behaviour = {
   teamId: "T_ONE",
 };
 
-vi.mock("../ts/slack.ts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../ts/slack.ts")>();
+vi.mock("../ts/slack.ts", () => {
+  // Keep the mock synchronous: an async factory awaits the real module, and on
+  // GitHub's Node 24 worker that dynamic import can deadlock when an earlier
+  // test file in the same worker already imported ts/slack.ts. Re-declaring the
+  // one class under test avoids that import entirely.
+  class RateLimitError extends Error {
+    retryAfter: number;
+    constructor(retryAfter: number) {
+      super(`Slack rate limited — retry after ${retryAfter}s`);
+      this.name = "RateLimitError";
+      this.retryAfter = retryAfter;
+    }
+  }
   return {
-    ...actual,
+    RateLimitError,
     authTest: vi.fn(async () => {
       calls.push("auth.test");
       return { team: "t", teamId: behaviour.teamId, url: "", user: "me", userId: "U_ME" };
