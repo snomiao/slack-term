@@ -191,6 +191,20 @@ describe("slack.ts", () => {
     expect(resp.messages?.[0]?.text).toBe("hello world");
   });
 
+  // `oldest` is exclusive in Slack's API, so a caller polling the message it
+  // just posted only gets that message back with `inclusive`. Asserted on the
+  // wire because the flag's absence is silent: the call still succeeds, it just
+  // never returns the one message the caller cares about.
+  test("history sends inclusive=true only when asked for it", async () => {
+    const before = mock.requests.length;
+    await slack.history(token, "C00000001", 20).catch(() => {});
+    await slack.history(token, "C00000001", 20, "1700000000.000100", undefined, undefined, true).catch(() => {});
+    const [plain, inclusive] = mock.requests.slice(before);
+    expect(plain?.params.inclusive).toBeUndefined();
+    expect(inclusive?.params.inclusive).toBe("true");
+    expect(inclusive?.params.oldest).toBe("1700000000.000100");
+  });
+
   test("replies returns thread messages", async () => {
     const resp = (await slack.replies(token, "C00000001", "1700000000.000100", 50)) as {
       messages?: unknown[];

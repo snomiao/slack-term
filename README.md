@@ -93,6 +93,17 @@ slack delete "<permalink>"
 slack react "#general:1700000000.000100" white_check_mark
 slack react "<permalink>" eyes --remove   # take a reaction back
 
+# Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
+# one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
+slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
+# --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
+ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
+# exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure.
+# With no choices the question asks for a free-text reply and the reply is the answer.
+# In a DM a plain reply counts; in a channel only reactions and thread replies do.
+# Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
+# seeds are removed, leaving the chosen pill visible.
+
 # Task tracking on top of reactions — :pushpin: marks a message as a task,
 # a second reaction carries its progress (see "todo" below)
 slack todo ls                                  # my open tasks
@@ -238,7 +249,12 @@ Requires a Slack user token (`xoxp-...`) with the following scopes:
 - `channels:read`, `groups:read`, `im:read`, `mpim:read` — for channel listing
 - `users:read` — for resolving display names
 - `chat:write` — for sending messages
-- `reactions:write` — for `react` (add/remove reactions)
+- `reactions:write` — for `react` and for `ask` (seeding / clearing the choice pills)
+
+`ask` needs no `reactions:read`: it reads the answers back from
+`conversations.history`, which returns each message's `reactions` (with the user
+list) under the `*:history` scopes above. `reactions.get` would need
+`reactions:read`, so it is deliberately not used.
 
 > Add each scope to the **token type the CLI actually uses**. The CLI defaults to the
 > **user token** (`xoxp-...`), so `reactions:write` must be under **User Token Scopes**.

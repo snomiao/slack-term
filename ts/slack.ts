@@ -192,10 +192,16 @@ export async function history(
   oldest?: string,
   cursor?: string,
   cookie?: string,
+  // `oldest` is EXCLUSIVE by default — the message at that exact ts is left out.
+  // Set this to get it back, which is what a caller polling a message it just
+  // posted (its reactions, its reply_count) actually needs. Only sent when true
+  // so every existing caller's request is byte-identical to before.
+  inclusive?: boolean,
 ): Promise<Json> {
   const params: Record<string, string> = { channel, limit: String(limit) };
   if (oldest !== undefined) params.oldest = oldest;
   if (cursor !== undefined) params.cursor = cursor;
+  if (inclusive) params.inclusive = "true";
   return get(token, "conversations.history", params, cookie);
 }
 
