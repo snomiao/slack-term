@@ -204,8 +204,15 @@ export async function startMock(
     baseUrl,
     requests,
     stop: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((err) => (err ? reject(err) : resolve())),
-      ),
+      new Promise<void>((resolve, reject) => {
+        // A `server.close()` alone waits for every existing keep-alive
+        // connection to finish. Tests abort poll loops while an HTTP request is
+        // still in flight, so the client may never close its socket; the
+        // teardown then hangs forever and the worker never moves on to the next
+        // test file. Closing connections explicitly makes `stop()` finish even
+        // when a keep-alive socket was left behind.
+        server.close((err) => (err ? reject(err) : resolve()));
+        server.closeAllConnections?.();
+      }),
   };
 }

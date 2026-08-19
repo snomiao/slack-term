@@ -12,9 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     # Without this a hang burns the full 6-hour job limit and reports as
     # "cancelled" — which reads like someone stopped it, not like a failure.
-    # Every run for a month died that way. The suite takes ~30s, so 8 minutes is
-    # already generous, and a timeout here is a loud, correctly-labelled failure.
-    timeout-minutes: 6
+    # The suite takes ~135s under node/istanbul, so 8 minutes is still generous,
+    # and a timeout here is a loud, correctly-labelled failure.
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -25,27 +25,22 @@ jobs:
       - run: bun run scan-pii:all
       - run: bun run typecheck
       - run: bun run build
-      # Run vitest under NODE and in a single worker.
-      #
-      # The hang was never a test. Narrowed from the logs: 14 of the 15 test
-      # files report `✓`, every test in them passes, and then the run stops
-      # without printing a summary and burns the job timeout. The one file that
-      # never reports is tests/todo.test.ts — which passes on its own on Linux
-      # in 182ms — and the job cleanup then kills exactly two `node` workers
-      # that outlived the run. So a worker finishes its tests and never reports
-      # back, and the main process waits on it forever.
-      #
-      # `--no-file-parallelism` runs every file in one worker, which removes the
-      # cross-worker reporting/teardown this depends on. Cost is ~36s instead of
-      # ~25s, which is nothing against a job that used to burn its whole budget.
+      # Run vitest under NODE.
       #
       # `node`, not bun, because vitest is a node tool and because
       # `hanging-process` needs node's async_hooks — under bun it could not
       # print anything at all, which is why the first diagnostic run came back
       # empty. Kept on so a surviving hang can finally name the handle.
       #
+      # The hang was a keep-alive HTTP socket left behind by tests that abort a
+      # poll loop while a mock request is still in flight: `server.close()`
+      # waited forever for that socket, so a test file's `afterAll` never
+      # finished and the worker never moved on to the next file. `tests/mock.ts`
+      # now closes all connections explicitly in `stop()`.
+      #
+      # `--no-file-parallelism` is retained: a single worker makes the
+      # `hanging-process` report unambiguous if another hang ever appears.
       # Already tried and disproved, so nobody re-tries them: the v8 coverage
       # provider, `bunx` resolving vitest at run time, the vitest/coverage
-      # version mismatch, and bun itself. It also does not reproduce on Linux
-      # under the same bun at 2 or 4 visible cores.
-      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --no-file-parallelism --reporter=verbose --reporter=hanging-process
+      # version mismatch, and bun itself.
+      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --no-file-parallelism --reporter=default --reporter=hanging-process
