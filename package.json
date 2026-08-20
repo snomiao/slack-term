@@ -60,7 +60,7 @@
     "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
     "typecheck": "tsgo --noEmit",
     "typecheck:tsc": "tsc --noEmit",
-    "test": "bun test tests/ --timeout 90000 --isolate",
+    "test": "bun test tests/ --timeout 90000 --parallel=2",
     "test:watch": "bun test tests/ --timeout 90000 --isolate --watch",
     "test:parity": "bash tests/parity.sh",
     "record": "bun run tests/record.ts",

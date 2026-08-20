@@ -31,11 +31,19 @@ jobs:
       # `vi.mock` factories, keep-alive sockets stalling `server.close()`) simply
       # does not arise.
       #
-      # `--isolate` is mandatory, not tuning: bun's `mock.module` is
-      # process-wide, so without a fresh global per file the module mock in
-      # tests/todo.test.ts leaks into tests/auth.test.ts and fails it. The
-      # 90s timeout replaces the per-describe timeouts, which bun accepts and
-      # then silently ignores.
+      # `--parallel` implies `--isolate`, and isolation is mandatory rather than
+      # tuning: bun's `mock.module` is process-wide, so without a fresh global
+      # per file the module mock in tests/todo.test.ts leaks into
+      # tests/auth.test.ts — measured, that costs 92 failing tests, not one.
+      #
+      # Two workers, not the default (one per core). These tests spawn CLI
+      # subprocesses and stand up HTTP mock servers, so they contend on
+      # something other than CPU: measured on an 18-core box, `=2` ran 27-34s,
+      # `=4` swung between 50s and 133s, and the unbounded default produced a
+      # 40s run and a 178s one with an extra failure.
+      #
+      # The 90s timeout replaces the per-describe timeouts, which bun accepts
+      # and then silently ignores.
       - run: bun run test
 
       # Second pass, for the coverage gate only. bun reports lines and functions
