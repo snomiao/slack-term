@@ -1,6 +1,6 @@
 target/
 rs/target/
-node_modules/
+node_modules
 dist/
 *.node
 bun.lockb
