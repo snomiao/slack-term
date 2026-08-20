@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
+import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -508,6 +509,127 @@ describe("ask self-DM warning (CLI)", { timeout: 60_000 }, () => {
     try {
       const r = await run(["ask", "@me", "やっていい?", "--channel-id", "D00000001"], m.baseUrl);
       expect(r.stderr).toContain("DM to yourself");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+// Collecting an answer to a question posted WITHOUT --wait. Nothing about the
+// question is stored locally, so every field the poller needs is recovered by
+// parsing the message back out of Slack — including "is this even a question".
+describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
+  const QUESTION = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], false);
+
+  /** The single-message fetch `--waitFor` opens with (limit=1), plus the poll. */
+  function waitForFixture(channel: string, messages: unknown[]): InlineFixtures {
+    return {
+      [`conversations.history__channel=${channel}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages },
+      ...pollFixture(channel, messages),
+    };
+  }
+
+  test("a question posted without --wait prints the command that collects it", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", "#chan", `@bob deploy してよい?`, "はい", "まって", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      // A bare permalink would leave the caller with no idea how to collect —
+      // and nothing else in the CLI can read a pressed reaction back.
+      expect(r.stdout.trim()).toBe(`slack ask --waitFor='${CHAN}:${QTS}'`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("collects a pill pressed while nobody was waiting", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [{
+        type: "message", user: SELF, ts: QTS, text: QUESTION,
+        reactions: [{ name: "two", users: [SELF, BOB], count: 2 }],
+      }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "20"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B");
+      // No confirm gate and nothing new posted: --waitFor only reads and stamps.
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a question already stamped answered reports that answer without waiting", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "B", how: "リアクション 2️⃣", who: BOB }, "Bob");
+    const inline: InlineFixtures = {
+      ...AUTH,
+      ...waitForFixture(DM, [{ type: "message", user: SELF, ts: QTS, text: resolved }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      // A long timeout would hang here if the ✅ state were not recognised —
+      // this is the property that makes fire-and-forget usable at all.
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "3600"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a message that is not a question is refused instead of polled", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      ...waitForFixture(DM, [{ type: "message", user: SELF, ts: QTS, text: "ただの発言です" }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "20"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stdout.trim()).toBe("");
+      expect(r.stderr).toContain("質問ではありません");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--timeout 0 checks exactly once and exits 2 when still open", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      ...waitForFixture(DM, [{
+        type: "message", user: SELF, ts: QTS, text: QUESTION,
+        // Only the asker's own seeds — the pills as they were left.
+        reactions: [{ name: "one", users: [SELF], count: 1 }],
+      }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+      // Exactly one poll: this mode exists so a monitor can check cheaply
+      // instead of parking a process on --wait.
+      expect(m.requests.filter((q) => q.method === "conversations.history" && q.params.limit === "30").length).toBe(1);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("mixing --waitFor with a new question is refused", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const r = await run(["ask", "#chan", "@bob q", "--waitFor", `${DM}:${QTS}`], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
     } finally {
       await m.stop();
     }

@@ -14,6 +14,14 @@ import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp }
 import { cmdTail } from "./tail.ts";
 
 import {
+  ASK_KEYCAPS,
+  ASK_MAX_REACTION_CHOICES,
+  askBuildText,
+  askBuildResolvedText,
+  askParseMessage,
+  type AskFound,
+} from "./ask.ts";
+import {
   authTest,
   authScopes,
   authTestSession,
@@ -1545,21 +1553,6 @@ const ASK_POLL_MIN_MS = 1000;
 const ASK_POLL_MAX_MS = 5000;
 const ASK_MAX_CONSECUTIVE_ERRORS = 8;
 
-// Answer order. Ten is the ceiling because keycap emoji stop there; choice 11+
-// is listed in the body but can only be answered with text.
-const ASK_KEYCAPS = [
-  { name: "one", glyph: "1️⃣" },
-  { name: "two", glyph: "2️⃣" },
-  { name: "three", glyph: "3️⃣" },
-  { name: "four", glyph: "4️⃣" },
-  { name: "five", glyph: "5️⃣" },
-  { name: "six", glyph: "6️⃣" },
-  { name: "seven", glyph: "7️⃣" },
-  { name: "eight", glyph: "8️⃣" },
-  { name: "nine", glyph: "9️⃣" },
-  { name: "keycap_ten", glyph: "🔟" },
-] as const;
-const ASK_MAX_REACTION_CHOICES = ASK_KEYCAPS.length;
 
 interface AskArgs {
   target: string;
@@ -1582,38 +1575,8 @@ interface AskArgs {
   mentionCookie?: string;
 }
 
-type AskFound = { answer: string; how: string; who?: string };
 
 const askSleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-/** Question body: the prompt, the numbered choices matching the seeded pills,
- *  and an instruction naming the answer paths this command actually reads. */
-function askBuildText(question: string, body: string, reactable: string[], overflow: string[], threadOnly: boolean): string {
-  const lines: string[] = [`*${question}*`];
-  if (body) lines.push("", body);
-  if (reactable.length) {
-    lines.push("");
-    lines.push(...reactable.map((s, i) => `${ASK_KEYCAPS[i]!.glyph} ${s}`));
-    if (overflow.length) {
-      lines.push("");
-      lines.push(...overflow.map((s, i) => `(${i + 11}) ${s}`));
-      lines.push("_11 番目以降はリアクションがないので、返信で答えてください。_");
-    }
-    lines.push("");
-    // The instruction must name the exact path the poller reads. Where only
-    // thread replies are picked up, telling people to "reply to this message"
-    // would get in-channel answers silently ignored.
-    lines.push(threadOnly
-      ? "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_"
-      : "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージに返信してください。_");
-  } else {
-    lines.push("");
-    lines.push(threadOnly
-      ? "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_"
-      : "_このメッセージに返信してください。本文がそのまま回答になります。_");
-  }
-  return lines.join("\n");
-}
 
 // A thread reply sent with "also send to channel" ticked arrives as a normal
 // message carrying this subtype. Dropping every subtype would discard those —
@@ -1653,6 +1616,235 @@ async function imCounterpart(token: string, channelId: string, cookie?: string):
   } catch {
     return undefined;
   }
+}
+
+/** Everything the answer poller needs. `--wait` fills it in from what it just
+ *  posted; `--waitFor` recovers the same fields from the message itself. */
+interface AskWaitCtx {
+  channelId: string;
+  ts: string;
+  /** Set only when the question is itself a thread reply. Such a message never
+   *  appears in `conversations.history`, so the whole poll has to run through
+   *  `conversations.replies` instead. */
+  threadParentTs?: string;
+  question: string;
+  reactable: string[];
+  threadOnly: boolean;
+  /** Who may answer. Empty + broadcast=false would accept nobody, which is why
+   *  posting an unaddressed question is refused up front. */
+  audience: Set<string>;
+  broadcast: boolean;
+  /** The asker as the POSTED MESSAGE shows them — not the current token. On
+   *  resume the two can differ, and taking the current identity would count the
+   *  original asker's seeds as answers. */
+  askerUserId: string;
+  askerBotId: string;
+  timeout: number;
+  cookie?: string;
+  shown: string;
+}
+
+/** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
+ *  on timeout. A timeout of 0 means "look exactly once", so a caller can poll
+ *  cheaply on its own schedule instead of parking a process on `--wait`. */
+async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
+  const { channelId, ts, question, reactable, threadOnly, audience, broadcast, cookie, timeout, shown } = ctx;
+  const askerUserId = ctx.askerUserId;
+  const askerBotId = ctx.askerBotId;
+
+  // Only the people the question actually addresses. Excluding the asker is what
+  // stops a seed being counted as an answer; restricting to `audience` is what
+  // stops a bystander in a busy channel from deciding it. `@here`/`@channel`
+  // deliberately opens it to everyone — that is what the asker asked for.
+  const isAnswerer = (user: unknown): user is string =>
+    typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
+
+  /** Every seed an answerer is on — not just the first. Changing your mind
+   *  leaves BOTH reactions in place (Slack only drops one when you actively
+   *  un-react), so taking the lowest index would answer with the abandoned
+   *  choice. Array order cannot break the tie either: it is add-order, and we
+   *  added every seed before anyone touched it. */
+  function humanChoices(msg: Record<string, Json>): { index: number; users: string[] }[] {
+    const reactions = asArray(msg.reactions).map(asRecord);
+    const out: { index: number; users: string[] }[] = [];
+    for (let i = 0; i < reactable.length; i++) {
+      const r = reactions.find((x) => x.name === ASK_KEYCAPS[i]!.name);
+      const users = r ? asArray(r.users).filter(isAnswerer) : [];
+      if (users.length) out.push({ index: i, users });
+    }
+    return out;
+  }
+
+  // Two reactions means two answers, and this command exists for decisions that
+  // are expensive to get wrong — so an ambiguous state is never resolved by
+  // guessing. Say so in the thread and keep waiting; removing one reaction (or
+  // replying with text) settles it on the next poll.
+  let ambiguityNotified = false;
+
+  async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
+    const picks = humanChoices(msg);
+    if (!picks.length) return null;
+    if (picks.length === 1) {
+      const { index, users } = picks[0]!;
+      return { answer: reactable[index]!, how: `リアクション ${ASK_KEYCAPS[index]!.glyph}`, who: users[0]! };
+    }
+    const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
+    if (!ambiguityNotified) {
+      ambiguityNotified = true;
+      console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
+      try {
+        await slackSend(token, channelId, `${glyphs} が同時に選ばれています。回答を確定できないので、1 つだけ残るようにリアクションを外すか、このスレッドで返信してください。`, ts, false, cookie);
+      } catch (e: unknown) {
+        console.error(`  (確認の返信を送れませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      }
+    }
+    return null;
+  }
+
+  function answerFromMessages(messages: Record<string, Json>[], before = Infinity): AskFound | null {
+    // Oldest first: if someone wrote twice, the first reply is the answer.
+    const ordered = [...messages].sort((a, b) => Number(a.ts) - Number(b.ts));
+    for (const m of ordered) {
+      // Strictly after the question. A question posted INTO an existing thread
+      // sits among replies that predate it, and those answered something else.
+      if (!(Number(m.ts) > Number(ts))) continue;
+      if (!isAnswerer(m.user)) continue;
+      if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
+      if (Number(m.ts) >= before) break;
+      const t = typeof m.text === "string" ? m.text.trim() : "";
+      if (t) return { answer: t, how: "返信", who: m.user };
+    }
+    return null;
+  }
+
+  async function poll(): Promise<AskFound | null> {
+    // A question that is itself a thread reply is invisible to
+    // `conversations.history`, so the entire poll — reactions included — has to
+    // come from the thread.
+    if (ctx.threadParentTs) {
+      const rep = asRecord((await replies(token, channelId, ctx.threadParentTs, 100, cookie)) as Json);
+      const messages = asArray(rep.messages).map(asRecord);
+      const own = messages.find((m) => m.ts === ts);
+      if (own) {
+        const byReaction = await answerFromReactions(own);
+        if (byReaction) return byReaction;
+      }
+      return answerFromMessages(messages);
+    }
+
+    // inclusive: `oldest` excludes the message at that exact ts, and that
+    // message IS the question — without this the reactions and reply_count we
+    // are polling for never come back at all.
+    const hist = asRecord((await history(token, channelId, 30, ts, undefined, cookie, true)) as Json);
+    const messages = asArray(hist.messages).map(asRecord);
+    const own = messages.find((m) => m.ts === ts);
+
+    // A reaction is the intended path, so it wins when both are present.
+    if (own) {
+      const byReaction = await answerFromReactions(own);
+      if (byReaction) return byReaction;
+    }
+
+    if (!threadOnly) {
+      // A plain DM reply is ambiguous only while several questions are open at
+      // once: it belongs to whichever was newest when it was written. Bound the
+      // search by the ts of our NEXT question in this conversation, so an older
+      // waiter falls back to reactions/thread replies and never steals the
+      // newer one's answer.
+      const nextQuestionTs = messages
+        .filter((m) => Number(m.ts) > Number(ts) && (
+          (askerBotId && m.bot_id === askerBotId) || (askerUserId && m.user === askerUserId)))
+        .reduce((min, m) => Math.min(min, Number(m.ts)), Infinity);
+      const byMessage = answerFromMessages(messages, nextQuestionTs);
+      if (byMessage) return byMessage;
+    }
+
+    // Thread replies never appear in history; only pay for the extra call once
+    // the parent says there is something to fetch.
+    if (own && Number(own.reply_count) > 0) {
+      const rep = asRecord((await replies(token, channelId, ts, 30, cookie)) as Json);
+      const byThread = answerFromMessages(asArray(rep.messages).map(asRecord));
+      if (byThread) return byThread;
+    }
+    return null;
+  }
+
+  /** Stamp the question resolved. Removing our seeds clears the pills that still
+   *  invite an answer; the answerer's own reaction cannot be removed by us and
+   *  stays put — which is exactly what leaves the chosen number visible. */
+  async function markResolved(found: AskFound): Promise<void> {
+    for (let i = 0; i < reactable.length; i++) {
+      try {
+        await reactionRemove(token, channelId, ts, ASK_KEYCAPS[i]!.name, cookie);
+      } catch {
+        // Already removed, or someone else's reaction — neither is fatal.
+      }
+    }
+    let who = "";
+    if (found.who) {
+      try {
+        who = await userName(token, found.who, cookie);
+      } catch {
+        who = found.who;
+      }
+    }
+    // Who answered never reaches stdout — callers do ANS=$(slack ask --wait ...)
+    // and must keep getting the answer body alone.
+    if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
+    try {
+      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who), cookie);
+    } catch (e: unknown) {
+      // The edit is bookkeeping, not the answer. It fails whenever the resuming
+      // token is not the one that posted (Slack lets only the author update), and
+      // that must not cost the caller an answer it already has.
+      console.error(`  (元メッセージの更新に失敗: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+
+  const deadline = Date.now() + timeout * 1000;
+  let errors = 0;
+  let delay = ASK_POLL_MIN_MS;
+  for (;;) {
+    let found: AskFound | null = null;
+    try {
+      found = await poll();
+      errors = 0;
+    } catch (e: unknown) {
+      // A dropped poll is expected occasionally; only give up if it keeps failing.
+      errors++;
+      if (errors >= ASK_MAX_CONSECUTIVE_ERRORS) {
+        console.error(`Error: Slack への問い合わせに ${errors} 回連続で失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+        process.exit(ASK_EXIT_ERROR);
+      }
+      console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (found) {
+      await markResolved(found);
+      // stdout gets the answer and nothing else.
+      console.log(found.answer);
+      process.exit(0);
+    }
+    // Checked after the first poll, never before it: `--timeout 0` means one
+    // look, and one look must still be a real look.
+    if (Date.now() >= deadline) break;
+    await askSleep(Math.min(delay, Math.max(0, deadline - Date.now())));
+    delay = Math.min(delay * ASK_PHI, ASK_POLL_MAX_MS);
+  }
+
+  if (timeout === 0) {
+    console.error(`まだ回答がありません: ${shown}`);
+  } else {
+    console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
+    console.error(`  ${shown}`);
+  }
+  process.exit(ASK_EXIT_TIMEOUT);
+}
+
+/** The `slack ask --waitFor=…` line handed to a caller that did not block.
+ *  Printed as a runnable command rather than a bare permalink: the collect step
+ *  is the half everyone forgets, and a link does not tell you how to collect. */
+function askResumeCommand(shown: string, asBot: boolean): string {
+  return `slack ask --waitFor='${shown}'${asBot ? " --as-bot" : ""}`;
 }
 
 async function cmdAsk(token: string, args: AskArgs): Promise<void> {
@@ -1814,176 +2006,143 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   console.error(`✓ Asked: ${shown}`);
 
   if (!args.wait) {
-    // Not waiting: stdout gets the permalink so a caller can hand it onward.
-    console.log(shown);
+    // Not waiting. stdout is the RESUME COMMAND, not just a link: nothing else
+    // reads a pressed pill back — `tail` only sees `type: "message"` events and
+    // drops `message_changed`, so both the reaction and the ✅ rewrite are
+    // invisible to it. A question posted with no way to collect it is how an
+    // answer gets pressed and nobody ever hears about it.
+    console.log(askResumeCommand(shown, !!args.asBot));
     return;
   }
 
   const timeout = args.timeout ?? 3600;
   console.error(`  回答を待っています (最大 ${timeout}s)… Ctrl-C で中断`);
 
-  const selfUserId = self?.userId ?? "";
-  const selfBotId = self?.botId ?? "";
-  // Only the people the question actually addresses. Excluding ourselves is what
-  // stops a seed being counted as an answer; restricting to `audience` is what
-  // stops a bystander in a busy channel from deciding it. `@here`/`@channel`
-  // deliberately opens it to everyone — that is what the asker asked for.
-  const isAnswerer = (user: unknown): user is string =>
-    typeof user === "string" && !!user && user !== selfUserId && (broadcast || audience.has(user));
+  const ctx: AskWaitCtx = {
+    channelId,
+    ts,
+    question,
+    reactable,
+    threadOnly,
+    audience,
+    broadcast,
+    askerUserId: self?.userId ?? "",
+    askerBotId: self?.botId ?? "",
+    timeout,
+    shown,
+  };
+  if (threadTs) ctx.threadParentTs = threadTs;
+  if (cookie) ctx.cookie = cookie;
+  await askWaitForAnswer(token, ctx);
+}
 
-  /** Every seed an answerer is on — not just the first. Changing your mind
-   *  leaves BOTH reactions in place (Slack only drops one when you actively
-   *  un-react), so taking the lowest index would answer with the abandoned
-   *  choice. Array order cannot break the tie either: it is add-order, and we
-   *  added every seed before anyone touched it. */
-  function humanChoices(msg: Record<string, Json>): { index: number; users: string[] }[] {
-    const reactions = asArray(msg.reactions).map(asRecord);
-    const out: { index: number; users: string[] }[] = [];
-    for (let i = 0; i < reactable.length; i++) {
-      const r = reactions.find((x) => x.name === ASK_KEYCAPS[i]!.name);
-      const users = r ? asArray(r.users).filter(isAnswerer) : [];
-      if (users.length) out.push({ index: i, users });
+
+
+/** `slack ask --waitFor <permalink>` — collect the answer to a question that was
+ *  posted without blocking.
+ *
+ *  Nothing about the question is stored locally, so everything the poller needs
+ *  is read back out of the message itself. That is a deliberate trade: no state
+ *  file to go stale, lose, or disagree with Slack, and any machine holding the
+ *  permalink can collect — at the cost of the body being a parseable format
+ *  (`askBuildText` ⇄ `askParseMessage`). */
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; cookie?: string }): Promise<void> {
+  const url = parseSlackPermalink(args.link);
+  let channelId: string;
+  let ts: string;
+  let threadTs: string | undefined;
+  if (url?.ts) {
+    channelId = url.channel;
+    ts = url.ts;
+    threadTs = url.threadTs && url.threadTs !== url.ts ? url.threadTs : undefined;
+  } else {
+    // `C…:1700000000.000100` — the fallback `ask` prints when the permalink
+    // lookup itself failed, so it has to be collectable too.
+    const m = args.link.match(/^([A-Za-z0-9]+):(\d{10}\.\d{6})$/);
+    if (!m) {
+      console.error(
+        `Error: --waitFor needs the permalink of a question (or 'C…:1700000000.000100').\n` +
+        `  Got: ${stripTerminalControls(args.link)}`,
+      );
+      process.exit(ASK_EXIT_ERROR);
     }
-    return out;
+    channelId = m[1]!;
+    ts = m[2]!;
   }
 
-  // Two reactions means two answers, and this command exists for decisions that
-  // are expensive to get wrong — so an ambiguous state is never resolved by
-  // guessing. Say so in the thread and keep waiting; removing one reaction (or
-  // replying with text) settles it on the next poll.
-  let ambiguityNotified = false;
-
-  async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
-    const picks = humanChoices(msg);
-    if (!picks.length) return null;
-    if (picks.length === 1) {
-      const { index, users } = picks[0]!;
-      return { answer: reactable[index]!, how: `リアクション ${ASK_KEYCAPS[index]!.glyph}`, who: users[0]! };
-    }
-    const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
-    if (!ambiguityNotified) {
-      ambiguityNotified = true;
-      console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
-      try {
-        await slackSend(token, channelId, `${glyphs} が同時に選ばれています。回答を確定できないので、1 つだけ残るようにリアクションを外すか、このスレッドで返信してください。`, ts, false, cookie);
-      } catch (e: unknown) {
-        console.error(`  (確認の返信を送れませんでした: ${e instanceof Error ? e.message : String(e)})`);
-      }
-    }
-    return null;
+  // Fetch the one message. A question posted into a thread is not in history at
+  // all, so where the permalink says it is a reply, read it from the thread.
+  let msg: Record<string, Json> | undefined;
+  if (threadTs) {
+    const rep = asRecord((await replies(token, channelId, threadTs, 100, args.cookie)) as Json);
+    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
+  } else {
+    const hist = asRecord((await history(token, channelId, 1, ts, undefined, args.cookie, true)) as Json);
+    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
+  }
+  if (!msg) {
+    console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(args.link)}`);
+    process.exit(ASK_EXIT_ERROR);
   }
 
-  function answerFromMessages(messages: Record<string, Json>[], before = Infinity): AskFound | null {
-    // Oldest first: if someone wrote twice, the first reply is the answer.
-    const ordered = [...messages].sort((a, b) => Number(a.ts) - Number(b.ts));
-    for (const m of ordered) {
-      if (m.ts === ts) continue;
-      if (!isAnswerer(m.user)) continue;
-      if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
-      if (Number(m.ts) >= before) break;
-      const t = typeof m.text === "string" ? m.text.trim() : "";
-      if (t) return { answer: t, how: "返信", who: m.user };
-    }
-    return null;
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const parsed = askParseMessage(text);
+  if (parsed.kind === "other") {
+    console.error(
+      `Error: これは \`slack ask\` の質問ではありません (回答の読み取り方が分かりません)。\n` +
+      `  ${stripTerminalControls(args.link)}`,
+    );
+    process.exit(ASK_EXIT_ERROR);
+  }
+  if (parsed.kind === "resolved") {
+    // Answered while nobody was watching — the case that makes fire-and-forget
+    // safe. Report it exactly as `--wait` would have.
+    console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
+    console.log(parsed.answer);
+    return;
   }
 
-  async function poll(): Promise<AskFound | null> {
-    // inclusive: `oldest` excludes the message at that exact ts, and that
-    // message IS the question — without this the reactions and reply_count we
-    // are polling for never come back at all.
-    const hist = asRecord((await history(token, channelId, 30, ts, undefined, cookie, true)) as Json);
-    const messages = asArray(hist.messages).map(asRecord);
-    const own = messages.find((m) => m.ts === ts);
-
-    // A reaction is the intended path, so it wins when both are present.
-    if (own) {
-      const byReaction = await answerFromReactions(own);
-      if (byReaction) return byReaction;
-    }
-
-    if (!threadOnly) {
-      // A plain DM reply is ambiguous only while several questions are open at
-      // once: it belongs to whichever was newest when it was written. Bound the
-      // search by the ts of our NEXT question in this conversation, so an older
-      // waiter falls back to reactions/thread replies and never steals the
-      // newer one's answer.
-      const nextQuestionTs = messages
-        .filter((m) => Number(m.ts) > Number(ts) && (
-          (selfBotId && m.bot_id === selfBotId) || (selfUserId && m.user === selfUserId)))
-        .reduce((min, m) => Math.min(min, Number(m.ts)), Infinity);
-      const byMessage = answerFromMessages(messages, nextQuestionTs);
-      if (byMessage) return byMessage;
-    }
-
-    // Thread replies never appear in history; only pay for the extra call once
-    // the parent says there is something to fetch.
-    if (own && Number(own.reply_count) > 0) {
-      const rep = asRecord((await replies(token, channelId, ts, 30, cookie)) as Json);
-      const byThread = answerFromMessages(asArray(rep.messages).map(asRecord));
-      if (byThread) return byThread;
-    }
-    return null;
+  // Who may answer, recovered from the tags the readers can see. They are
+  // already `<@U…>`-encoded in the stored text, so no directory lookup is
+  // needed — and the asker is excluded here for the same reason as when
+  // posting: their tag of themselves grants nothing, and their reactions are
+  // the seeds.
+  const askerUserId = typeof msg.user === "string" ? msg.user : "";
+  const askerBotId = typeof msg.bot_id === "string" ? msg.bot_id : "";
+  const broadcast = /<!(here|channel|everyone)(\^[^>]*)?(\|[^>]*)?>/.test(text);
+  const audience = new Set<string>();
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) {
+    if (m[1] !== askerUserId) audience.add(m[1]!);
+  }
+  if (!audience.size && !broadcast) {
+    // A 1:1 DM needs no tag — the other party is the only person it could be.
+    const counterpart = await imCounterpart(token, channelId, args.cookie);
+    if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
+  }
+  if (!audience.size && !broadcast) {
+    console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
+    process.exit(ASK_EXIT_ERROR);
   }
 
-  /** Stamp the question resolved. Removing our seeds clears the pills that still
-   *  invite an answer; the answerer's own reaction cannot be removed by us and
-   *  stays put — which is exactly what leaves the chosen number visible. */
-  async function markResolved(found: AskFound): Promise<void> {
-    for (let i = 0; i < reactable.length; i++) {
-      try {
-        await reactionRemove(token, channelId, ts, ASK_KEYCAPS[i]!.name, cookie);
-      } catch {
-        // Already removed, or someone else's reaction — neither is fatal.
-      }
-    }
-    let who = "";
-    if (found.who) {
-      try {
-        who = await userName(token, found.who, cookie);
-      } catch {
-        who = found.who;
-      }
-    }
-    // Who answered never reaches stdout — callers do ANS=$(slack ask --wait ...)
-    // and must keep getting the answer body alone.
-    if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
-    try {
-      await editMessage(token, channelId, ts, `:white_check_mark: *${question}*\n_${found.how}で回答済み${who ? ` (${who})` : ""}_\n\n> ${found.answer}`, cookie);
-    } catch (e: unknown) {
-      console.error(`  (元メッセージの更新に失敗: ${e instanceof Error ? e.message : String(e)})`);
-    }
+  if (args.timeout > 0) {
+    console.error(`  回答を待っています (最大 ${args.timeout}s)… Ctrl-C で中断`);
   }
-
-  const deadline = Date.now() + timeout * 1000;
-  let errors = 0;
-  let delay = ASK_POLL_MIN_MS;
-  while (Date.now() < deadline) {
-    let found: AskFound | null = null;
-    try {
-      found = await poll();
-      errors = 0;
-    } catch (e: unknown) {
-      // A dropped poll is expected occasionally; only give up if it keeps failing.
-      errors++;
-      if (errors >= ASK_MAX_CONSECUTIVE_ERRORS) {
-        console.error(`Error: Slack への問い合わせに ${errors} 回連続で失敗しました: ${e instanceof Error ? e.message : String(e)}`);
-        process.exit(ASK_EXIT_ERROR);
-      }
-      console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
-    }
-    if (found) {
-      await markResolved(found);
-      // stdout gets the answer and nothing else.
-      console.log(found.answer);
-      return;
-    }
-    await askSleep(Math.min(delay, Math.max(0, deadline - Date.now())));
-    delay = Math.min(delay * ASK_PHI, ASK_POLL_MAX_MS);
-  }
-
-  console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
-  console.error(`  ${shown}`);
-  process.exit(ASK_EXIT_TIMEOUT);
+  const ctx: AskWaitCtx = {
+    channelId,
+    ts,
+    question: parsed.question,
+    reactable: parsed.reactable,
+    threadOnly: parsed.threadOnly,
+    audience,
+    broadcast,
+    askerUserId,
+    askerBotId,
+    timeout: args.timeout,
+    shown: args.link,
+  };
+  if (threadTs) ctx.threadParentTs = threadTs;
+  if (args.cookie) ctx.cookie = args.cookie;
+  await askWaitForAnswer(token, ctx);
 }
 
 async function cmdDoctor(token: string): Promise<void> {
@@ -2776,23 +2935,65 @@ async function main(): Promise<void> {
       },
     )
     .command(
-      "ask <target> <question> [choices..]",
+      "ask [target] [question] [choices..]",
       "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate)",
       (y) => y
-        .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink" })
-        .positional("question", { type: "string", demandOption: true, describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
+        .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --waitFor)" })
+        .positional("question", { type: "string", describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
         .positional("choices", { type: "string", array: true, describe: "Up to 10 choices, seeded as 1️⃣..🔟 reactions. Beyond 10 they are listed but answerable only by text. With none, the question asks for a free-text reply." })
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = timed out, 3 = transport failure." })
-        .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait, in seconds" })
+        .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
+        .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Ask via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient" }),
       async (argv) => {
+        const waitFor = argv.waitFor ? String(argv.waitFor) : "";
         const timeout = Number(argv.timeout);
-        if (!Number.isFinite(timeout) || timeout <= 0) {
+        // 0 is a real value only for --waitFor ("look once"). For --wait it would
+        // mean "give up before asking", which is never what anyone meant.
+        if (!Number.isFinite(timeout) || timeout < 0 || (timeout === 0 && !waitFor)) {
           console.error("Error: --timeout must be a positive number of seconds");
+          process.exit(ASK_EXIT_ERROR);
+        }
+        if (waitFor) {
+          // Collect-only: nothing is posted, so there is no confirm gate and no
+          // question to supply. Anything that would have been posted is a sign
+          // the caller mixed the two modes up.
+          if (argv.target || argv.question || (argv.choices as string[] | undefined)?.length) {
+            console.error("Error: --waitFor collects an existing question — do not also pass a target/question/choices.");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          let waitToken: string;
+          let waitCookie: string | undefined;
+          if (argv["as-bot"]) {
+            const botToken = resolveBotToken();
+            if (!botToken) {
+              console.error(
+                "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+                "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+              );
+              process.exit(ASK_EXIT_ERROR);
+            }
+            waitToken = botToken;
+          } else {
+            waitToken = tok(argv as W);
+            waitCookie = ck(argv as W);
+          }
+          try {
+            const a: { link: string; timeout: number; cookie?: string } = { link: waitFor, timeout };
+            if (waitCookie) a.cookie = waitCookie;
+            await cmdAskWaitFor(waitToken, a);
+          } catch (e: unknown) {
+            console.error(friendlySlackError(e));
+            process.exit(ASK_EXIT_ERROR);
+          }
+          return;
+        }
+        if (!argv.target) {
+          console.error("Error: target is required (or use --waitFor <permalink> to collect an answer)");
           process.exit(ASK_EXIT_ERROR);
         }
         const question = String(argv.question ?? "").trim();

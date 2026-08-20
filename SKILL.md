@@ -85,6 +85,14 @@ slack delete "<permalink>"
 slack react "#general:1700000000.000100" white_check_mark
 slack react "<permalink>" eyes --remove   # take it back
 
+# Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (same confirm gate)
+# The question MUST @tag whoever may answer — only their reaction/reply counts.
+slack ask "#eng" "@alice この PR 出してよい?" "出す" "待つ"
+ANS=$(slack ask "@bob" "出してよい?" "はい" "待って" --code=<code> --wait)  # blocks
+RESUME=$(slack ask "@bob" "出してよい?" "はい" "待って" --code=<code>)      # does not
+#   RESUME -> slack ask --waitFor='<permalink>'    # collect the answer later
+eval "$RESUME --timeout 0"                        # check once: 0 answered / 2 still open
+
 # Task tracking on reactions — 📌 marks a task, a second reaction holds progress
 slack todo ls                                     # EVERYONE's open tasks (has:)
 slack mytodo ls                                   # only tasks YOU reacted to (hasmy:)
@@ -137,6 +145,37 @@ near-identical to an existing reply — so you can avoid re-posting something al
 and no one has replied since — `⚠ 相手はまだ返信していません…`, suggesting `slack edit`
 on that message instead of piling on a new one. Reply-status based, not time-based; opt
 out with `SLACK_UNREPLIED_WARN=0`.
+
+### ask — a question whose answer is one tap
+
+Choices are posted as 1️⃣..🔟 reactions on the question itself, so answering costs one tap
+on an existing pill. Reactions, not Block Kit buttons: `block_actions` are delivered only
+to a Request URL or a Socket Mode socket, neither of which a short-lived CLI can own
+without losing clicks. A reaction is durable state anyone can read back later.
+
+- **The question must @tag whoever may answer** (`@alice`, or `@here`/`@channel` for the
+  whole channel). Only their reaction/reply is taken as the answer; an unaddressed
+  question is refused (exit 3) rather than let the first bystander decide it. In a 1:1 DM
+  the other party counts automatically.
+- **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
+  reactions and thread replies do (a channel carries unrelated traffic).
+- **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
+  `ask` says so in the thread once and keeps waiting rather than guessing.
+- **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` timed
+  out, `3` transport/config failure. Everything human-facing goes to stderr, so
+  `ANS=$(slack ask … --wait)` is safe.
+
+**Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
+`slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
+and recovers everything it needs by parsing the message, so nothing is stored locally and
+any machine with the link can collect. It reports an already-answered question (the
+✅-stamped body) immediately, and refuses (exit 3) a message that is not an ask.
+`--timeout 0` checks exactly once, which is what a periodic monitor should use: `--wait`
+parks the process, and a parked lane still looks *active* in `ay ls`.
+
+This path is not optional convenience — **a pressed pill is invisible to `slack tail`**,
+which only sees `type: "message"` events and drops `message_changed`. Without `--waitFor`
+an answer can be pressed and nobody ever hears about it.
 
 ### todo — tasks as reactions
 

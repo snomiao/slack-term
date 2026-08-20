@@ -110,6 +110,18 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
 # Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
 # seeds are removed, leaving the chosen pill visible.
+#
+# WITHOUT --wait, stdout is the command that collects the answer later:
+RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
+#   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'
+# Run it whenever you like: it re-reads the question from Slack, so nothing is
+# stored locally and any machine holding the link can collect. Same stdout/exit
+# contract as --wait, plus --timeout 0 = check once (exit 2 while still open),
+# which is what a periodic monitor should use instead of parking on --wait.
+eval "$RESUME --timeout 0" && echo answered
+# A pressed pill is invisible to `slack tail` (it only sees `type: "message"`
+# events and drops `message_changed`), so this is the only way to hear about an
+# answer to a question you did not block on.
 
 # Task tracking on top of reactions — :pushpin: marks a message as a task,
 # a second reaction carries its progress (see "todo" below)
