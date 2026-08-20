@@ -1642,6 +1642,9 @@ interface AskWaitCtx {
   timeout: number;
   cookie?: string;
   shown: string;
+  /** Only so the resume hint printed on timeout names the right identity — the
+   *  ✅ rewrite can be done by the original poster alone. */
+  asBot: boolean;
 }
 
 /** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
@@ -1831,11 +1834,16 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     delay = Math.min(delay * ASK_PHI, ASK_POLL_MAX_MS);
   }
 
+  // A timeout is the moment the caller most needs the collect command: the
+  // question is still standing, and they have just decided not to block on it.
+  // Printing only the permalink here leaves them where `ask` used to: holding a
+  // link with nothing that reads a pressed pill back.
   if (timeout === 0) {
     console.error(`まだ回答がありません: ${shown}`);
   } else {
     console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
     console.error(`  ${shown}`);
+    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
   }
   process.exit(ASK_EXIT_TIMEOUT);
 }
@@ -2030,6 +2038,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     askerBotId: self?.botId ?? "",
     timeout,
     shown,
+    asBot: !!args.asBot,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (cookie) ctx.cookie = cookie;
@@ -2046,7 +2055,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
  *  file to go stale, lose, or disagree with Slack, and any machine holding the
  *  permalink can collect — at the cost of the body being a parseable format
  *  (`askBuildText` ⇄ `askParseMessage`). */
-async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; cookie?: string }): Promise<void> {
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string }): Promise<void> {
   const url = parseSlackPermalink(args.link);
   let channelId: string;
   let ts: string;
@@ -2139,6 +2148,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     askerBotId,
     timeout: args.timeout,
     shown: args.link,
+    asBot: args.asBot,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
@@ -2983,7 +2993,7 @@ async function main(): Promise<void> {
             waitCookie = ck(argv as W);
           }
           try {
-            const a: { link: string; timeout: number; cookie?: string } = { link: waitFor, timeout };
+            const a: { link: string; timeout: number; asBot: boolean; cookie?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
             if (waitCookie) a.cookie = waitCookie;
             await cmdAskWaitFor(waitToken, a);
           } catch (e: unknown) {

@@ -444,6 +444,9 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
       expect(r.stderr).toContain("以内に回答がありませんでした");
+      // The permalink alone would leave the caller where `ask` used to: holding
+      // a link with nothing that reads a pressed pill back.
+      expect(r.stderr).toContain(`slack ask --waitFor='${CHAN}:${QTS}'`);
     } finally {
       await m.stop();
     }
