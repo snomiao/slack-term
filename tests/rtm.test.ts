@@ -14,6 +14,8 @@ class FakeWS {
     Promise.resolve().then(() => this._emit("open", {}));
   }
 
+  hasHandler(type: string): boolean { return (this._handlers.get(type) ?? []).length > 0; }
+
   addEventListener(type: string, handler: (event: unknown) => void): void {
     const arr = this._handlers.get(type) ?? [];
     arr.push(handler);
@@ -33,6 +35,31 @@ class FakeWS {
   }
 
   simulateError(): void { this._emit("error", new Error("ws error")); }
+}
+
+/** Poll a condition instead of sleeping a guessed constant. Returns as soon as
+ *  it holds; gives up after ~2s so a genuine failure still fails the test. */
+async function waitUntil(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 2000; i++) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+/** Wait until the socket exists AND has registered its message handler.
+ *  A single `await Promise.resolve()` used to stand in for this, and it is one
+ *  tick — enough under vitest by luck, not enough under bun, where the awaits
+ *  inside tailRTMImpl land differently. When it was short, `simulateMessage`
+ *  fired into a socket with no listener and the frame was dropped: the test saw
+ *  empty output, and the still-running loop then wrote into the NEXT test's
+ *  stdout spy. Waiting on the observable condition removes the guess. */
+async function waitForWs(getInstance: () => FakeWS | undefined): Promise<FakeWS> {
+  for (let i = 0; i < 500; i++) {
+    const ws = getInstance();
+    if (ws?.hasHandler("message")) return ws;
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  throw new Error("RTM socket never registered a message handler");
 }
 
 // Helper: create a WS class that exposes the latest instance
@@ -190,7 +217,7 @@ describe("tailRTMImpl", () => {
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, seen, new Map(), ac.signal);
 
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -220,7 +247,7 @@ describe("tailRTMImpl", () => {
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, new Set(), new Map(), ac.signal);
 
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       subtype: "message_changed",
@@ -294,7 +321,7 @@ describe("tailRTMImpl", () => {
     });
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, seen, new Map(), ac.signal);
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -323,7 +350,7 @@ describe("tailRTMImpl", () => {
     });
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, new Set(), new Map(), ac.signal);
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -355,7 +382,7 @@ describe("tailRTMImpl", () => {
       { thread: "1700000000.000000" },
       new Set(), new Map(), ac.signal,
     );
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -387,7 +414,7 @@ describe("tailRTMImpl", () => {
       { thread: "1700000000.000000" },
       new Set(), new Map(), ac.signal,
     );
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -421,7 +448,7 @@ describe("tailRTMImpl", () => {
       { watchThread: "1700000000.000000" },
       new Set(), new Map(), ac.signal,
     );
-    await Promise.resolve();
+    await waitForWs(getInstance);
     // A brand new top-level post (no thread_ts) must pass.
     getInstance()!.simulateMessage({
       type: "message",
@@ -430,7 +457,7 @@ describe("tailRTMImpl", () => {
       text: "new top level post",
       ts: "1700000020.000000",
     });
-    await Promise.resolve();
+    await waitForWs(getInstance);
     // A reply to the watched thread must pass and be annotated.
     getInstance()!.simulateMessage({
       type: "message",
@@ -468,7 +495,7 @@ describe("tailRTMImpl", () => {
       { watchThread: "1700000000.000000" },
       new Set(), new Map(), ac.signal,
     );
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -503,7 +530,7 @@ describe("tailRTMImpl", () => {
       { me: true, myUserId: "U00000001" },
       new Set(), new Map(), ac.signal,
     );
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -578,7 +605,7 @@ describe("tailRTMImpl", () => {
     const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, new Set(), new Map(), ac.signal);
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!._emit("message", { data: "not-valid-json!!!" });
     await Promise.resolve();
     ac.abort();
@@ -602,7 +629,7 @@ describe("tailRTMImpl", () => {
     });
 
     const rtmPromise = tailRTMImpl("xoxc-fake", "xoxd-cookie", "C00000001", {}, new Set(), new Map(), ac.signal);
-    await Promise.resolve();
+    await waitForWs(getInstance);
     getInstance()!.simulateMessage({
       type: "message",
       channel: "C00000001",
@@ -610,9 +637,10 @@ describe("tailRTMImpl", () => {
       text: "hello",
       ts: "1700000088.000000",
     });
-    // Wait long enough for the async message handler to complete its HTTP
-    // round-trip to the in-process mock server before we abort and check results.
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait for the error to actually be reported rather than for a fixed 100ms:
+    // the handler makes an HTTP round-trip to the in-process mock first, and a
+    // loaded machine takes longer than any constant chosen here.
+    await waitUntil(() => errMessages.some((m) => m.includes("RTM message error")));
     ac.abort();
     await rtmPromise;
     writeSpy.mockRestore();
