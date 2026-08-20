@@ -1,6 +1,6 @@
 // Unit tests for ts/slack.ts against the mock server using inline fixtures.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 import * as slack from "../ts/slack.ts";
 
@@ -704,9 +704,17 @@ describe("slack.ts", () => {
     const originalBase = process.env.SLACK_API_BASE;
     process.env.SLACK_API_BASE = `${rlMock.baseUrl}/api`;
     try {
-      await expect(slack.listDrafts("xoxc-fake", "xoxd-cookie")).rejects.toSatisfy(
-        (e: unknown) => e instanceof slack.RateLimitError && (e as slack.RateLimitError).retryAfter === 5,
-      );
+      // Caught by hand rather than `.rejects.toSatisfy(...)`: bun's `.rejects`
+      // does not await a `toSatisfy` predicate (it asserts against the pending
+      // promise), which passes under vitest and silently fails here.
+      let caught: unknown;
+      try {
+        await slack.listDrafts("xoxc-fake", "xoxd-cookie");
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(slack.RateLimitError);
+      expect((caught as slack.RateLimitError).retryAfter).toBe(5);
     } finally {
       await rlMock.stop();
       process.env.SLACK_API_BASE = originalBase;

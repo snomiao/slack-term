@@ -3,7 +3,7 @@
 // the safety code — a draft lives in one workspace under one account, and the
 // same draft id means nothing in another.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

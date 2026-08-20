@@ -6,7 +6,7 @@
 // commands quietly searching the same scope) would not fail a single
 // library-level test. These assert the scope each command actually sends.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

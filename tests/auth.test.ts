@@ -1,20 +1,26 @@
 // Tests for ts/auth.ts — uses a mock HTTP server and temp HOME dir.
 
-import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi, mockModule } from "./harness.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, type MockHandle } from "./mock.ts";
 
-// Module-level mocks (hoisted by Vitest before imports).
-vi.mock("../ts/slack-app.ts", () => ({
+// Module-level mocks. Registered before the subject is imported — see
+// `mockModule` in harness.ts for why that ordering is mandatory here.
+// Every export ts/auth.ts imports has to be present: replacing a module drops
+// the exports the factory omits, and bun refuses the import outright when one
+// of them is missing (vitest only fails once the missing one is called).
+mockModule("../ts/slack-app.ts", () => ({
   extractSessions: vi.fn().mockResolvedValue([]),
+  discoverChromeCookies: vi.fn().mockResolvedValue([]),
+  discoverFirefoxCookies: vi.fn().mockResolvedValue([]),
 }));
 
 // Shared readline answer queue — mutated per-test before calling cmdAuthLogin.
 const rlState = { answers: [] as string[], idx: 0 };
 
-vi.mock("node:readline/promises", () => ({
+mockModule("node:readline/promises", () => ({
   createInterface: vi.fn().mockImplementation(() => ({
     question: vi.fn().mockImplementation(() =>
       Promise.resolve(rlState.answers[rlState.idx++] ?? ""),
@@ -23,13 +29,15 @@ vi.mock("node:readline/promises", () => ({
   })),
 }));
 
-// Static imports — works because auth.ts and profiles.ts have no module-level mutable state.
+// Imported AFTER the mocks above, and dynamically: the registration is not
+// hoisted, so a static import here would bind the real modules.
 // Filesystem isolation comes from process.env.HOME = tmpHome (profiles.ts uses process.env.HOME).
-import { cmdAuthLogin, importFromDesktop } from "../ts/auth.ts";
-import { listProfiles, addProfile, useProfile } from "../ts/profiles.ts";
-import { extractSessions } from "../ts/slack-app.ts";
+const { cmdAuthLogin, importFromDesktop } = await import("../ts/auth.ts");
+const { listProfiles, addProfile, useProfile } = await import("../ts/profiles.ts");
+const { extractSessions } = await import("../ts/slack-app.ts");
 
-// vi.mocked is not available in Bun's test runner — use a direct cast instead.
+// A direct cast rather than vi.mocked: the shape is all these tests need, and
+// it reads the same under either runner.
 type MockFn<T extends (...args: unknown[]) => unknown> = T & {
   mockResolvedValueOnce: (v: Awaited<ReturnType<T>> | never) => void;
 };

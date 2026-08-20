@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 import { encodeMentions, encodeMentionsDetailed, resolveMentions, findUntaggedMentions } from "../ts/format.ts";

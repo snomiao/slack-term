@@ -3,7 +3,7 @@
 // the active profile is a bot token, the CLI should fall back to a sibling
 // user-token profile automatically instead of just erroring.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";

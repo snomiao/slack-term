@@ -1,7 +1,7 @@
 // CLI integration tests for send/delete targeting — spawns the TS CLI against
 // the mock server and asserts on the confirm gate and the requests it issues.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

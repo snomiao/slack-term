@@ -3,7 +3,7 @@
 // `askBuildText`. These tests are what stop a wording tweak from quietly making
 // every in-flight question uncollectable.
 
-import { describe, test, expect } from "vitest";
+import { describe, test, expect } from "./harness.ts";
 import { askBuildText, askBuildResolvedText, askParseMessage, ASK_KEYCAPS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {

@@ -3,7 +3,7 @@
 // cookie through resolveChannel/files.getUploadURLExternal/
 // files.completeUploadExternal, not just accept it and drop it.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

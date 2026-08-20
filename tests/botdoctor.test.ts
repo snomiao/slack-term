@@ -1,4 +1,4 @@
-import { describe, test, expect, afterEach } from "vitest";
+import { describe, test, expect, afterEach } from "./harness.ts";
 import { diagnoseBotMessaging, formatDiagnosis, type BotMessagingDiagnosis } from "../ts/botdoctor.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 

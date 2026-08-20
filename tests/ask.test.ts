@@ -3,7 +3,7 @@
 // timeout). Everything runs against the mock Slack server; per the project's
 // QA rule, `ask` is a write command and must never be pointed at real Slack.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

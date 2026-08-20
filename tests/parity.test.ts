@@ -3,7 +3,7 @@
 // Skips Rust cases if the release binary is absent — run
 // `cargo build --release --manifest-path rs/Cargo.toml` first to enable.
 
-import { describe, test, expect, beforeAll, afterAll } from "vitest";
+import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, test, expect, beforeAll, afterAll, vi } from "./harness.ts";
 import { parseSince, pollCycle, cmdTail, resolveThreadTs, _internals } from "../ts/tail.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 

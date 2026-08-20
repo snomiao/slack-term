@@ -1,9 +1,8 @@
-import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, vi, mockModule, beforeEach, afterEach } from "./harness.ts";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { RateLimitError } from "../ts/slack.ts";
 
 // The whole point of these tests is that no write ever reaches a real workspace:
 // every Slack call is a spy, and the call ORDER is what's asserted.
@@ -11,13 +10,14 @@ const calls: string[] = [];
 const behaviour = {
   reactionsGet: [] as { name: string; users: string[] }[],
   addFails: undefined as Error | undefined,
+  authFails: undefined as Error | undefined,
   removeFails: new Set<string>(),
   addRateLimits: 0,
   historyPages: [] as unknown[],
   teamId: "T_ONE",
 };
 
-vi.mock("../ts/slack.ts", () => {
+mockModule("../ts/slack.ts", () => {
   // Keep the mock synchronous: an async factory awaits the real module, and on
   // GitHub's Node 24 worker that dynamic import can deadlock when an earlier
   // test file in the same worker already imported ts/slack.ts. Re-declaring the
@@ -34,6 +34,7 @@ vi.mock("../ts/slack.ts", () => {
     RateLimitError,
     authTest: vi.fn(async () => {
       calls.push("auth.test");
+      if (behaviour.authFails) throw behaviour.authFails;
       return { team: "t", teamId: behaviour.teamId, url: "", user: "me", userId: "U_ME" };
     }),
     reactionsGet: vi.fn(async () => {
@@ -64,6 +65,7 @@ vi.mock("../ts/slack.ts", () => {
   };
 });
 
+const { RateLimitError } = await import("../ts/slack.ts");
 const {
   DEFAULT_TODO_CONFIG,
   userHandleCached,
@@ -457,15 +459,17 @@ describe("cache", () => {
 
   test("cacheScope returns \"\" when auth.test fails, so lookups run uncached", async () => {
     cacheMod.setCacheEnabled(true);
-    const slack = await import("../ts/slack.ts");
-    const spy = vi.spyOn(slack, "authTest").mockRejectedValue(new Error("invalid_auth"));
+    // Driven through the factory's own state rather than a spy on the mocked
+    // module: bun cannot restore a spy installed on a mocked module's namespace,
+    // and the un-restored stub then returns undefined for every later test.
+    behaviour.authFails = new Error("invalid_auth");
     resetSelfIdForTests();
     let resolves = 0;
     const resolve = async () => { resolves++; return "C1"; };
     expect(await resolveChannelCached("tok", "#general", resolve)).toBe("C1");
     expect(await resolveChannelCached("tok", "#general", resolve)).toBe("C1");
     expect(resolves).toBe(2); // nothing was cached
-    spy.mockRestore();
+    behaviour.authFails = undefined;
   });
 
   test("userHandleCached resolves once, then serves from cache", async () => {
