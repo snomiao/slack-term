@@ -1016,3 +1016,44 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     }
   });
 });
+
+// An empty body is never a meaningful send. `ask` already refused one; `send`
+// and `schedule send` did not, so an empty draft staged a confirm code and
+// posting it produced a blank message. Verification cannot catch this after
+// the fact: an empty publish reads back as an exact match, because empty is
+// precisely what was published. Refusing at the entry point is the mechanism.
+//
+// The discriminating assertion is the ABSENCE of a --code= line: it proves the
+// command stopped before the confirm gate rather than merely printing a
+// warning alongside a still-stageable send. The complementary case — a
+// non-empty body reaching the gate — is covered above ("gate shows THREAD
+// REPLY"), so it is not restated here.
+describe("send: empty body is refused before the confirm gate", () => {
+  const blank: Array<[string, string]> = [
+    ["empty string", ""],
+    ["spaces only", "   "],
+    ["newlines only", "\n\n"],
+    ["tab only", "\t"],
+  ];
+
+  for (const [label, body] of blank) {
+    test(`send refuses ${label}`, async () => {
+      const r = await run(["send", "#channel-01", body]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("message is empty");
+      expect(r.stderr).not.toMatch(/--code=/);
+      expect(r.stdout).not.toMatch(/--code=/);
+    });
+  }
+
+  // `schedule send` is the worse case: it fires later and unattended, so a
+  // blank message posts with nobody watching. It is a separate code path and
+  // was separately unguarded, so it needs its own assertion — mutating one
+  // guard leaves the other's tests green.
+  test("schedule send refuses an empty body", async () => {
+    const r = await run(["schedule", "send", "#channel-01", "", "--at", "2026-09-01T09:00:00Z"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("message is empty");
+    expect(r.stderr).not.toMatch(/--code=/);
+  });
+});
