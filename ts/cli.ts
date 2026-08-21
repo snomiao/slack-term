@@ -2880,6 +2880,15 @@ async function main(): Promise<void> {
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." }),
       async (argv) => {
+        // An empty body is never a meaningful send. `ask` already refuses one
+        // ("Error: question is empty"); `send` did not, so an empty draft
+        // staged a confirm code and posting it produced a blank message.
+        // Verification cannot catch this: an empty publish reads back as an
+        // exact match, so refusing here is the only mechanism.
+        if (!String(argv.message ?? "").trim()) {
+          console.error("Error: message is empty");
+          process.exit(1);
+        }
         const args: SendArgs = { target: argv.target!, message: argv.message! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
@@ -3100,6 +3109,15 @@ async function main(): Promise<void> {
             .option("channel-id", { type: "string", describe: "Raw channel ID" })
             .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
           async (argv) => {
+            // An empty body is never a meaningful send. `ask` already refuses one
+            // ("Error: question is empty"); `send` did not, so an empty draft
+            // staged a confirm code and posting it produced a blank message.
+            // Verification cannot catch this: an empty publish reads back as an
+            // exact match, so refusing here is the only mechanism.
+            if (!String(argv.message ?? "").trim()) {
+              console.error("Error: message is empty");
+              process.exit(1);
+            }
             const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
             if (argv.code) args.code = argv.code;
             if (argv["channel-id"]) args.channelId = argv["channel-id"];
