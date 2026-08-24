@@ -310,12 +310,15 @@ export async function send(
   threadTs?: string,
   replyBroadcast?: boolean,
   cookie?: string,
+  // Post the text as-is, with no `blocks`. Slack REWRITES the stored `text`
+  // when blocks are attached — newlines collapse to spaces and emoji become
+  // `:one:` — so a message whose body has to be read back verbatim (`ask`,
+  // `poll`) must not carry them. Verified against a real workspace 2026-08-20.
+  plain?: boolean,
 ): Promise<string> {
-  const body: Record<string, Json> = {
-    channel,
-    text,
-    blocks: [{ type: "markdown", text }],
-  };
+  const body: Record<string, Json> = plain
+    ? { channel, text }
+    : { channel, text, blocks: [{ type: "markdown", text }] };
   if (threadTs !== undefined) body.thread_ts = threadTs;
   // "Also send to channel": broadcast a threaded reply back to the channel.
   // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
@@ -384,13 +387,13 @@ export async function editMessage(
   ts: string,
   text: string,
   cookie?: string,
+  /** As in `send`: no blocks, so the stored text survives verbatim. */
+  plain?: boolean,
 ): Promise<string> {
-  const resp = (await post(token, "chat.update", {
-    channel,
-    ts,
-    text,
-    blocks: [{ type: "markdown", text }],
-  }, cookie)) as { ts?: string };
+  const resp = (await post(token, "chat.update", plain
+    ? { channel, ts, text }
+    : { channel, ts, text, blocks: [{ type: "markdown", text }] },
+  cookie)) as { ts?: string };
   return resp.ts ?? ts;
 }
 
