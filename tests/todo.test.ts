@@ -136,7 +136,7 @@ describe("buildTodoQuery", () => {
     const q = buildTodoQuery("stuck", cfg);
     expect(q).toBe(
       "hasmy::pushpin: -hasmy::white_check_mark: -hasmy::no_entry_sign: " +
-      "(hasmy::exclamation: OR hasmy::question: OR hasmy::speech_balloon: OR hasmy::lock:)",
+      "(hasmy::exclamation: OR hasmy::thinking_face: OR hasmy::speech_balloon: OR hasmy::lock:)",
     );
     expect(q).toContain("hasmy::speech_balloon:");
   });

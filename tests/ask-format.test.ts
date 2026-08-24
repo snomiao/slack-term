@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, ASK_KEYCAPS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -125,5 +125,66 @@ describe("ask rejects near-misses", () => {
     expect(parsed.kind).toBe("open");
     if (parsed.kind !== "open") return;
     expect(parsed.reactable).toEqual([""]);
+  });
+});
+
+// `ask` refuses to guess between two pressed pills, and says so IN THE QUESTION
+// rather than in a thread reply — the reply would be a permanent record of a
+// situation that gets fixed seconds later, and `--waitFor` reruns would stack
+// copies of it. The question must still parse with the notice attached, or the
+// next collection pass could not read it back at all.
+describe("ask carries the invalid-ballot notice without losing the question", () => {
+  const cases: [string, string[], string[], boolean][] = [
+    ["with choices", ["A", "B"], [], true],
+    ["with overflow", Array.from({ length: 10 }, (_, i) => `c${i + 1}`), ["c11"], false],
+  ];
+  for (const [name, reactable, overflow, threadOnly] of cases) {
+    test(name, () => {
+      const base = askBuildText("q", "本文", reactable, overflow, threadOnly);
+      const noticed = applyInvalidNotice(base, ["U00000001", "U00000002"]);
+      expect(readInvalidNotice(noticed)).toEqual(["U00000001", "U00000002"]);
+      const parsed = askParseMessage(noticed);
+      expect(parsed.kind).toBe("open");
+      if (parsed.kind !== "open") return;
+      expect(parsed.question).toBe("q");
+      expect(parsed.reactable).toEqual(reactable);
+      expect(parsed.overflow).toEqual(overflow);
+      expect(parsed.threadOnly).toBe(threadOnly);
+      // And it comes back off cleanly once the extra reaction is removed.
+      expect(applyInvalidNotice(noticed, [])).toBe(base);
+    });
+  }
+});
+
+// Format identity lives in the MARKER, not in the Japanese instruction line.
+// That is what makes the copy translatable: reword the instruction in any
+// language and the message is still recognisably an `ask`. The old instruction
+// strings stay matchable so questions posted before the marker existed remain
+// collectable — deleting that fallback would strand them.
+describe("ask identity is language-independent", () => {
+  test("the marker leads the body and the question still round-trips", () => {
+    const text = askBuildText("q", "", ["A", "B"], [], true);
+    expect(text.startsWith(":question: *q*")).toBe(true);
+    const parsed = askParseMessage(text);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.question).toBe("q");
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("a pre-marker body still parses (old questions stay collectable)", () => {
+    // Exactly what `ask` used to post: no marker, identified by the trailing
+    // instruction alone.
+    const legacy = askBuildText("q", "", ["A", "B"], [], true).replace(":question: ", "");
+    const parsed = askParseMessage(legacy);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.question).toBe("q");
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("resolved wins over open, so a settled question is never re-polled", () => {
+    const resolved = askBuildResolvedText("q", { answer: "はい", how: "返信" }, "");
+    expect(askParseMessage(resolved).kind).toBe("resolved");
   });
 });
