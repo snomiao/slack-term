@@ -308,6 +308,21 @@ describe("slack.ts", () => {
     expect(id).toBe("C12345678");
   });
 
+  // `#C12345678` — an ID given the `#` that every other target form takes. The
+  // name lookup would find no channel CALLED that and report "channel not
+  // found", which points at the wrong problem: the channel is there, only the
+  // `#` does not belong. Reported against a real workspace 2026-08-20.
+  test("resolveChannel accepts a channel ID that was given a # prefix", async () => {
+    expect(await slack.resolveChannel(token, "#C12345678")).toBe("C12345678");
+    expect(await slack.resolveChannel(token, "#D12345678")).toBe("D12345678");
+  });
+
+  test("a # name that merely looks id-ish is still resolved as a name", async () => {
+    // Lowercase and short names must NOT be swallowed by the ID branch —
+    // channel names are the common case and take priority.
+    await expect(slack.resolveChannel(token, "#c123")).rejects.toThrow();
+  });
+
   test("resolveChannel parses Slack permalink", async () => {
     const id = await slack.resolveChannel(
       token,

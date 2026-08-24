@@ -570,15 +570,27 @@ function parseSlackUrl(s: string): string | undefined {
   return parseSlackPermalink(s)?.channel;
 }
 
+/** A Slack conversation ID: `C…` (channel), `D…` (DM), `G…` (group). Length is
+ *  not fixed across workspaces, hence the range rather than an exact count. */
+function isChannelId(s: string): boolean {
+  return /^[CDG][A-Z0-9]{8,}$/.test(s);
+}
+
 export async function resolveChannel(token: string, ref: string, cookie?: string): Promise<string> {
   // Accept Slack permalinks directly
   const fromUrl = parseSlackUrl(ref);
   if (fromUrl) return fromUrl;
   // Accept raw IDs (C..., D..., G...) as-is
   if (!ref.startsWith("@") && !ref.startsWith("#")) {
-    if (/^[A-Za-z0-9]{9,}$/.test(ref)) return ref;
+    if (isChannelId(ref)) return ref;
     throw new Error(`Target must start with # or @ (or be a Slack URL/ID), got: ${ref}`);
   }
+  // `#C0123456789` — an ID that was given the `#` every other target form takes.
+  // Slack has no channel NAMED that, so the name lookup below would walk every
+  // conversation and end in "channel not found", pointing at the wrong problem:
+  // the channel exists, only the `#` does not belong. Accept it instead of
+  // sending people to look for a channel that was never missing.
+  if (ref.startsWith("#") && isChannelId(ref.slice(1))) return ref.slice(1);
   const isIm = ref.startsWith("@");
   const rawName = ref.slice(1);
   const nameNorm = normName(rawName);
