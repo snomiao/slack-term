@@ -12,9 +12,17 @@
 //
 //   reason flags (any number, independent of progress)
 //     alert             :exclamation:
-//     needs-discussion  :question:
+//     needs-discussion  :thinking_face:
 //     waiting           :speech_balloon:   ball is with the other party IN this thread
 //     blocked           :lock:             stuck OUTSIDE this conversation
+//
+// needs-discussion moved off :question: (2026-08-24) so `ask` can claim it as
+// its marker. `has:` matches one emoji exactly, so sharing it would have made
+// every `ask` question show up in `todo ls --state stuck` and vice versa.
+// The cost is real and accepted: :question: reactions already sitting on old
+// messages no longer register as needs-discussion — reactions cannot be
+// migrated retroactively. Anyone relying on the old emoji can put it back via
+// ~/.config/slack-cli/todo.json, which overrides every name here.
 //
 // waiting vs blocked: "whose ball is it" has only three answers, and `pending`
 // already means "mine". So the remaining two are a flag each — waiting = I've
@@ -76,7 +84,7 @@ export const DEFAULT_TODO_CONFIG: TodoConfig = {
   },
   flags: {
     alert: "exclamation",
-    "needs-discussion": "question",
+    "needs-discussion": "thinking_face",
     waiting: "speech_balloon",
     blocked: "lock",
   },
