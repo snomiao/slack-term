@@ -959,7 +959,12 @@ function parseTargetThread(s: string, permalinkThreads = true): { ref: string; t
  *  name via conversations.info (fail-soft: a raw ID is still unambiguous). */
 async function destLabel(token: string, channelId: string, ref: string, cookie?: string): Promise<string> {
   let name = ref;
-  if (!ref.startsWith("#") && !ref.startsWith("@")) {
+  // `#C0123…` is an ID wearing a `#`, not a channel name — resolveChannel
+  // accepts it, so the gate has to look it up like any other ID. Trusting the
+  // `#` here would print "#D00000001" for a DM, which tells the reader
+  // nothing about who is on the other end.
+  const refIsId = /^#?[CDG][A-Z0-9]{8,}$/.test(ref);
+  if (refIsId || (!ref.startsWith("#") && !ref.startsWith("@"))) {
     try {
       const info = asRecord((await conversationInfo(token, channelId, cookie)) as Json);
       const ch = asRecord(info.channel);
