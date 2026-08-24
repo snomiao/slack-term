@@ -15,12 +15,26 @@ import { cmdTail } from "./tail.ts";
 
 import {
   ASK_KEYCAPS,
+  ASK_MARKER,
+  ASK_RESOLVED_MARKER,
   ASK_MAX_REACTION_CHOICES,
   askBuildText,
   askBuildResolvedText,
   askParseMessage,
+  applyInvalidNotice,
+  readInvalidNotice,
   type AskFound,
 } from "./ask.ts";
+import {
+  POLL_KEYCAPS,
+  POLL_MARKER,
+  POLL_CLOSED_MARKER,
+  POLL_MAX_CHOICES,
+  pollBuildText,
+  pollBuildClosedText,
+  pollParseMessage,
+  pollTally,
+} from "./poll.ts";
 import {
   authTest,
   authScopes,
@@ -35,11 +49,13 @@ import {
   deleteMessage,
   reactionAdd,
   reactionRemove,
+  reactionsGet,
   filesInfo,
   filesList,
   listRecords,
   history,
   listConversations,
+  listConversationMembers,
   listDrafts,
   listUsers,
   userInfo,
@@ -909,9 +925,23 @@ function splitRefTs(s: string): { ref: string; ts?: string } {
  *  Accepts: `#chan:1700000000.000100`, `@user:ts`, `RAWID:ts`, Slack permalink, or plain ref.
  *  A message permalink targets that message's thread — `?thread_ts=` (the parent) wins when
  *  present, otherwise the message's own ts. A channel-only permalink stays top-level. */
-function parseTargetThread(s: string): { ref: string; threadTs?: string } {
+/** Split a target into "where" and "which thread".
+ *
+ *  `permalinkThreads` is what separates `send` from `ask`/`poll`. For `send`,
+ *  pasting a permalink means "reply to THAT message" — the message you pasted is
+ *  the subject. For `ask`/`poll` it does not: the permalink is how you name a DM
+ *  or channel you have no handle for, and a question is a new thing being
+ *  raised, not a comment on the message that happened to be at hand. Inheriting
+ *  the thread there buries a question in an unrelated conversation, where the
+ *  people it is addressed to will not see it.
+ *
+ *  Threading `ask`/`poll` deliberately is still possible — with the explicit
+ *  `#chan:<ts>` form, which says so rather than depending on the shape of what
+ *  you pasted. */
+function parseTargetThread(s: string, permalinkThreads = true): { ref: string; threadTs?: string } {
   const url = parseSlackPermalink(s);
   if (url) {
+    if (!permalinkThreads) return { ref: url.channel };
     const threadTs = url.threadTs ?? url.ts;
     return threadTs ? { ref: url.channel, threadTs } : { ref: url.channel };
   }
@@ -1680,27 +1710,44 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
 
   // Two reactions means two answers, and this command exists for decisions that
   // are expensive to get wrong — so an ambiguous state is never resolved by
-  // guessing. Say so in the thread and keep waiting; removing one reaction (or
+  // guessing. Say so IN THE QUESTION and keep waiting; removing one reaction (or
   // replying with text) settles it on the next poll.
-  let ambiguityNotified = false;
+
+  /** Bring the question's invalid-ballot line in line with `offenders`. Skips
+   *  the API call when nothing changed, which is what makes this safe to run on
+   *  every poll tick rather than once per process. */
+  async function noteInvalid(msg: Record<string, Json>, offenders: string[]): Promise<void> {
+    const text = typeof msg.text === "string" ? msg.text : "";
+    if (!text) return;
+    const next = applyInvalidNotice(text, offenders);
+    if (next === text) return;
+    try {
+      await editMessage(token, channelId, ts, next, cookie, true);
+    } catch (e: unknown) {
+      // Cosmetic: the poller still refuses to guess, and stderr already said so.
+      console.error(`  (質問文に注意書きを入れられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
 
   async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
     const picks = humanChoices(msg);
+    // Nothing ambiguous any more — take the notice back down if one is up.
+    if (picks.length <= 1 && readInvalidNotice(typeof msg.text === "string" ? msg.text : "").length) {
+      await noteInvalid(msg, []);
+    }
     if (!picks.length) return null;
     if (picks.length === 1) {
       const { index, users } = picks[0]!;
       return { answer: reactable[index]!, how: `リアクション ${ASK_KEYCAPS[index]!.glyph}`, who: users[0]! };
     }
     const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
-    if (!ambiguityNotified) {
-      ambiguityNotified = true;
-      console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
-      try {
-        await slackSend(token, channelId, `${glyphs} が同時に選ばれています。回答を確定できないので、1 つだけ残るようにリアクションを外すか、このスレッドで返信してください。`, ts, false, cookie);
-      } catch (e: unknown) {
-        console.error(`  (確認の返信を送れませんでした: ${e instanceof Error ? e.message : String(e)})`);
-      }
-    }
+    console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
+    // Whoever is on more than one pill. Named in the question itself so the
+    // person who has to fix it is the person who sees it — and rewritten from
+    // the current state each pass, so reruns cannot stack up notices and the
+    // line clears itself once a reaction is taken back.
+    const offenders = [...new Set(picks.flatMap((p) => p.users))].sort();
+    await noteInvalid(msg, offenders);
     return null;
   }
 
@@ -1795,7 +1842,17 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // and must keep getting the answer body alone.
     if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
     try {
-      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who), cookie);
+      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who), cookie, true);
+      // Swap the marker for the resolved one so search reflects reality:
+      // `has::question:` should list what still needs answering, not everything
+      // ever asked. Removal last — a crash between the two leaves the question
+      // findable under BOTH, which is recoverable; the reverse loses it.
+      try {
+        await reactionAdd(token, channelId, ts, ASK_RESOLVED_MARKER, cookie);
+        await reactionRemove(token, channelId, ts, ASK_MARKER, cookie);
+      } catch {
+        // Cosmetic: the ✅ in the body is what actually marks it resolved.
+      }
     } catch (e: unknown) {
       // The edit is bookkeeping, not the answer. It fails whenever the resuming
       // token is not the one that posted (Slack lets only the author update), and
@@ -1856,7 +1913,7 @@ function askResumeCommand(shown: string, asBot: boolean): string {
 }
 
 async function cmdAsk(token: string, args: AskArgs): Promise<void> {
-  const { ref, threadTs } = parseTargetThread(args.target);
+  const { ref, threadTs } = parseTargetThread(args.target, false);
   const cookie = args.cookie;
   const getSelf = selfLookup(token, cookie);
 
@@ -1989,7 +2046,26 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     ]);
   }
 
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie);
+  // `plain`: with blocks attached Slack rewrites the stored text (newlines to
+  // spaces, emoji to `:one:`) and `--waitFor` can no longer read the question
+  // back out of it — which is the entire recovery path.
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+
+  // The marker goes on FIRST so it sits left of the pills, and as a reaction so
+  // `has::question:` lists every question the way `has::pushpin:` lists every
+  // todo. Body text cannot do that job: Slack's index splits on punctuation, so
+  // a `:question:` written in the text is indexed as the word "question" and
+  // matches unrelated messages (measured). Only a real reaction is searchable.
+  //
+  // NOTE the colons: the modifier's argument is itself colon-wrapped, and the
+  // bare `has:question` form does NOT error — it silently degrades to a
+  // full-text search and returns plausible-looking counts. See ts/todo.ts.
+  try {
+    await reactionAdd(token, channelId, ts, ASK_MARKER, cookie);
+  } catch (e: unknown) {
+    // Cosmetic + searchability, not correctness: the body still identifies it.
+    console.error(`  (marker ${ASK_MARKER} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+  }
 
   // Seeded one at a time and in order: Slack keeps reactions in the order they
   // were added, so sequential adds are what make the pills read 1,2,3 rather
@@ -2153,6 +2229,305 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
   await askWaitForAnswer(token, ctx);
+}
+
+// --- poll ---
+//
+// `ask` decides something: the FIRST answer wins and settles the question.
+// `poll` measures something: every pill is counted and nobody's press is
+// binding. That difference in termination is why this is its own command and
+// not a flag on `ask` — the two cannot share a "when is this done?".
+//
+// Same seeded-pill trick, for the same reason: answering costs one tap on a
+// reaction that is already there, not a trip through the emoji picker.
+//
+// THE POSTER IS NEVER COUNTED. Their reaction sits on every choice because they
+// seeded it, so it cannot be told apart from a vote — there is no flag to opt
+// back in, because there is nothing coherent to opt into. Someone who wants
+// their own preference on the record posts `--as-bot` and votes as themselves,
+// or just says it in the thread.
+//
+// Exit codes: 0 ok, 3 transport/config failure (no timeout path — `poll` never
+// blocks; `--results` is a single read).
+
+const POLL_EXIT_ERROR = 3;
+
+interface PollArgs {
+  target: string;
+  question: string;
+  choices: string[];
+  body?: string;
+  multi?: boolean;
+  until?: string;
+  code?: string;
+  channelId?: string;
+  userId?: string;
+  asBot?: boolean;
+  cookie?: string;
+  mentionToken?: string;
+  mentionCookie?: string;
+}
+
+/** The `slack poll --results=…` line handed back after posting. Printed as a
+ *  runnable command rather than a bare permalink for the same reason `ask`
+ *  does it: nothing else reads pressed pills back, and a link does not tell you
+ *  how to count them. */
+function pollResultsCommand(shown: string): string {
+  // No `--as-bot` here even for a poll the bot posted: counting is a READ, and
+  // the user token is the one that carries `reactions:read`. `--close` is the
+  // half that needs the bot back (only the poster may rewrite the message), and
+  // it takes care of that split itself.
+  return `slack poll --results='${shown}'`;
+}
+
+async function cmdPoll(token: string, args: PollArgs): Promise<void> {
+  const { ref, threadTs } = parseTargetThread(args.target, false);
+  const cookie = args.cookie;
+  const getSelf = selfLookup(token, cookie);
+
+  let channelId: string;
+  if (args.channelId) channelId = args.channelId;
+  else if (args.userId) channelId = await openDm(token, args.userId, cookie);
+  else channelId = await resolveChannel(token, ref, cookie);
+
+  const selfId = (await getSelf())?.userId ?? "";
+  const counterpart = await imCounterpart(token, channelId, cookie);
+
+  // Same silent-delivery footgun as `send`/`ask`: Slack never notifies you about
+  // your own message, so a poll posted into your own DM reaches nobody.
+  if (!args.asBot && !!selfId && counterpart === selfId) {
+    console.error(
+      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
+      `  To reach yourself with a notification, post as the bot:  slack poll '${args.target}' '...' --as-bot`,
+    );
+  }
+
+  // No addressee gate here, deliberately — this is where `poll` and `ask` part.
+  // `ask` refuses an unaddressed question because the first answer DECIDES
+  // something, so it matters whose it is. A poll reports a distribution: an
+  // extra voter changes the numbers, never the outcome's legitimacy. Tags are
+  // still encoded so a poll CAN be pointed at people; they just are not required.
+  const qEnc = askEncodeBroadcasts(args.question);
+  const bEnc = askEncodeBroadcasts(args.body ?? "");
+  const mentionToken = args.mentionToken ?? token;
+  const qRep = await encodeMentionsDetailed(mentionToken, qEnc.text, channelId, args.mentionCookie);
+  const bRep = bEnc.text
+    ? await encodeMentionsDetailed(mentionToken, bEnc.text, channelId, args.mentionCookie)
+    : { text: "", resolved: [], unresolved: [] } as MentionEncodeResult;
+  const question = qRep.text;
+  const body = bRep.text;
+  for (const line of mentionWarnings([...qRep.unresolved, ...bRep.unresolved])) {
+    console.error(`⚠ ${stripTerminalControls(line)}`);
+  }
+
+  const choices = args.choices;
+  const multi = !!args.multi;
+  const until = args.until ?? "";
+  const message = pollBuildText(question, body, choices, { multi, deadline: until });
+
+  // Preview the destination's last message, exactly as `send`/`ask` do. Fail-soft.
+  let lastText = "";
+  let lastUser = "?";
+  try {
+    const ctx = (await history(token, channelId, 1, undefined, undefined, cookie)) as Record<string, Json>;
+    const lastMsg = asArray(ctx.messages).map(asRecord).filter((m) => m.subtype === undefined || m.subtype === null)[0];
+    lastText = typeof lastMsg?.text === "string" ? lastMsg.text : "";
+    lastUser = typeof lastMsg?.user === "string"
+      ? await userName(token, lastMsg.user, cookie)
+      : typeof lastMsg?.username === "string" ? lastMsg.username : "?";
+  } catch {
+    // best-effort preview only
+  }
+
+  const self = await getSelf();
+  const code = safetyCode(channelId, threadTs ?? "", lastText, message, self?.userId ?? "");
+  if (args.code !== code) {
+    const dest = await destLabel(token, channelId, ref, cookie);
+    requireCode(args.code, code, [
+      `--- Last message in channel ------------------`,
+      `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+      `--- Ballot (seeded as reactions) -------------`,
+      ...choices.map((s, i) => `  ${POLL_KEYCAPS[i]!.glyph} ${s}`),
+      `--- Posting ----------------------------------`,
+      fromLine(self, { asBot: args.asBot }),
+      `  → ${dest}${threadTs ? " — THREAD REPLY" : " — NEW top-level message"}`,
+      `  Question: ${question}`,
+      `  Rule:     ${multi ? "1 人 何票でも (--multi)" : "1 人 1 票"}${until ? ` — 締切 ${until}` : ""}`,
+      // Said out loud at the gate: this is the surprising half of the command.
+      `  Note:     あなた自身の票は数えません (ピルはあなたが付けた種なので区別できません)`,
+      `--------------------------------────────────`,
+    ]);
+  }
+
+  // `plain`: no blocks, or Slack rewrites the stored text and the ballot
+  // stops parsing on the way back.
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+
+  // Marker first, for the same reason as `ask`: it is what makes
+  // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
+  // already ignored by the tally (it counts keycap names only), so this costs
+  // the ballot nothing.
+  try {
+    await reactionAdd(token, channelId, ts, POLL_MARKER, cookie);
+  } catch (e: unknown) {
+    console.error(`  (marker ${POLL_MARKER} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+  }
+
+  // Sequential and in order: Slack keeps reactions in the order they were added,
+  // so this is what makes the pills read 1,2,3 rather than shuffled. Parallel
+  // adds are not an optimization here, they are a bug.
+  for (let i = 0; i < choices.length; i++) {
+    try {
+      await reactionAdd(token, channelId, ts, POLL_KEYCAPS[i]!.name, cookie);
+    } catch (e: unknown) {
+      // A missing seed costs a voter a trip to the emoji picker; it does not
+      // invalidate a poll that is already posted.
+      console.error(`  (リアクション ${POLL_KEYCAPS[i]!.name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+
+  let permalink = "";
+  try {
+    permalink = await getPermalink(token, channelId, ts, cookie);
+  } catch {
+    // fail-soft, same as send
+  }
+  const shown = permalink || `${channelId}:${ts}`;
+  console.error(`✓ Posted: ${shown}`);
+  console.log(pollResultsCommand(shown));
+  console.error(`  締め切る:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
+}
+
+/** Locate + read back one posted poll. Shared by `--results` and `--close`,
+ *  which differ only in whether they write the tally back into the message. */
+async function pollFetch(token: string, link: string, cookie?: string): Promise<{ channelId: string; ts: string; msg: Record<string, Json> }> {
+  const url = parseSlackPermalink(link);
+  let channelId: string;
+  let ts: string;
+  let threadTs: string | undefined;
+  if (url?.ts) {
+    channelId = url.channel;
+    ts = url.ts;
+    threadTs = url.threadTs && url.threadTs !== url.ts ? url.threadTs : undefined;
+  } else {
+    // `C…:1700000000.000100` — the fallback printed when the permalink lookup
+    // itself failed, so it has to be readable too.
+    const m = link.match(/^([A-Za-z0-9]+):(\d{10}\.\d{6})$/);
+    if (!m) {
+      console.error(
+        `Error: --results/--close needs the permalink of a poll (or 'C…:1700000000.000100').\n` +
+        `  Got: ${stripTerminalControls(link)}`,
+      );
+      process.exit(POLL_EXIT_ERROR);
+    }
+    channelId = m[1]!;
+    ts = m[2]!;
+  }
+
+  // A poll posted into a thread is not in history at all.
+  let msg: Record<string, Json> | undefined;
+  if (threadTs) {
+    const rep = asRecord((await replies(token, channelId, threadTs, 100, cookie)) as Json);
+    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
+  } else {
+    const hist = asRecord((await history(token, channelId, 1, ts, undefined, cookie, true)) as Json);
+    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
+  }
+  if (!msg) {
+    console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(link)}`);
+    process.exit(POLL_EXIT_ERROR);
+  }
+  return { channelId, ts, msg };
+}
+
+/** Render a tally. Bars are proportional to the leader, not to the total, so a
+ *  three-way split still reads as three different lengths. */
+function pollFormatTallies(tallies: { choice: string; count: number }[]): string[] {
+  const max = Math.max(1, ...tallies.map((t) => t.count));
+  return tallies.map((t, i) =>
+    `${POLL_KEYCAPS[i]!.glyph} ${String(t.count).padStart(3)}  ${"█".repeat(Math.round((t.count / max) * 20))}${t.count ? " " : ""}${t.choice}`,
+  );
+}
+
+/** `slack poll --results <permalink>` — count the pills. READ-ONLY: it posts
+ *  nothing and edits nothing, so it is safe to run on a schedule, and it is the
+ *  main path (`--close` is the one-time end of a poll, not how you check it). */
+async function cmdPollResults(token: string, args: { link: string; close?: boolean; cookie?: string; names?: boolean; writeToken?: string; writeCookie?: string; noNotify?: boolean }): Promise<void> {
+  const { channelId, ts, msg } = await pollFetch(token, args.link, args.cookie);
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const parsed = pollParseMessage(text);
+  if (parsed.kind === "other") {
+    console.error(
+      `Error: これは \`slack poll\` の投票ではありません (票の数え方が分かりません)。\n` +
+      `  ${stripTerminalControls(args.link)}`,
+    );
+    process.exit(POLL_EXIT_ERROR);
+  }
+  if (parsed.kind === "closed") {
+    // Already closed: report what was RECORDED, never a fresh count. A pill
+    // pressed after closing would otherwise silently change a settled result.
+    console.error(`✓ 投票終了: ${stripTerminalControls(parsed.question)}`);
+    for (const line of pollFormatTallies(parsed.tallies)) console.log(line);
+    return;
+  }
+
+  // The seeder is whoever POSTED — not whoever is running this command. On a
+  // later run the two differ (and under --as-bot they always do), so taking the
+  // current identity would count the seeds as votes.
+  const exclude = new Set<string>();
+  if (typeof msg.user === "string" && msg.user) exclude.add(msg.user);
+  const reactions = await reactionsGet(token, channelId, ts, args.cookie);
+  const counted = pollTally(parsed.choices, reactions, exclude, parsed.multi);
+
+  console.error(`${stripTerminalControls(parsed.question)}${parsed.deadline ? ` (締切 ${parsed.deadline})` : ""}`);
+  for (const line of pollFormatTallies(counted.tallies)) console.log(line);
+  const total = counted.tallies.reduce((n, t) => n + t.count, 0);
+  console.error(`  計 ${total} 票${parsed.multi ? " (複数選択可)" : ""}`);
+  if (args.names) {
+    for (let i = 0; i < counted.voters.length; i++) {
+      if (!counted.voters[i]!.length) continue;
+      const names = await Promise.all(counted.voters[i]!.map((u) => userName(token, u, args.cookie)));
+      console.error(`  ${POLL_KEYCAPS[i]!.glyph} ${names.map((n) => `@${stripTerminalControls(n)}`).join(", ")}`);
+    }
+  }
+  // Same notice as `ask`, for the same reason: the voter is the one who has to
+  // fix it, and the voter is in Slack. Idempotent — rebuilt from this count, so
+  // running `--results` on a schedule neither stacks notices up nor leaves a
+  // stale one behind once the extra pill is taken back.
+  const wanted = parsed.multi ? [] : counted.ambiguous;
+  const nextText = applyInvalidNotice(text, wanted);
+  if (nextText !== text && !args.noNotify) {
+    try {
+      await editMessage(args.writeToken ?? token, channelId, ts, nextText, args.writeToken ? args.writeCookie : args.cookie, true);
+    } catch (e: unknown) {
+      console.error(
+        `  (投票文に注意書きを入れられませんでした: ${e instanceof Error ? e.message : String(e)})\n` +
+        `   メッセージを書き換えられるのは投稿者だけです — bot が投稿した投票なら --as-bot を付けてください。`,
+      );
+    }
+  }
+  if (counted.ambiguous.length) {
+    // Not counted for anything, and said so out loud: a reaction carries no
+    // timestamp anywhere in the Slack API, so "the latest one" does not exist.
+    const names = await Promise.all(counted.ambiguous.map((u) => userName(token, u, args.cookie)));
+    console.error(`⚠ 1 人 1 票なのに複数押している人がいます (無効票): ${names.map((n) => `@${stripTerminalControls(n)}`).join(", ")}`);
+  }
+
+  if (!args.close) return;
+
+  // Freeze it. The edit is what makes the result final — after this the body no
+  // longer parses as an open poll, so a late pill changes nothing.
+  // Counting and closing can need DIFFERENT tokens: `reactions.get` lives on
+  // the user token, but only the poster may rewrite the message — and for a
+  // `--as-bot` poll the poster is the bot. Same split as `ask`'s mention token.
+  await editMessage(args.writeToken ?? token, channelId, ts, pollBuildClosedText(parsed.question, counted.tallies), args.writeToken ? args.writeCookie : args.cookie, true);
+  try {
+    await reactionAdd(args.writeToken ?? token, channelId, ts, POLL_CLOSED_MARKER, args.writeToken ? args.writeCookie : args.cookie);
+    await reactionRemove(args.writeToken ?? token, channelId, ts, POLL_MARKER, args.writeToken ? args.writeCookie : args.cookie);
+  } catch {
+    // Cosmetic: the 📊 body is what makes it closed.
+  }
+  console.error(`✓ 投票を締め切りました: ${stripTerminalControls(args.link)}`);
 }
 
 async function cmdDoctor(token: string): Promise<void> {
@@ -2756,13 +3131,48 @@ async function main(): Promise<void> {
             .option("limit", { alias: "n", type: "number", default: 200 })
             .option("filter", { alias: "f", type: "string" })
             .option("format", { type: "string", choices: ["text", "jsonl", "yaml"] as const, default: "text" })
-            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
+            .option("external", { type: "boolean", default: false, describe: "Also include people reachable only through Slack Connect shared channels — they are in ANOTHER workspace, so users.list never returns them (costs one API call per shared channel)" }),
           async (argv) => {
             const format = argv.json ? "jsonl" : argv.format;
-            const resp = (await listUsers(tok(argv as W))) as Record<string, Json>;
+            const lsToken = tok(argv as W);
+            const lsCookie = ck(argv as W);
+            // The cookie is not optional on a desktop (xoxc-) token: `users.list` is a
+            // public Web API call, and without it Slack answers `invalid_auth`.
+            const resp = (await listUsers(lsToken, lsCookie)) as Record<string, Json>;
             const filter = argv.filter?.toLowerCase();
-            const members = asArray(resp.members)
-              .map(asRecord)
+            let all = asArray(resp.members).map(asRecord);
+            if (argv.external) {
+              // `users.list` is scoped to YOUR workspace. A Slack Connect
+              // counterpart belongs to a different team, so they are absent from
+              // it entirely — no flag on the call changes that. The only place
+              // they exist is the membership of the channel you share, which is
+              // why this walks the externally-shared channels instead.
+              const known = new Set(all.map((u) => String(u.id)));
+              const conv = asRecord((await listConversations(lsToken, lsCookie)) as Json);
+              const shared = asArray(conv.channels).map(asRecord).filter((c) => c.is_ext_shared === true && !!c.name);
+              const extra = new Set<string>();
+              for (const c of shared) {
+                try {
+                  for (const id of await listConversationMembers(lsToken, String(c.id), lsCookie)) {
+                    if (!known.has(id)) extra.add(id);
+                  }
+                } catch {
+                  // A channel we cannot read the roster of costs us its members,
+                  // not the whole listing.
+                }
+              }
+              for (const id of extra) {
+                try {
+                  const info = asRecord((await userInfo(lsToken, id, lsCookie)) as Json);
+                  const u = asRecord(info.user);
+                  if (u.id) all.push(u);
+                } catch {
+                  // ditto: skip the one we cannot resolve
+                }
+              }
+            }
+            const members = all
               .filter((u) => u.deleted !== true && u.is_bot !== true && String(u.id) !== "USLACKBOT")
               .filter((u) => {
                 if (!filter) return true;
@@ -2792,6 +3202,12 @@ async function main(): Promise<void> {
               return;
             }
             const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            // Whose workspace this is, so a Connect counterpart can be told from
+            // a guest: both are "not a normal colleague", but only one of them
+            // is someone your admin can actually manage.
+            const myTeam = members.length
+              ? String(asRecord(asArray(resp.members).map(asRecord)[0] ?? {}).team_id ?? "")
+              : "";
             for (const u of members) {
               const profile = asRecord(u.profile);
               const handle = String(u.name ?? u.id);
@@ -2803,8 +3219,17 @@ async function main(): Promise<void> {
               const names = [...new Set([display, real].filter((s) => s && s !== handle))];
               const parts = names.join(" / ");
               const tzPart = tz && tz !== localTz ? tz : "";
+              // Said out loud, because it changes what you may assume about the
+              // person: a single-channel guest cannot see anything but the one
+              // channel, and an external user is not in your workspace at all.
+              const team = String(u.team_id ?? "");
+              const kind = u.is_stranger === true || (myTeam && team && team !== myTeam)
+                ? `external:${team || "?"}`
+                : u.is_ultra_restricted === true ? "single-channel guest"
+                : u.is_restricted === true ? "guest"
+                : "";
               const meta = [email, tzPart].filter(Boolean).join("  ");
-              console.log(`@${handle}  ${id}  ${parts}${meta ? "  " + meta : ""}`);
+              console.log(`@${handle}  ${id}  ${parts}${meta ? "  " + meta : ""}${kind ? `  [${kind}]` : ""}`);
             }
           },
         )
@@ -2818,7 +3243,7 @@ async function main(): Promise<void> {
             // If not a Slack user ID (U + alphanumeric), resolve from users list by handle
             let userId = ref;
             if (!/^U[A-Z0-9]+$/.test(ref)) {
-              const listResp = (await listUsers(token)) as Record<string, Json>;
+              const listResp = (await listUsers(token, ck(argv as W))) as Record<string, Json>;
               const match = asArray(listResp.members).map(asRecord)
                 .find((u) => String(u.name ?? "") === ref);
               if (!match) { console.error(`User not found: @${ref}`); process.exit(1); }
@@ -3066,6 +3491,128 @@ async function main(): Promise<void> {
           // 3, not 1: `--wait` callers branch on the exit code, and a transport
           // failure must be distinguishable from "timed out" (2).
           process.exit(ASK_EXIT_ERROR);
+        }
+      },
+    )
+    .command(
+      ["poll [target] [question] [choices..]", "vote [target] [question] [choices..]"],
+      "Post a poll with its choices pre-seeded as 1️⃣..🔟 reactions, then count them (confirm-hash safety gate)",
+      (y) => y
+        .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --results/--close)" })
+        .positional("question", { type: "string", describe: "The question. @tags are optional here — unlike `ask`, a poll needs no addressee: anyone who can see it may vote." })
+        .positional("choices", { type: "string", array: true, describe: "2..10 choices, seeded as 1️⃣..🔟 reactions for voters to click" })
+        .option("multi", { type: "boolean", default: false, describe: "Let one person pick several choices (default: 1 人 1 票)" })
+        .option("until", { type: "string", describe: "Deadline shown in the message (display only — closing is still `--close`)" })
+        .option("results", { type: "string", describe: "Count an existing poll: pass its permalink. Posts nothing; only edit is the invalid-ballot notice in the poll itself (--no-notify to suppress)." })
+        .option("close", { type: "string", describe: "Count an existing poll AND freeze the tally into the message. Only the poster can do this." })
+        .option("names", { type: "boolean", default: false, describe: "Also list who voted for what (stderr)" })
+        .option("no-notify", { type: "boolean", default: false, describe: "With --results: do not write the invalid-ballot notice back into the message (keeps it strictly read-only)" })
+        .option("code", { type: "string", describe: "Safety hash to confirm the post" })
+        .option("body", { type: "string", describe: "Extra context shown under the question" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Post via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient — and so YOUR OWN vote counts, since the seeds are then the bot's" }),
+      async (argv) => {
+        const readLink = argv.close ? String(argv.close) : argv.results ? String(argv.results) : "";
+        if (argv.results && argv.close) {
+          console.error("Error: pass --results or --close, not both (--close counts as well).");
+          process.exit(POLL_EXIT_ERROR);
+        }
+        const botTokenOrExit = (): string => {
+          const botToken = resolveBotToken();
+          if (!botToken) {
+            console.error(
+              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+            );
+            process.exit(POLL_EXIT_ERROR);
+          }
+          return botToken;
+        };
+        if (readLink) {
+          if (argv.target || argv.question || (argv.choices as string[] | undefined)?.length) {
+            console.error("Error: --results/--close reads an existing poll — do not also pass a target/question/choices.");
+            process.exit(POLL_EXIT_ERROR);
+          }
+          // Counting always runs on the USER token: `reactions.get` is a user
+          // scope, and a bot that can post a poll usually cannot read its pills.
+          // `--as-bot` here means only "the bot is the poster", which matters
+          // solely for the `--close` rewrite.
+          const readToken = tok(argv as W);
+          const readCookie = ck(argv as W);
+          try {
+            const a: { link: string; close?: boolean; cookie?: string; names?: boolean; writeToken?: string; writeCookie?: string; noNotify?: boolean } = { link: readLink };
+            if (argv.close) a.close = true;
+            if (argv.names) a.names = true;
+            if (argv["no-notify"]) a.noNotify = true;
+            if (readCookie) a.cookie = readCookie;
+            // The tally is READ with the user token but WRITTEN by the poster —
+            // for a `--as-bot` poll those are two different identities.
+            if (argv["as-bot"]) a.writeToken = botTokenOrExit();
+            await cmdPollResults(readToken, a);
+          } catch (e: unknown) {
+            console.error(friendlySlackError(e));
+            process.exit(POLL_EXIT_ERROR);
+          }
+          return;
+        }
+        if (!argv.target) {
+          console.error("Error: target is required (or use --results <permalink> to count a poll)");
+          process.exit(POLL_EXIT_ERROR);
+        }
+        const question = String(argv.question ?? "").trim();
+        if (!question) {
+          console.error("Error: question is empty");
+          process.exit(POLL_EXIT_ERROR);
+        }
+        const choices = ((argv.choices as string[] | undefined) ?? []).map((s) => String(s).trim()).filter(Boolean);
+        // Two is the floor: a one-choice ballot measures nothing, and the ten
+        // ceiling is where the keycap emoji stop — there is no text path here to
+        // overflow into, so an eleventh choice would be unvotable.
+        if (choices.length < 2 || choices.length > POLL_MAX_CHOICES) {
+          console.error(`Error: poll needs 2..${POLL_MAX_CHOICES} choices (got ${choices.length}). For a free-text question use \`slack ask\`.`);
+          process.exit(POLL_EXIT_ERROR);
+        }
+        const args: PollArgs = { target: argv.target!, question, choices };
+        if (argv.multi) args.multi = true;
+        if (argv.until) args.until = String(argv.until);
+        if (argv.code) args.code = argv.code;
+        if (argv.body) args.body = argv.body;
+        if (argv["channel-id"]) args.channelId = argv["channel-id"];
+        if (argv["user-id"]) args.userId = argv["user-id"];
+        // Always resolve @tags with the user token (it has users:read), even
+        // when the poll itself is posted by the bot.
+        args.mentionToken = tok(argv as W);
+        const mc = ck(argv as W);
+        if (mc) args.mentionCookie = mc;
+
+        let pollToken: string;
+        if (argv["as-bot"]) {
+          const botToken = botTokenOrExit();
+          if (!args.channelId && !args.userId && args.target.startsWith("@")) {
+            try {
+              args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
+            } catch (e: unknown) {
+              console.error(
+                `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
+                `  ${e instanceof Error ? e.message : String(e)}\n` +
+                `  Tip: pass --user-id <Uxxxx> to skip the lookup.`,
+              );
+              process.exit(POLL_EXIT_ERROR);
+            }
+          }
+          pollToken = botToken;
+          args.asBot = true;
+        } else {
+          pollToken = tok(argv as W);
+          const sc = ck(argv as W);
+          if (sc) args.cookie = sc;
+        }
+        try {
+          await cmdPoll(pollToken, args);
+        } catch (e: unknown) {
+          console.error(friendlySlackError(e));
+          process.exit(POLL_EXIT_ERROR);
         }
       },
     )

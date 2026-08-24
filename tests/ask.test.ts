@@ -221,6 +221,51 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
   });
 });
 
+// A permalink names WHERE to ask, never WHAT to reply to. `send` treats a pasted
+// permalink as "reply to that message", and `ask` inheriting that turned every
+// question given a permalink target into a thread reply — buried under an
+// unrelated message, where the people it was addressed to never saw it.
+// (Reported against a real workspace 2026-08-20.)
+describe("ask(permalink) posts top-level, never a thread reply", () => {
+  const LINK = `http://example.slack.com/archives/${CHAN}/p1700000000000100`;
+
+  test("a permalink target resolves the channel and drops its thread", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", LINK, "@alice これは新規の質問", "はい", "いいえ", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      // The gate is where a human would have caught this, so it is asserted too.
+      expect(dry.stdout).toContain("NEW top-level message");
+      expect(dry.stdout).not.toContain("THREAD REPLY");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const body = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body);
+      // The actual bug: thread_ts inherited from the pasted link.
+      expect(body.thread_ts).toBeUndefined();
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the explicit #chan:<ts> form still threads — saying so is the opt-in", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", `#chan:${QTS}`, "@alice スレッドで聞く", "はい", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("THREAD REPLY");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const body = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body);
+      expect(body.thread_ts).toBe(QTS);
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
 describe("ask restricts answers to the people tagged (CLI)", { timeout: 90_000 }, () => {
   const inline = (messages: unknown[]): InlineFixtures => ({
     ...AUTH,
@@ -305,7 +350,9 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       const seeds = reqs.filter((q) => q.method === "reactions.add").map((q) => JSON.parse(q.body).name);
       // Order is the whole point: Slack renders pills in add order, so a
       // parallel/out-of-order seed would show the choices shuffled.
-      expect(seeds).toEqual(["one", "two", "three"]);
+      // The marker leads: it identifies the message as an `ask` and is what a
+      // reader (or `has:`) sees first, so it must sit left of the pills.
+      expect(seeds).toEqual(["question", "one", "two", "three"]);
       // And every seed must come after the message it is attached to.
       expect(reqs.findIndex((q) => q.method === "reactions.add")).toBeGreaterThan(post);
     } finally {
@@ -313,7 +360,7 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
-  test("no choices means no seeded reactions, and the body asks for a reply", async () => {
+  test("no choices means no PILLS — the marker is still seeded, and the body asks for a reply", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
       const base = ["ask", "#chan", "@bob どう思う?", "--channel-id", CHAN];
@@ -322,9 +369,14 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(0);
       const reqs = m.requests.slice(before);
-      expect(reqs.some((q) => q.method === "reactions.add")).toBe(false);
+      // A free-text question has no ballot, but it is still an `ask` — the
+      // marker is what says so, so it is seeded regardless.
+      const seeds = reqs.filter((q) => q.method === "reactions.add").map((q) => JSON.parse(q.body).name);
+      expect(seeds).toEqual(["question"]);
       const posted = JSON.parse(reqs.find((q) => q.method === "chat.postMessage")!.body).text as string;
       expect(posted).toContain("返信してください");
+      // Identity is the marker, not the Japanese copy: the body leads with it.
+      expect(posted.startsWith(":question: ")).toBe(true);
     } finally {
       await m.stop();
     }
