@@ -72,11 +72,8 @@ jobs:
       # rest. Reverted to a single run once the culprit is known.
       - shell: bash --noprofile --norc {0}   # NOT `bash -e`: the loop must survive a failing file
         run: |
-          for f in tests/*.test.ts; do
-            printf '::group::%s\n' "$f"
-            start=$SECONDS
-            timeout --signal=INT 60 node node_modules/vitest/vitest.mjs run "$f" --no-file-parallelism --reporter=dot >/dev/null 2>&1
-            rc=$?
-            printf 'RESULT %s rc=%s %ss\n' "$f" "$rc" "$((SECONDS-start))"
-            printf '::endgroup::\n'
-          done
+          # Narrowed to the one hanging file. --reporter=verbose prints each
+          # test AS IT STARTS, so the last line before the timeout names the
+          # test that never returns.
+          timeout --signal=INT 90 node node_modules/vitest/vitest.mjs run tests/todo.test.ts --no-file-parallelism --reporter=verbose 2>&1 | tail -60
+          printf 'RC=%s\n' "${PIPESTATUS[0]}"
