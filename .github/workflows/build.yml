@@ -70,7 +70,8 @@ jobs:
       # dying mid-run with everything after it unreported. Each file gets its
       # own bounded timeout; the loop keeps going so one hang does not hide the
       # rest. Reverted to a single run once the culprit is known.
-      - run: |
+      - shell: bash --noprofile --norc {0}   # NOT `bash -e`: the loop must survive a failing file
+        run: |
           for f in tests/*.test.ts; do
             printf '::group::%s\n' "$f"
             start=$SECONDS
