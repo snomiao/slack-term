@@ -9,6 +9,20 @@
  *  path every send already takes does not. (Real incident 2026-08-26: messages
  *  sent to an external partner at 00:44 and 01:12 JST.)
  *
+ *  KNOWN LIMITATION — this judges by the SENDER's timezone, not the
+ *  recipient's, and "is it the middle of the night" is a fact about the person
+ *  whose phone buzzes. Today that costs nothing: every human in this workspace
+ *  is Asia/Tokyo (measured 2026-08-26, 9/9), so the two agree. It breaks the
+ *  moment anyone is elsewhere, and it breaks QUIETLY — the line still prints
+ *  and still looks right.
+ *
+ *  Fixing it needs care rather than just a users.info lookup: Slack Connect
+ *  counterparts have NO tz field at all (measured on two external users), and
+ *  they are exactly the people most likely to be in another timezone. Whatever
+ *  replaces this must keep warning when the recipient's timezone is unknown —
+ *  falling silent there would reinstate the incident this was written for.
+ *  See tmp/quiet-hours-followup-recipient-tz.md.
+ *
  *  Deliberately a WARNING, not a block: pager-duty style P1 outage notices
  *  legitimately go out at 3am, and this CLI cannot tell those apart. Blocking
  *  would train people to bypass the gate entirely. */
