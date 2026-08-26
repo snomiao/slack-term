@@ -299,6 +299,52 @@ export async function userHandleCached(
   return handle;
 }
 
+/** The recipient's IANA timezone, or null when Slack does not know it.
+ *
+ *  Cached on the same 1h TTL as handles, so a send costs no extra API call in
+ *  practice. `users:read` failures are swallowed: a missing scope must degrade
+ *  the quiet-hours label, never block sending.
+ *
+ *  NOTE the shape check. Slack Connect counterparts have NO `tz` KEY at all —
+ *  not `tz: null`, the key is simply absent (measured 2026-08-26 on every
+ *  external user in this workspace). So `=== null` would sail straight past it;
+ *  only a truthy-string test is correct here. */
+export async function userTzCached(
+  token: string,
+  userId: string,
+  lookup: (token: string, userId: string, cookie?: string) => Promise<unknown>,
+  cookie?: string,
+): Promise<string | null> {
+  const scope = await cacheScope(token, cookie);
+  const hit = cacheGet("users", scope, `tz:${userId}`);
+  if (hit) return hit === "?" ? null : hit;
+  let tz: string | null = null;
+  try {
+    const resp = (await withRateLimitRetry("users.info", () => lookup(token, userId, cookie))) as
+      { user?: { tz?: unknown; is_bot?: unknown } };
+    // A bot reports America/Los_Angeles (Slack's own default) and has no phone
+    // to buzz, so its "timezone" is a false signal — treat it as unknown rather
+    // than warn about the middle of the night in California. Measured on this
+    // workspace's bot user, and the same bogus value shows up in users.list.
+    if (resp?.user?.is_bot === true) return cacheThen(scope, userId, null);
+    const raw = resp?.user?.tz;
+    tz = typeof raw === "string" && raw ? raw : null;
+  } catch {
+    // No users:read, rate limit exhausted, network — all mean "unknown", and
+    // unknown is a state the caller already handles. Never fail the send.
+    return null;
+  }
+  return cacheThen(scope, userId, tz);
+}
+
+/** Persist and return. "?" records a definite "Slack has no timezone for this
+ *  person", so we do not re-ask every send for the external users and bots that
+ *  will never have a usable one. */
+function cacheThen(scope: string, userId: string, tz: string | null): string | null {
+  cacheSet("users", scope, `tz:${userId}`, tz ?? "?");
+  return tz;
+}
+
 // ── set / flag ────────────────────────────────────────────────────────────
 
 export type SetResult = {
