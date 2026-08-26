@@ -59,4 +59,16 @@ jobs:
       # 15-minute job limit, where the runner discards the log and the failure
       # reads as "cancelled" rather than naming a cause. Failing at 5 minutes
       # with output intact is what made the actual bug findable.
-      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism
+      # DIAGNOSTIC: SIGQUIT makes node dump every JS stack before dying, so the
+      # log names what the process is actually blocked on. `timeout` alone gave
+      # exit 124 and nothing else — the reporter never got to run, which is how
+      # this stayed undiagnosed. 240s so the dump lands inside the job budget.
+      - run: |
+          node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism &
+          PID=$!
+          ( sleep 240; echo "--- SIGQUIT: dumping stacks ---"; kill -QUIT $PID 2>/dev/null ) &
+          WATCH=$!
+          wait $PID; rc=$?
+          kill $WATCH 2>/dev/null || true
+          echo "RC=$rc"
+          exit $rc
