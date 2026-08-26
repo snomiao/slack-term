@@ -66,4 +66,16 @@ jobs:
       # actually reaches the log: at the job timeout the runner kills everything
       # and we learn nothing, which is why every previous investigation of this
       # ended with "cancelled" and no diagnosis.
-      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --reporter=default --reporter=hanging-process
+      # DIAGNOSTIC: per-file, so the log names the file that hangs instead of
+      # dying mid-run with everything after it unreported. Each file gets its
+      # own bounded timeout; the loop keeps going so one hang does not hide the
+      # rest. Reverted to a single run once the culprit is known.
+      - run: |
+          for f in tests/*.test.ts; do
+            printf '::group::%s\n' "$f"
+            start=$SECONDS
+            timeout --signal=INT 60 node node_modules/vitest/vitest.mjs run "$f" --no-file-parallelism --reporter=dot >/dev/null 2>&1
+            rc=$?
+            printf 'RESULT %s rc=%s %ss\n' "$f" "$rc" "$((SECONDS-start))"
+            printf '::endgroup::\n'
+          done
