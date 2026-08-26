@@ -75,5 +75,8 @@ jobs:
           # Narrowed to the one hanging file. --reporter=verbose prints each
           # test AS IT STARTS, so the last line before the timeout names the
           # test that never returns.
-          timeout --signal=INT 90 node node_modules/vitest/vitest.mjs run tests/todo.test.ts --no-file-parallelism --reporter=verbose 2>&1 | tail -60
-          printf 'RC=%s\n' "${PIPESTATUS[0]}"
+          # No pipe: `| tail` buffers, and when timeout kills the process the
+          # buffer dies with it — which is why the previous attempt logged only
+          # RC=124 and nothing else. Write straight to the log.
+          timeout --signal=INT 90 node node_modules/vitest/vitest.mjs run tests/todo.test.ts --no-file-parallelism --reporter=verbose
+          printf 'RC=%s\n' "$?"
