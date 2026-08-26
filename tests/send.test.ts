@@ -999,6 +999,30 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
       await m.stop();
     }
   });
+  // The clock belongs on stdout with the rest of the preview, not on stderr
+  // with the code. The preview is what you are asked to LOOK at before
+  // committing, and a caller reading it with `2>/dev/null` would otherwise drop
+  // the one line that exists to stop a 01:00 send. Caught in review: the
+  // original patch printed it to stderr.
+  test("the confirm gate prints the clock on stdout, and warns inside quiet hours", async () => {
+    const r = await run(["send", "#chan", "hi there", "--channel-id", "C00000001"], {
+      env: { SLACK_QUIET_TZ: "Asia/Tokyo", SLACK_QUIET_START: "0", SLACK_QUIET_END: "24" },
+    });
+    expect(r.stdout).toContain("Asia/Tokyo");
+    expect(r.stdout).toContain("QUIET HOURS");
+    expect(r.stderr).not.toContain("QUIET HOURS");
+  });
+
+  test("outside quiet hours the gate shows a clock but no warning", async () => {
+    // A window that can never contain "now" — the warning must stay silent, or
+    // it becomes noise and stops being read.
+    const r = await run(["send", "#chan", "hi there", "--channel-id", "C00000001"], {
+      env: { SLACK_QUIET_TZ: "Asia/Tokyo", SLACK_QUIET_START: "0", SLACK_QUIET_END: "0" },
+    });
+    expect(r.stdout).toContain("Asia/Tokyo");
+    expect(r.stdout).not.toContain("QUIET HOURS");
+  });
+
   test("schedule send warns when the target is your own DM", async () => {
     const m = await startMock({
       inline: {

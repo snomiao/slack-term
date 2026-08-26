@@ -95,6 +95,7 @@ import {
 } from "./todo.ts";
 import { setCacheEnabled } from "./cache.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
+import { quietHoursNotice } from "./quietHours.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -892,7 +893,14 @@ function friendlySlackError(e: unknown): string {
 /** Dry-run gate: print context, print required --code=, exit 1.
  *  Call this when --code is absent or wrong. */
 function requireCode(provided: string | undefined, expected: string, contextLines: string[]): void {
+  // The clock goes to stdout with the rest of the preview, not to stderr with
+  // the code. The preview is what you are asked to LOOK at before committing,
+  // and "what time is it where they are" is part of that picture — a caller
+  // doing `send ... 2>/dev/null` to read the preview would otherwise drop the
+  // one line added to stop a 01:00 send.
   for (const line of contextLines) console.log(line);
+  const clock = quietHoursNotice();
+  if (clock) console.log(clock);
   if (provided !== undefined) {
     console.error(`Code mismatch (got ${provided}, expected ${expected})`);
   }
