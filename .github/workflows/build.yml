@@ -48,35 +48,15 @@ jobs:
 
       # Second pass, for the coverage gate only. bun reports lines and functions
       # and emits no branch data at all — not in its table, and not in its lcov
-      # (measured on 1.3.13: no BRDA/BRF/BRH records). The branch threshold has
+      # (re-measured on bun 1.4.0: still no BRDA/BRF/BRH records). The branch threshold has
       # caught real defects here, so vitest+istanbul stays as the measuring
       # instrument even though bun is the runner.
       #
       # `node`, not bun: vitest is a node tool, and running it under bun is what
-      # produced the hangs above. parity is excluded — it needs the release Rust
-      # binary, which this job does not build.
-      # The exclusion list lives in vitest.config.ts now, with the reasoning.
-      # Short version: subprocess-driven tests cannot contribute coverage (a
-      # spawned `bun` process is not instrumented, and ts/cli.ts is excluded
-      # anyway) but they consumed the entire 15-minute budget, which is why this
-      # job had never once gone green. `bun run test` above still runs them all.
-      # `hanging-process` names the handle that keeps the process alive when the
-      # run finishes but never exits — the failure this job has had all along.
-      # `timeout` bounds it well under the job limit so the reporter's output
-      # actually reaches the log: at the job timeout the runner kills everything
-      # and we learn nothing, which is why every previous investigation of this
-      # ended with "cancelled" and no diagnosis.
-      # DIAGNOSTIC: per-file, so the log names the file that hangs instead of
-      # dying mid-run with everything after it unreported. Each file gets its
-      # own bounded timeout; the loop keeps going so one hang does not hide the
-      # rest. Reverted to a single run once the culprit is known.
-      - shell: bash --noprofile --norc {0}   # NOT `bash -e`: the loop must survive a failing file
-        run: |
-          # Narrowed to the one hanging file. --reporter=verbose prints each
-          # test AS IT STARTS, so the last line before the timeout names the
-          # test that never returns.
-          # No pipe: `| tail` buffers, and when timeout kills the process the
-          # buffer dies with it — which is why the previous attempt logged only
-          # RC=124 and nothing else. Write straight to the log.
-          timeout --signal=INT 90 node node_modules/vitest/vitest.mjs run tests/todo.test.ts --no-file-parallelism --reporter=verbose
-          printf 'RC=%s\n' "$?"
+      # produced the hangs above. The exclusion list (parity, and the
+      # subprocess-driven files) lives in vitest.config.ts, with the reasoning.
+      # `timeout` stays as a backstop: this job spent months being killed at the
+      # 15-minute job limit, where the runner discards the log and the failure
+      # reads as "cancelled" rather than naming a cause. Failing at 5 minutes
+      # with output intact is what made the actual bug findable.
+      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism

@@ -370,6 +370,14 @@ describe("cache", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "todocache-"));
     now = 1_000_000;
+    // Every path in this block runs through cacheScope → identity →
+    // withRateLimitRetry, which sleeps for REAL seconds on a 429 unless this is
+    // stubbed. The preceding describe restores the real `sleep` in its last
+    // `mockRestore()`, so without this the block inherits it — and a test that
+    // makes auth.test fail then parks the whole file until the CI job timeout.
+    // That is precisely the hang this suite had: 60s+ on GitHub's runner, never
+    // reproducible locally on a faster Node.
+    vi.spyOn(_internals, "sleep").mockResolvedValue(undefined);
     cacheMod.resetCacheForTests();
     vi.spyOn(cacheMod._internals, "path").mockReturnValue(join(dir, "cache.json"));
     vi.spyOn(cacheMod._internals, "now").mockImplementation(() => now);
