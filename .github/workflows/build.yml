@@ -55,4 +55,9 @@ jobs:
       # `node`, not bun: vitest is a node tool, and running it under bun is what
       # produced the hangs above. parity is excluded — it needs the release Rust
       # binary, which this job does not build.
-      - run: node node_modules/vitest/vitest.mjs run --coverage --exclude "tests/parity.test.ts" --no-file-parallelism
+      # The exclusion list lives in vitest.config.ts now, with the reasoning.
+      # Short version: subprocess-driven tests cannot contribute coverage (a
+      # spawned `bun` process is not instrumented, and ts/cli.ts is excluded
+      # anyway) but they consumed the entire 15-minute budget, which is why this
+      # job had never once gone green. `bun run test` above still runs them all.
+      - run: node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism
