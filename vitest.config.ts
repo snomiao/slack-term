@@ -43,7 +43,36 @@ export default defineConfig({
       // runtime-agnostic and produces real numbers under bun.
       provider: "istanbul",
       reporter: ["text", "lcov", "html"],
-      include: ["ts/**/*.ts"],
+      // Listed positively rather than as `ts/**/*.ts` minus `exclude`. Both
+      // produce the same REPORT — the numbers below are byte-identical either
+      // way — but `include` is what decides which files istanbul INSTRUMENTS,
+      // and `exclude` only drops them from the output afterwards. The glob
+      // therefore paid to instrument ts/cli.ts (4200 lines) on every run and
+      // then threw the result away.
+      //
+      // That cost is what made this job unrunnable in CI. Measured on Node 24
+      // (GitHub's runner version; local dev is on 26 and hides it):
+      //
+      //   glob    2m59s   transform 19.6s + import 26.0s, tests only 13.1s
+      //   listed    33s   same coverage, to the digit
+      //
+      // Node 26 does the same work in ~11s, which is why this reproduced only
+      // in CI for months and read as a "hang" rather than as slowness.
+      //
+      // Keep this list in step with `exclude` below: a new ts/ module gets no
+      // coverage until it is named here.
+      include: [
+        "ts/ask.ts",
+        "ts/cache.ts",
+        "ts/format.ts",
+        "ts/poll.ts",
+        "ts/profiles.ts",
+        "ts/quietHours.ts",
+        "ts/rtm.ts",
+        "ts/slack.ts",
+        "ts/tail.ts",
+        "ts/todo.ts",
+      ],
       // Integration/interactive modules: OS keychain, browser cookie extraction,
       // interactive prompts, live-API diagnostics — not meaningfully unit-testable.
       exclude: ["ts/cli.ts", "ts/slack-app.ts", "ts/auth.ts", "ts/botdoctor.ts", "tests/**", "dist/**"],
