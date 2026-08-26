@@ -60,4 +60,10 @@ jobs:
       # spawned `bun` process is not instrumented, and ts/cli.ts is excluded
       # anyway) but they consumed the entire 15-minute budget, which is why this
       # job had never once gone green. `bun run test` above still runs them all.
-      - run: node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism
+      # `hanging-process` names the handle that keeps the process alive when the
+      # run finishes but never exits — the failure this job has had all along.
+      # `timeout` bounds it well under the job limit so the reporter's output
+      # actually reaches the log: at the job timeout the runner kills everything
+      # and we learn nothing, which is why every previous investigation of this
+      # ended with "cancelled" and no diagnosis.
+      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --reporter=default --reporter=hanging-process
