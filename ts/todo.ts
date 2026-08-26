@@ -324,9 +324,17 @@ export async function userTzCached(
       { user?: { tz?: unknown; is_bot?: unknown } };
     // A bot reports America/Los_Angeles (Slack's own default) and has no phone
     // to buzz, so its "timezone" is a false signal — treat it as unknown rather
-    // than warn about the middle of the night in California. Measured on this
-    // workspace's bot user, and the same bogus value shows up in users.list.
-    if (resp?.user?.is_bot === true) return cacheThen(scope, userId, null);
+    // than warn about the middle of the night in California. Measured: 12 of
+    // this workspace's 14 bots report exactly that, so it is Slack's default
+    // rather than one app's misconfiguration.
+    //
+    // USLACKBOT needs naming separately because it reports `is_bot: false`
+    // while carrying the same bogus zone — the one account where the flag and
+    // the reality disagree. `format.ts` and the `user ls` filter already
+    // special-case it for the same reason.
+    if (resp?.user?.is_bot === true || userId === "USLACKBOT") {
+      return cacheThen(scope, userId, null);
+    }
     const raw = resp?.user?.tz;
     tz = typeof raw === "string" && raw ? raw : null;
   } catch {

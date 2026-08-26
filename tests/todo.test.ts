@@ -69,6 +69,7 @@ const { RateLimitError } = await import("../ts/slack.ts");
 const {
   DEFAULT_TODO_CONFIG,
   userHandleCached,
+  userTzCached,
   buildTodoQuery,
   loadTodoConfig,
   todoSet,
@@ -490,6 +491,53 @@ describe("cache", () => {
     expect(cacheMod.cacheGet("users", "T_ONE", "U1")).toBeUndefined();
     await userHandleCached("tok", "U1", lookup);
     expect(lookups).toBe(2);
+  });
+
+  // A bot's timezone is a false signal: Slack hands out America/Los_Angeles by
+  // default (12 of this workspace's 14 bots report it), and a bot has no phone
+  // to buzz. Warning "it's the middle of the night in California" for a bot DM
+  // is noise, and noise is what stops a warning from being read.
+  test("userTzCached treats a bot's timezone as unknown", async () => {
+    cacheMod.setCacheEnabled(true);
+    const lookup = async () => ({ user: { is_bot: true, tz: "America/Los_Angeles" } });
+    expect(await userTzCached("tok", "U_BOT", lookup)).toBe(null);
+  });
+
+  // USLACKBOT is the one account where the flag and the reality disagree: it
+  // reports is_bot=false while carrying the same default zone. An is_bot-only
+  // guard sails straight past it.
+  test("userTzCached treats USLACKBOT as unknown despite is_bot=false", async () => {
+    cacheMod.setCacheEnabled(true);
+    const lookup = async () => ({ user: { is_bot: false, tz: "America/Los_Angeles" } });
+    expect(await userTzCached("tok", "USLACKBOT", lookup)).toBe(null);
+  });
+
+  test("userTzCached returns a real person's zone and caches it", async () => {
+    cacheMod.setCacheEnabled(true);
+    let lookups = 0;
+    const lookup = async () => { lookups++; return { user: { is_bot: false, tz: "Asia/Tokyo" } }; };
+    expect(await userTzCached("tok", "U_HUMAN", lookup)).toBe("Asia/Tokyo");
+    expect(await userTzCached("tok", "U_HUMAN", lookup)).toBe("Asia/Tokyo");
+    expect(lookups).toBe(1);
+  });
+
+  // Slack Connect counterparts have no `tz` KEY at all. Caching that as "?" is
+  // what stops us re-asking on every single send for people who will never have
+  // one — and they are the majority of external DMs.
+  test("userTzCached caches a missing timezone so it is not re-asked", async () => {
+    cacheMod.setCacheEnabled(true);
+    let lookups = 0;
+    const lookup = async () => { lookups++; return { user: { is_bot: false } }; };
+    expect(await userTzCached("tok", "U_EXT", lookup)).toBe(null);
+    expect(await userTzCached("tok", "U_EXT", lookup)).toBe(null);
+    expect(lookups).toBe(1);
+  });
+
+  // A missing users:read scope must degrade the clock label, never block a send.
+  test("userTzCached swallows a lookup failure", async () => {
+    cacheMod.setCacheEnabled(true);
+    const lookup = async () => { throw new Error("missing_scope"); };
+    expect(await userTzCached("tok", "U_ERR", lookup)).toBe(null);
   });
 
   test("raw IDs and permalinks bypass the cache entirely", async () => {
