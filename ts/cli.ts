@@ -85,6 +85,7 @@ import {
   todoDoctor,
   todoFlag,
   userHandleCached,
+  userTzCached,
   todoSet,
   withRateLimitRetry,
   DOCTOR_DEFAULT_LIMIT,
@@ -892,14 +893,34 @@ function friendlySlackError(e: unknown): string {
 
 /** Dry-run gate: print context, print required --code=, exit 1.
  *  Call this when --code is absent or wrong. */
-function requireCode(provided: string | undefined, expected: string, contextLines: string[]): void {
+/** The recipient's timezone for the quiet-hours label — DM only.
+ *
+ *  A channel has many recipients in potentially many zones, and resolving every
+ *  member would cost a lookup per person to answer a question that has no single
+ *  answer. DMs are also where a 3am notification actually lands on someone's
+ *  phone, so this is where the check earns its keep.
+ *
+ *  Returns null (= "unknown", label says so) for channels, for a self-DM, and
+ *  for anyone Slack has no timezone for. */
+async function recipientTzFor(token: string, channelId: string, cookie?: string): Promise<string | null> {
+  if (!channelId.startsWith("D")) return null;
+  try {
+    const other = await imCounterpart(token, channelId, cookie);
+    if (!other) return null;
+    return await userTzCached(token, other, userInfo, cookie);
+  } catch {
+    return null;
+  }
+}
+
+function requireCode(provided: string | undefined, expected: string, contextLines: string[], recipientTz?: string | null): void {
   // The clock goes to stdout with the rest of the preview, not to stderr with
   // the code. The preview is what you are asked to LOOK at before committing,
   // and "what time is it where they are" is part of that picture — a caller
   // doing `send ... 2>/dev/null` to read the preview would otherwise drop the
   // one line added to stop a 01:00 send.
   for (const line of contextLines) console.log(line);
-  const clock = quietHoursNotice();
+  const clock = quietHoursNotice(new Date(), recipientTz);
   if (clock) console.log(clock);
   if (provided !== undefined) {
     console.error(`Code mismatch (got ${provided}, expected ${expected})`);
@@ -1498,6 +1519,9 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // profile / SLACK_TOKEN / --as-bot switch between preview and confirm
   // re-previews instead). Empty on lookup failure, same fail-soft as lastText.
   const self = await getSelf();
+  // Resolved before the gate so the clock can name the recipient's zone. DM
+  // only; null means "unknown" and the label says so rather than guessing.
+  const recipientTz = await recipientTzFor(token, channelId, cookie);
   const code = safetyCode(channelId, threadTs ?? "", lastText, message, self?.userId ?? "");
 
   if (args.code !== code) {
@@ -1520,7 +1544,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         `  → ${dest} thread of ${parentLine} — THREAD REPLY`,
         `  Message: ${message}`,
         `--------------------------------────────────`,
-      ]);
+      ], recipientTz);
     } else {
       requireCode(args.code, code, [
         `--- Last message in channel ------------------`,
@@ -1531,7 +1555,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         `  → ${dest} — NEW top-level message`,
         `  Message: ${message}`,
         `--------------------------------────────────`,
-      ]);
+      ], recipientTz);
     }
   }
   const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie);
@@ -2035,6 +2059,9 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // satisfies by calling twice. The hash binds destination, thread, the exact
   // posted body (question AND choices) and the asking identity.
   const self = await getSelf();
+  // Resolved before the gate so the clock can name the recipient's zone. DM
+  // only; null means "unknown" and the label says so rather than guessing.
+  const recipientTz = await recipientTzFor(token, channelId, cookie);
   const code = safetyCode(channelId, threadTs ?? "", lastText, message, self?.userId ?? "");
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, cookie);
@@ -2056,7 +2083,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       `  Answerable by: ${audienceLabel}`,
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
       `--------------------------------────────────`,
-    ]);
+    ], recipientTz);
   }
 
   // `plain`: with blocks attached Slack rewrites the stored text (newlines to
@@ -2353,6 +2380,9 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   }
 
   const self = await getSelf();
+  // Resolved before the gate so the clock can name the recipient's zone. DM
+  // only; null means "unknown" and the label says so rather than guessing.
+  const recipientTz = await recipientTzFor(token, channelId, cookie);
   const code = safetyCode(channelId, threadTs ?? "", lastText, message, self?.userId ?? "");
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, cookie);
@@ -2369,7 +2399,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
       // Said out loud at the gate: this is the surprising half of the command.
       `  Note:     あなた自身の票は数えません (ピルはあなたが付けた種なので区別できません)`,
       `--------------------------------────────────`,
-    ]);
+    ], recipientTz);
   }
 
   // `plain`: no blocks, or Slack rewrites the stored text and the ballot

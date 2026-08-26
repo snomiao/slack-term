@@ -64,6 +64,47 @@ describe("quiet-hours notice", () => {
     }
   });
 
+  // WHOSE clock this is, is the whole point: "is it the middle of the night" is
+  // a fact about the person whose phone buzzes. The label must never leave that
+  // ambiguous, because a reader who cannot tell whose time it is cannot judge
+  // how much to trust it.
+  test("a known recipient timezone is used, and labelled as theirs", () => {
+    // 12:00 JST is 23:00 the previous day in New York — quiet THERE, not here.
+    // Judging by the sender would call this a perfectly reasonable hour.
+    const out = quietHoursNotice(atJst(12), "America/New_York")!;
+    expect(out.includes("America/New_York, recipient")).toBe(true);
+    expect(out.includes("QUIET HOURS")).toBe(true);
+  });
+
+  test("a known recipient timezone can also CLEAR a warning the sender would raise", () => {
+    // 02:00 JST is 18:00 the previous day in London — the sender's night, the
+    // recipient's evening. Warning here would be a false positive, and false
+    // positives are what make a warning stop being read.
+    const out = quietHoursNotice(atJst(2), "Europe/London")!;
+    expect(out.includes("Europe/London, recipient")).toBe(true);
+    expect(out.includes("QUIET HOURS")).toBe(false);
+  });
+
+  // The decisive case, and the reason option 3 ("stay silent when unknown") was
+  // rejected: Slack Connect counterparts have no tz at all, and the 00:44
+  // message that prompted this feature went to exactly such a person. Falling
+  // silent here would reinstate the incident.
+  test("an unknown recipient timezone still warns, and says the basis is the sender", () => {
+    for (const unknown of [null, undefined, ""]) {
+      const out = quietHoursNotice(atJst(0, 44), unknown)!;
+      expect(out.includes("QUIET HOURS")).toBe(true);
+      expect(out.includes("sender — recipient's timezone unknown")).toBe(true);
+      // It must not claim to know their local time.
+      expect(out.includes("recipient)")).toBe(false);
+    }
+  });
+
+  test("an unusable recipient timezone degrades to unknown rather than throwing", () => {
+    const out = quietHoursNotice(atJst(0, 44), "Not/AZone")!;
+    expect(out.includes("QUIET HOURS")).toBe(true);
+    expect(out.includes("recipient's timezone unknown")).toBe(true);
+  });
+
   test("a bad timezone override never breaks sending", () => {
     // Returning null means the gate prints no clock line — it must never throw,
     // or a typo'd env var would make the CLI unable to send at all.
