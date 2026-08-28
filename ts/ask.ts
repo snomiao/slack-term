@@ -102,7 +102,7 @@ export const ASK_RESOLVED_MARKER = "white_check_mark";
 export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
 
 /** One line, always: newlines inside a choice would break the line-based body. */
-function askFlatten(s: string): string {
+export function askFlatten(s: string): string {
   return s.replace(/\s*\n\s*/g, " ");
 }
 

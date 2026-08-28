@@ -1023,6 +1023,61 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     expect(r.stdout).not.toContain("QUIET HOURS");
   });
 
+  // Agents drive this CLI as much as people do, and an agent building an argv
+  // array has no shell to turn `\n` into a newline for it. Without this, every
+  // multi-line message it sends arrives as one line with a literal `\n` in it.
+  test("a literal backslash-n in the argument is posted as a real newline", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const base = ["send", "#chan", "line one\\nline two", "--channel-id", "C00000001"];
+      const dry = await run(base, { baseUrl: m.baseUrl });
+      // The gate must preview the real line break, or "how many lines is this?"
+      // can only be answered after sending.
+      expect(dry.stdout).toContain("line one\nline two");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      expect(posted).toBe("line one\nline two");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The ¥ key on a Japanese keyboard emits U+00A5, not U+005C — so someone
+  // reaching for an escape types the character that would otherwise do nothing.
+  test("a yen-n is posted as a real newline too", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const base = ["send", "#chan", "line one\u00A5nline two", "--channel-id", "C00000001"];
+      const dry = await run(base, { baseUrl: m.baseUrl });
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      expect(posted).toBe("line one\nline two");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The risk of accepting ¥ is eating a price. A yen followed by digits is by
+  // far its commonest shape and must survive untouched.
+  test("a yen amount is not treated as an escape", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const base = ["send", "#chan", "\u00A51000 です", "--channel-id", "C00000001"];
+      const dry = await run(base, { baseUrl: m.baseUrl });
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      expect(posted).toBe("\u00A51000 です");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("schedule send warns when the target is your own DM", async () => {
     const m = await startMock({
       inline: {

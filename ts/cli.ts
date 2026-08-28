@@ -21,6 +21,7 @@ import {
   askBuildText,
   askBuildResolvedText,
   askParseMessage,
+  askFlatten,
   applyInvalidNotice,
   readInvalidNotice,
   type AskFound,
@@ -32,6 +33,7 @@ import {
   POLL_MAX_CHOICES,
   pollBuildText,
   pollBuildClosedText,
+  pollFlatten,
   pollParseMessage,
   pollTally,
 } from "./poll.ts";
@@ -95,6 +97,7 @@ import {
   type ProgressState,
 } from "./todo.ts";
 import { setCacheEnabled } from "./cache.ts";
+import { unescapeArg } from "./escapes.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 
@@ -1351,10 +1354,15 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // Convert @handle / @名前 tokens to <@USERID> before hashing/sending so the
   // safety gate covers exactly what will be posted. Unresolved tokens stay as
   // text. The detailed report drives the confirm-gate mention preview below.
-  let message = args.message;
+  // Escapes first, before mentions and before the safety hash: the hash has to
+  // cover the text that will actually be POSTED, and the gate preview has to
+  // show the real line breaks so "how many lines is this?" is answered by
+  // looking rather than by guessing.
+  const rawMessage = unescapeArg(args.message);
+  let message = rawMessage;
   let mentionReport: MentionEncodeResult | null = null;
   if (args.mentions) {
-    mentionReport = await encodeMentionsDetailed(args.mentionToken ?? token, args.message, channelId, args.mentionCookie);
+    mentionReport = await encodeMentionsDetailed(args.mentionToken ?? token, rawMessage, channelId, args.mentionCookie);
     message = mentionReport.text;
     // Prominent, always-visible warning for any @token that will NOT notify —
     // so a mistyped or unresolved name (esp. a Japanese display name) is caught
@@ -1979,8 +1987,13 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // was never theirs to decide. So the audience is taken from the @tags in the
   // text — the same names the reader sees — and an untargeted ask is refused
   // outright rather than defaulted to "whoever gets there first".
-  const qEnc = askEncodeBroadcasts(args.question);
-  const bEnc = askEncodeBroadcasts(args.body ?? "");
+  // Unescaped BEFORE broadcast/mention encoding and before the body is built,
+  // which is what makes it work for choices too: `askBuildText` flattens a
+  // choice's newlines to spaces (a newline there would split the pill into a
+  // line the parser cannot read back), so unescaping afterwards would be a
+  // no-op that silently did nothing.
+  const qEnc = askEncodeBroadcasts(unescapeArg(args.question));
+  const bEnc = askEncodeBroadcasts(unescapeArg(args.body ?? ""));
   const broadcastKinds = new Set([...qEnc.kinds, ...bEnc.kinds]);
   const mentionToken = args.mentionToken ?? token;
   const qRep = await encodeMentionsDetailed(mentionToken, qEnc.text, channelId, args.mentionCookie);
@@ -2027,8 +2040,13 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       .join(", ");
   }
 
-  const reactable = args.choices.slice(0, ASK_MAX_REACTION_CHOICES);
-  const overflow = args.choices.slice(ASK_MAX_REACTION_CHOICES);
+  // Choices too: a `\n` a caller put in a pill label is far more likely to be a
+  // typo than intent (the label is flattened to one line either way), but
+  // leaving it as the two characters `\` `n` in a button someone has to read is
+  // worse than turning it into the space it becomes.
+  const escChoices = args.choices.map(unescapeArg);
+  const reactable = escChoices.slice(0, ASK_MAX_REACTION_CHOICES);
+  const overflow = escChoices.slice(ASK_MAX_REACTION_CHOICES);
 
   // Where free-text answers may come from. A 1:1 DM carries no unrelated
   // traffic, so a plain reply there is an answer. A channel does, so only
@@ -2067,8 +2085,11 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     const dest = await destLabel(token, channelId, ref, cookie);
     const choiceLines = reactable.length
       ? [`--- Choices (seeded as reactions) ------------`,
-         ...reactable.map((s, i) => `  ${ASK_KEYCAPS[i]!.glyph} ${s}`),
-         ...overflow.map((s, i) => `  (${i + 11}) ${s} — text answer only`)]
+         // Flattened here for the same reason the body is: the pill WILL be one
+         // line, so a preview showing two would be previewing something that
+         // never gets posted.
+         ...reactable.map((s, i) => `  ${ASK_KEYCAPS[i]!.glyph} ${askFlatten(s)}`),
+         ...overflow.map((s, i) => `  (${i + 11}) ${askFlatten(s)} — text answer only`)]
       : [`--- Choices ----------------------------------`, `  (none — free-text reply)`];
     requireCode(args.code, code, [
       `--- Last message in channel ------------------`,
@@ -2347,8 +2368,13 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   // something, so it matters whose it is. A poll reports a distribution: an
   // extra voter changes the numbers, never the outcome's legitimacy. Tags are
   // still encoded so a poll CAN be pointed at people; they just are not required.
-  const qEnc = askEncodeBroadcasts(args.question);
-  const bEnc = askEncodeBroadcasts(args.body ?? "");
+  // Unescaped BEFORE broadcast/mention encoding and before the body is built,
+  // which is what makes it work for choices too: `askBuildText` flattens a
+  // choice's newlines to spaces (a newline there would split the pill into a
+  // line the parser cannot read back), so unescaping afterwards would be a
+  // no-op that silently did nothing.
+  const qEnc = askEncodeBroadcasts(unescapeArg(args.question));
+  const bEnc = askEncodeBroadcasts(unescapeArg(args.body ?? ""));
   const mentionToken = args.mentionToken ?? token;
   const qRep = await encodeMentionsDetailed(mentionToken, qEnc.text, channelId, args.mentionCookie);
   const bRep = bEnc.text
@@ -2360,7 +2386,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
     console.error(`⚠ ${stripTerminalControls(line)}`);
   }
 
-  const choices = args.choices;
+  const choices = args.choices.map(unescapeArg);
   const multi = !!args.multi;
   const until = args.until ?? "";
   const message = pollBuildText(question, body, choices, { multi, deadline: until });
@@ -2390,7 +2416,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
       `--- Last message in channel ------------------`,
       `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
       `--- Ballot (seeded as reactions) -------------`,
-      ...choices.map((s, i) => `  ${POLL_KEYCAPS[i]!.glyph} ${s}`),
+      // As posted: one line per pill (see the ask gate).
+      ...choices.map((s, i) => `  ${POLL_KEYCAPS[i]!.glyph} ${pollFlatten(s)}`),
       `--- Posting ----------------------------------`,
       fromLine(self, { asBot: args.asBot }),
       `  → ${dest}${threadTs ? " — THREAD REPLY" : " — NEW top-level message"}`,

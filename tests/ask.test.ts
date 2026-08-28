@@ -266,6 +266,48 @@ describe("ask(permalink) posts top-level, never a thread reply", () => {
   });
 });
 
+// Escapes must be interpreted BEFORE the body is built, because `askBuildText`
+// flattens a choice's newlines to spaces — a newline in a pill would split it
+// into a line the parser cannot read back. Unescaping afterwards would be a
+// no-op that silently did nothing, so the ordering is the whole feature here.
+describe("ask interprets escapes, and the gate previews what will post", () => {
+  test("a question keeps its line break; a choice is flattened, and previewed flattened", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", "#chan", "@bob 質問\\n2行目", "はい\\nyes", "いいえ", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      // The pill posts as one line, so the gate must show one line — otherwise
+      // the preview describes something that never gets sent.
+      expect(dry.stdout).toContain("1️⃣ はい yes");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      expect(posted).toContain("質問\n2行目");   // question keeps the break
+      expect(posted).toContain("1️⃣ はい yes");    // choice flattened to one line
+      expect(posted).not.toContain("\\n");        // no literal backslash-n survives
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the yen spelling works the same", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const base = ["ask", "#chan", "@bob 質問\u00A5n2行目", "はい", "--channel-id", CHAN];
+      const dry = await run(base, m.baseUrl);
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
+      expect(posted).toContain("質問\n2行目");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
 describe("ask restricts answers to the people tagged (CLI)", { timeout: 90_000 }, () => {
   const inline = (messages: unknown[]): InlineFixtures => ({
     ...AUTH,

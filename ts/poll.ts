@@ -71,7 +71,7 @@ function pollIsPillLine(line: string): boolean {
 
 /** One line, always: a newline inside a choice would split it into a line the
  *  parser cannot tell from body text. */
-function pollFlatten(s: string): string {
+export function pollFlatten(s: string): string {
   return s.replace(/\s*\n\s*/g, " ");
 }
 
