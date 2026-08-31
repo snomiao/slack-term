@@ -211,7 +211,32 @@ export async function startMock(
         // teardown then hangs forever and the worker never moves on to the next
         // test file. Closing connections explicitly makes `stop()` finish even
         // when a keep-alive socket was left behind.
-        server.close((err) => (err ? reject(err) : resolve()));
+        //
+        // The timer is the part that matters, and it is NOT belt-and-braces:
+        // `closeAllConnections` is optional (hence `?.`), and where it is
+        // missing — or does not reach a socket wedged mid-response — `close()`
+        // never calls back and NOTHING reports it. Vitest has no timeout for
+        // this: testTimeout and hookTimeout both sit above `afterAll`, so the
+        // run simply stops with the last test still marked green. That is
+        // exactly how this suite burned the whole CI budget after
+        // `slack.test.ts`'s final test, with no failing test to point at.
+        //
+        // Resolving rather than rejecting is deliberate: the tests are over by
+        // now, and a leaked listener in a worker that is about to exit is not
+        // worth failing a build for. Being slow to reap a socket must not look
+        // like a broken test suite.
+        let settled = false;
+        const done = (err?: Error | null) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (err) reject(err);
+          else resolve();
+        };
+        const timer = setTimeout(() => done(), 2000);
+        // Do not hold the process open for this timer alone.
+        (timer as unknown as { unref?: () => void }).unref?.();
+        server.close((err) => done(err));
         server.closeAllConnections?.();
       }),
   };
