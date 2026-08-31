@@ -57,7 +57,6 @@ export default defineConfig({
     // but reuses the worker, which is exactly the sharing that triggers it.
     // Isolating per file costs a process spawn each and buys determinism.
     isolate: true,
-    poolOptions: { forks: { singleFork: false }, threads: { singleThread: false } },
     fileParallelism: false,
     coverage: {
       // istanbul, not v8: the suite runs under bun, which does not implement
