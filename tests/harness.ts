@@ -16,11 +16,22 @@
 // superset this suite uses, so every call site keeps the inference it had
 // before the split. Only the runtime object swaps.
 import type * as Vitest from "vitest";
+// Static, NOT `await import("vitest")`. Every test file imports this module, so
+// a top-level await here makes each one an async module graph — and under a
+// vitest worker that is a worker dynamically importing the very runtime that
+// loaded it. Module evaluation has no timeout (testTimeout/hookTimeout cannot
+// fire during it), which is why CI hung for the full job budget while never
+// reporting a slow test or hook. A static import cannot re-enter.
+//
+// The bun branch stays dynamic because `bun:test` does not resolve under node —
+// but that import is reached only when Bun is the runtime, so it never runs
+// inside a vitest worker.
+import * as VitestRuntime from "vitest";
 
 const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const runner: any = isBun ? await import("bun:test") : await import("vitest");
+const runner: any = isBun ? await import("bun:test") : VitestRuntime;
 
 export const describe: typeof Vitest.describe = runner.describe;
 export const test: typeof Vitest.test = runner.test;
