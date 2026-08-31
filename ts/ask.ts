@@ -101,6 +101,32 @@ export function isInvalidNotice(line: string | undefined): boolean {
 export const ASK_RESOLVED_MARKER = "white_check_mark";
 export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
 
+/** How a keycap is WRITTEN into the body, and how it is read back.
+ *
+ *  Slack NORMALISES a unicode keycap in the stored `text`: post `1️⃣` and
+ *  `conversations.history` returns `:one:`. So a body built with glyphs never
+ *  reads back as what was sent, and `--waitFor` cannot recognise its own
+ *  question. `poll` already handled this; `ask` did not, which made every
+ *  pill-answered question uncollectable (reported from real use 2026-08-31:
+ *  four questions answered, nothing collected for ~20 minutes).
+ *
+ *  Both spellings are accepted on the way in: the shortcode is what Slack
+ *  stores, and the glyph is what a body hand-edited in the Slack UI can be. */
+function askStripPill(line: string, i: number): string | null {
+  const k = ASK_KEYCAPS[i]!;
+  for (const pre of [`:${k.name}:`, k.glyph]) {
+    if (line.startsWith(`${pre} `)) return line.slice(pre.length + 1);
+    if (line === pre) return "";
+  }
+  return null;
+}
+
+/** True if the line opens with ANY keycap — used only to find where the choice
+ *  block starts; WHICH keycap it is gets checked afterwards, in order. */
+function askIsPillLine(line: string): boolean {
+  return ASK_KEYCAPS.some((_k, i) => askStripPill(line, i) !== null);
+}
+
 /** One line, always: newlines inside a choice would break the line-based body. */
 export function askFlatten(s: string): string {
   return s.replace(/\s*\n\s*/g, " ");
@@ -154,6 +180,29 @@ export type AskParsed =
  *  by a loose heuristic: it is the one part of the body this command wrote
  *  verbatim, so matching it exactly is what keeps an unrelated message from
  *  being polled as if it were an ask. */
+/** Why `askParseMessage` rejected a body, in the reader's terms.
+ *
+ *  The single generic "this is not an ask" line sent a real user re-checking
+ *  permalinks that were fine, and cost ~20 minutes while pressed answers went
+ *  uncollected (2026-08-31). A rejection has to say WHICH check failed, because
+ *  the three causes have completely different fixes: wrong link, a body someone
+ *  edited, or a bug here. */
+export function askExplainReject(text: string): string {
+  if (!text.trim()) return "本文が空です (bot 投稿や添付のみのメッセージかもしれません)";
+  const lines = text.split("\n");
+  const last = lines[lines.length - 1] ?? "";
+  if (text.startsWith(ASK_RESOLVED_PREFIX)) {
+    return "回答済みマーク付きですが、引用された回答本文が見つかりません";
+  }
+  if (!/_$/.test(last)) {
+    return "末尾が `ask` の案内文ではありません — このメッセージは `slack ask` で投稿されたものではないか、本文が編集されています";
+  }
+  if (!lines[0]!.startsWith(ASK_MARKER_PREFIX) && !lines[0]!.startsWith("*")) {
+    return "先頭が質問文 (太字) ではありません — 本文が編集されている可能性があります";
+  }
+  return "選択肢の並びを読み取れません — 番号が 1 から連番になっていないか、本文が編集されています";
+}
+
 export function askParseMessage(text: string): AskParsed {
   const lines = text.split("\n");
 
@@ -221,7 +270,7 @@ export function askParseMessage(text: string): AskParsed {
     const raw: string[] = [];
     while (i >= 0) {
       const line = lines[i]!;
-      if (!ASK_KEYCAPS.some((k) => line.startsWith(`${k.glyph} `) || line === k.glyph)) break;
+      if (!askIsPillLine(line)) break;
       raw.unshift(line);
       i--;
     }
@@ -231,9 +280,9 @@ export function askParseMessage(text: string): AskParsed {
     // block starting at 2️⃣ would have it waiting on a pill nobody can press.
     if (!raw.length || raw.length > ASK_MAX_REACTION_CHOICES) return { kind: "other" };
     for (let k = 0; k < raw.length; k++) {
-      const glyph = ASK_KEYCAPS[k]!.glyph;
-      if (!(raw[k]!.startsWith(`${glyph} `) || raw[k] === glyph)) return { kind: "other" };
-      reactable.push(raw[k]!.slice(glyph.length + 1));
+      const rest = askStripPill(raw[k]!, k);
+      if (rest === null) return { kind: "other" };
+      reactable.push(rest);
     }
     if (lines[i] !== "") return { kind: "other" };
     if (i < end + 1) return { kind: "other" };
