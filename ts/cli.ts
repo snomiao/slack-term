@@ -21,6 +21,7 @@ import {
   askBuildText,
   askBuildResolvedText,
   askParseMessage,
+  askExplainReject,
   askFlatten,
   applyInvalidNotice,
   readInvalidNotice,
@@ -295,6 +296,17 @@ function slimMsg(m: Record<string, Json>): Record<string, Json> {
     // Thread stats, present only on thread parents. Without these a caller
     // reading top-level history cannot tell a post with replies from one
     // without, and silently misses everything said inside the thread.
+    // Reactions, when the message carries any. `ask` and `poll` record ANSWERS
+    // as reactions, so omitting them made `--json` useless as the fallback
+    // people reach for when a poller fails — the pressed pills were right there
+    // in the API response and the CLI dropped them (reported 2026-08-31).
+    ...(Array.isArray(m.reactions) && m.reactions.length
+      ? { reactions: asArray(m.reactions).map(asRecord).map((r) => ({
+          name: r.name ?? null,
+          count: r.count ?? null,
+          users: Array.isArray(r.users) ? r.users : [],
+        })) }
+      : {}),
     ...(m.reply_count !== undefined ? { reply_count: m.reply_count } : {}),
     ...(m.reply_users_count !== undefined ? { reply_users_count: m.reply_users_count } : {}),
     ...(m.latest_reply !== undefined ? { latest_reply: m.latest_reply } : {}),
@@ -2235,8 +2247,12 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   const parsed = askParseMessage(text);
   if (parsed.kind === "other") {
     console.error(
-      `Error: これは \`slack ask\` の質問ではありません (回答の読み取り方が分かりません)。\n` +
-      `  ${stripTerminalControls(args.link)}`,
+      `Error: これは \`slack ask\` の質問として読み取れません。\n` +
+      `  理由: ${askExplainReject(text)}\n` +
+      `  ${stripTerminalControls(args.link)}\n` +
+      // The pills are still readable by hand, so a failure here is not a dead
+      // end — say so, because the reported cost was not knowing that.
+      `  (押されたリアクションは残っています: slack read '${stripTerminalControls(args.link)}' で確認できます)`,
     );
     process.exit(ASK_EXIT_ERROR);
   }

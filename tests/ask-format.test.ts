@@ -161,6 +161,45 @@ describe("ask carries the invalid-ballot notice without losing the question", ()
 // language and the message is still recognisably an `ask`. The old instruction
 // strings stay matchable so questions posted before the marker existed remain
 // collectable — deleting that fallback would strand them.
+// Slack NORMALISES a unicode keycap in the stored text: post `1️⃣` and
+// conversations.history returns `:one:`. A parser that only accepts the glyph
+// therefore cannot read back a question the tool posted itself — which is
+// exactly what happened in real use (2026-08-31): four questions were answered
+// by pressing pills and `--waitFor` rejected all four as "not an ask" for ~20
+// minutes, so the answers were silently uncollected.
+describe("ask reads back the shortcode pills Slack actually stores", () => {
+  /** What conversations.history returns for a body built with glyphs. */
+  const asStored = (t: string) =>
+    t.replace(/1️⃣/g, ":one:").replace(/2️⃣/g, ":two:").replace(/3️⃣/g, ":three:");
+
+  test("a stored (shortcode) body parses, choices intact", () => {
+    const parsed = askParseMessage(asStored(askBuildText("q", "", ["A", "B", "C"], [], true)));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B", "C"]);
+    expect(parsed.question).toBe("q");
+  });
+
+  test("the glyph spelling still parses (a body hand-edited in the Slack UI)", () => {
+    const parsed = askParseMessage(askBuildText("q", "", ["A", "B"], [], true));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("a body with the real shape that failed: mentions, blank lines, 3 choices", () => {
+    // Mirrors the reported message — a tagged question, several body
+    // paragraphs, then the pills. The walk-up has to cross all of it.
+    const body = "背景の段落。\n\n二つ目の段落。";
+    const parsed = askParseMessage(asStored(
+      askBuildText("<@U00000001> どうする?", body, ["加える", "一緒に加える", "まだ"], [], false),
+    ));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["加える", "一緒に加える", "まだ"]);
+  });
+});
+
 describe("ask identity is language-independent", () => {
   test("the marker leads the body and the question still round-trips", () => {
     const text = askBuildText("q", "", ["A", "B"], [], true);

@@ -692,7 +692,11 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "20"], m.baseUrl);
       expect(r.exitCode).toBe(3);
       expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("質問ではありません");
+      expect(r.stderr).toContain("質問として読み取れません");
+      // The rejection must name WHICH check failed. A single generic line sent
+      // a real user re-checking permalinks that were fine, for ~20 minutes,
+      // while pressed answers went uncollected (2026-08-31).
+      expect(r.stderr).toContain("理由:");
     } finally {
       await m.stop();
     }
