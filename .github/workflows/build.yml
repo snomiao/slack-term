@@ -72,4 +72,4 @@ jobs:
       # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
       # is green regardless of outcome is the same as no job. If this regresses
       # it must go red.
-      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --maxWorkers=1
+      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage
