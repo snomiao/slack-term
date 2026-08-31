@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -249,5 +249,39 @@ describe("ask identity is language-independent", () => {
   test("resolved wins over open, so a settled question is never re-polled", () => {
     const resolved = askBuildResolvedText("q", { answer: "はい", how: "返信" }, "");
     expect(askParseMessage(resolved).kind).toBe("resolved");
+  });
+});
+
+
+// The rejection message is a feature in its own right. A single generic line
+// cost a real user ~20 minutes re-checking permalinks that were fine, while
+// pressed answers went uncollected (2026-08-31). Working correctly and being
+// recoverable when broken are separate properties, so the reason is asserted
+// like any other behaviour.
+describe("askExplainReject names which check failed", () => {
+  test("an empty body", () => {
+    expect(askExplainReject("")).toContain("本文が空");
+    expect(askExplainReject("   \n  ")).toContain("本文が空");
+  });
+
+  test("a ✅ body whose quoted answer is missing", () => {
+    expect(askExplainReject(":white_check_mark: *q*\n_返信で回答済み_")).toContain("回答済みマーク");
+  });
+
+  test("a message that is simply not an ask", () => {
+    expect(askExplainReject("ただの発言です")).toContain("案内文ではありません");
+  });
+
+  test("an ask whose leading question line was edited away", () => {
+    // Instruction intact (so it looks like an ask) but the bold question gone.
+    const t = askBuildText("q", "", ["A", "B"], [], true).split("\n");
+    t[0] = "編集されて太字が消えた行";
+    expect(askExplainReject(t.join("\n"))).toContain("先頭が質問文");
+  });
+
+  test("an ask whose choice block cannot be read", () => {
+    // Marker, question and instruction all intact; the pills are broken.
+    const t = askBuildText("q", "", ["A", "B"], [], true).replace(":one: A\n", "");
+    expect(askExplainReject(t)).toContain("選択肢の並び");
   });
 });
