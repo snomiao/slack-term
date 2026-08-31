@@ -285,7 +285,10 @@ describe("ask interprets escapes, and the gate previews what will post", () => {
       expect(r.exitCode).toBe(0);
       const posted = JSON.parse(m.requests.slice(before).find((q) => q.method === "chat.postMessage")!.body).text as string;
       expect(posted).toContain("質問\n2行目");   // question keeps the break
-      expect(posted).toContain("1️⃣ はい yes");    // choice flattened to one line
+      // The POSTED body uses the shortcode — that is the form Slack stores, so
+      // writing it keeps sent and read-back bytes identical. The terminal gate
+      // above still shows the glyph, which is right: it is for a human to read.
+      expect(posted).toContain(":one: はい yes"); // choice flattened to one line
       expect(posted).not.toContain("\\n");        // no literal backslash-n survives
     } finally {
       await m.stop();

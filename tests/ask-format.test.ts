@@ -167,6 +167,30 @@ describe("ask carries the invalid-ballot notice without losing the question", ()
 // exactly what happened in real use (2026-08-31): four questions were answered
 // by pressing pills and `--waitFor` rejected all four as "not an ask" for ~20
 // minutes, so the answers were silently uncollected.
+// The check that would have caught the original bug on its own: what we POST
+// must be byte-identical to what Slack STORES, so that reading it back needs no
+// normalisation. The old code built with `1️⃣`, Slack stored `:one:`, and the
+// difference was invisible until a real question failed to collect.
+describe("the posted body is already in Slack's stored form", () => {
+  test("choices are written as shortcodes, never as glyphs", () => {
+    const text = askBuildText("q", "", ["A", "B"], [], true);
+    expect(text).toContain(":one: A");
+    expect(text).toContain(":two: B");
+    // A glyph here means the stored text will differ from the sent text.
+    expect(text).not.toContain("1️⃣");
+    expect(text).not.toContain("2️⃣");
+  });
+
+  test("round-trip: build -> (Slack stores verbatim) -> parse", () => {
+    const built = askBuildText("q", "本文", ["A", "B", "C"], [], false);
+    // No normalisation step in between — that is the point.
+    const parsed = askParseMessage(built);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B", "C"]);
+  });
+});
+
 describe("ask reads back the shortcode pills Slack actually stores", () => {
   /** What conversations.history returns for a body built with glyphs. */
   const asStored = (t: string) =>

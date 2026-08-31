@@ -112,9 +112,15 @@ export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
  *
  *  Both spellings are accepted on the way in: the shortcode is what Slack
  *  stores, and the glyph is what a body hand-edited in the Slack UI can be. */
+/** How a keycap is WRITTEN into the body: the shortcode, because that is the
+ *  form Slack stores and therefore the form that reads back unchanged. */
+function askPill(i: number): string {
+  return `:${ASK_KEYCAPS[i]!.name}:`;
+}
+
 function askStripPill(line: string, i: number): string | null {
   const k = ASK_KEYCAPS[i]!;
-  for (const pre of [`:${k.name}:`, k.glyph]) {
+  for (const pre of [askPill(i), k.glyph]) {
     if (line.startsWith(`${pre} `)) return line.slice(pre.length + 1);
     if (line === pre) return "";
   }
@@ -142,7 +148,12 @@ export function askBuildText(question: string, body: string, reactable: string[]
     lines.push("");
     // Flattened: a choice is a pill label, and a newline in one would split it
     // into a line the parser cannot tell from body text.
-    lines.push(...reactable.map((s, i) => `${ASK_KEYCAPS[i]!.glyph} ${askFlatten(s)}`));
+    // Built with the SHORTCODE, matching what Slack stores. Building with the
+    // glyph worked only because the parser now accepts both — the body still
+    // came back as `:one:` and never matched what was sent. Writing the stored
+    // form keeps posted and read-back bytes identical, which is what the
+    // round-trip test can actually check. (`poll` already did this.)
+    lines.push(...reactable.map((s, i) => `${askPill(i)} ${askFlatten(s)}`));
     if (overflow.length) {
       lines.push("");
       lines.push(...overflow.map((s, i) => `(${i + 11}) ${askFlatten(s)}`));
