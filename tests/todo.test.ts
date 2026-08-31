@@ -387,9 +387,12 @@ describe("withRateLimitRetry", () => {
 // file finished in under two seconds.
 describe("the backoff cannot sleep for real under a test runner", () => {
   test("a multi-second sleep returns immediately", async () => {
-    // Deliberately NOT stubbed: this asserts the built-in guard, so it must
-    // survive a restoreAllMocks that removed the file-wide spy.
-    vi.restoreAllMocks();
+    // Restore ONLY the sleep spy, not every mock in the file. `restoreAllMocks`
+    // here also stripped the `cache` block's path/now stubs — installed in its
+    // own beforeEach, which had already run — and left the next tests writing
+    // to the real cache file. Asserting the guard must not disarm unrelated
+    // isolation; that is how a "belt and braces" test becomes the failure.
+    (_internals.sleep as unknown as { mockRestore?: () => void }).mockRestore?.();
     const t0 = Date.now();
     await _internals.sleep(3000);
     expect(Date.now() - t0).toBeLessThan(250);
