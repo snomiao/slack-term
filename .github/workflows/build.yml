@@ -72,4 +72,9 @@ jobs:
       # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
       # is green regardless of outcome is the same as no job. If this regresses
       # it must go red.
+      # Runs ONLY todo.test.ts's own dependencies out of a clean process first,
+      # so a wedge there fails fast and visibly instead of after 5 minutes.
+      # Split because CI has never once got past this file, while every other
+      # file completes in under a second (measured across 6 runs).
+      - run: timeout --signal=INT 120 node node_modules/vitest/vitest.mjs run tests/todo.test.ts --coverage=false --reporter=verbose
       - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage
