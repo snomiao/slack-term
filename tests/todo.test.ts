@@ -380,6 +380,22 @@ describe("withRateLimitRetry", () => {
 // (d) cache — TTL expiry and corrupt-file fallback
 // ──────────────────────────────────────────────────────────
 
+// The rate-limit backoff must never wait real time under a test runner, and a
+// spy is not enough to guarantee that: any nested `vi.restoreAllMocks()` undoes
+// the stub, and the next test then sleeps for real. That is what wedged CI —
+// this file consumed the entire job budget in the retry path while every other
+// file finished in under two seconds.
+describe("the backoff cannot sleep for real under a test runner", () => {
+  test("a multi-second sleep returns immediately", async () => {
+    // Deliberately NOT stubbed: this asserts the built-in guard, so it must
+    // survive a restoreAllMocks that removed the file-wide spy.
+    vi.restoreAllMocks();
+    const t0 = Date.now();
+    await _internals.sleep(3000);
+    expect(Date.now() - t0).toBeLessThan(250);
+  });
+});
+
 describe("cache", () => {
   let dir: string;
   let now = 1_000_000;

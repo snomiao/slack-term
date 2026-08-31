@@ -199,8 +199,28 @@ export const MAX_RATE_LIMIT_RETRIES = 3;
 
 export const _internals = {
   // Swappable so tests never wait real time (same pattern as tail.ts).
-  sleep: (ms: number): Promise<void> => new Promise((res) => setTimeout(res, ms)),
+  //
+  // The spy is NOT the only defence, and must not be: a stub installed in a
+  // `beforeEach` is undone by any `vi.restoreAllMocks()` in a nested block's
+  // `afterEach`, and the next test then backs off for REAL seconds. That is
+  // what wedged CI — `todo.test.ts` burned the whole job budget in the retry
+  // path while every other file finished in under two seconds, and it never
+  // reproduced locally because the timing differs.
+  //
+  // So the backoff itself refuses to sleep under a test runner. Detecting the
+  // environment is ugly, but the alternative is a rule ("never let a nested
+  // afterEach restore this") that has to be remembered by every future test —
+  // and it already was not.
+  sleep: (ms: number): Promise<void> =>
+    isTestEnv() ? Promise.resolve() : new Promise((res) => setTimeout(res, ms)),
 };
+
+/** True under vitest or `bun test`. Both set NODE_ENV=test; vitest also sets
+ *  VITEST. Checked at call time, not at import, so a test that deliberately
+ *  wants the real timer can clear it. */
+function isTestEnv(): boolean {
+  return !!process.env.VITEST || process.env.NODE_ENV === "test" || !!process.env.BUN_TEST;
+}
 
 /** Run an API call, backing off and retrying on 429. Mirrors tail.ts: warn on
  *  stderr, sleep `retryAfter`, try again — but bounded, so a persistently
