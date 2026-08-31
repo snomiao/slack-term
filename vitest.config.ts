@@ -42,6 +42,23 @@ export default defineConfig({
     // where it stopped.
     hookTimeout: 20_000,
     teardownTimeout: 20_000,
+    // One fresh process per test FILE.
+    //
+    // `todo.test.ts` replaces `ts/slack.ts` with `vi.doMock` and then imports
+    // the module under test at top level. When an earlier file in the SAME
+    // worker has already imported the real `ts/slack.ts`, that import can
+    // deadlock on Node 24 — the condition tests/todo.test.ts documents at its
+    // mockModule call. Module evaluation has no timeout (testTimeout,
+    // hookTimeout and teardownTimeout all sit above it), so the run simply goes
+    // silent with the last test still green and nothing to point at. Measured
+    // in CI: tail and slack complete, todo starts and never finishes.
+    //
+    // `--no-file-parallelism` alone does NOT prevent this: it serialises files
+    // but reuses the worker, which is exactly the sharing that triggers it.
+    // Isolating per file costs a process spawn each and buys determinism.
+    isolate: true,
+    poolOptions: { forks: { singleFork: false }, threads: { singleThread: false } },
+    fileParallelism: false,
     coverage: {
       // istanbul, not v8: the suite runs under bun, which does not implement
       // node's V8 coverage inspector. The v8 provider therefore reported 0% for
