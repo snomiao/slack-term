@@ -1,18 +1,62 @@
 # CI の coverage step が hang する件 — 調査記録
 
-**状態: 解決済み (2026-08-31)。** `continue-on-error` は外し、CI は
-失敗すれば赤くなる状態に戻した。
+**状態: 部分的に解決 (2026-08-31)。** 大きな遅さは 2 件 直したが、
+**`tests/todo.test.ts` が CI でのみ wedge する**現象は未解決で、
+coverage step は `continue-on-error` のまま。
 
-原因は **2 つ**あり、片方だけでは直らなかった:
+## 直したもの (実測値つき)
 
 1. **`coverage.include` が広すぎた** — istanbul が `ts/cli.ts` (4220 行) を
-   毎回 instrument して結果を捨てていた。Node 24 で 2m59s → 33s。
-2. **fork pool の worker 起動** — 残った 33s のうち大半がこれ。
-   `--maxWorkers=1` で **16s**。`--no-file-parallelism` を既に付けているので
-   2 個目の worker は起動コストしか産まない。
+   毎回 instrument して結果を捨てていた。Node 24 で **2m59s → 33s**。
+2. **mock server の teardown が無限待ち** — `closeAllConnections` は optional で、
+   届かない socket があると `server.close()` の callback が永久に来ない。
+   2 秒の上限を追加。**これで CI の停止位置が初めて動いた**
+   (slack.test.ts → todo.test.ts)。
 
-決め手は `--pool=threads` が 5.5s で走ったこと。テストではなく
-**fork の起動が支配的**だと分かり、そこから worker 数に辿り着いた。
+副産物として、backoff が test 実行時に実時間を待たない guard も入れた
+(CI 実測で有効: vitest worker 内 `VITEST='true'`、`sleep(4000)` の実経過 0ms)。
+
+## 未解決: todo.test.ts が CI でのみ wedge する
+
+**切り分け済みの事実:**
+
+    CI で単独実行 (clean process, coverage 無し, verbose)  -> hang
+    同じコマンドをローカル Node 24 で実行                    -> 1-2 秒で完走
+    CI=true + TTY 無しでローカル再現                        -> 1 秒で完走
+    他 11 ファイル                                          -> すべて 1 秒未満
+
+つまり **worker の共有でも、coverage の instrument でも、他ファイルとの
+相互作用でもない。ファイル単体の問題で、かつ GitHub runner 上でしか出ない。**
+
+stderr は `withRateLimitRetry` の 4 テストまで出力され、そこで止まる。
+ただし vitest 4 の `--reporter=verbose` は個別テスト行を出さないため、
+「どのテストまで通ったか」は stderr の順序からの推定に留まる。
+
+**次に試すべきこと:**
+
+- `tmate` 等で runner に入り、hang 中のプロセスの stack を直接取る
+- `todo.test.ts` を分割し、どの describe が原因かを CI 上で二分探索する
+- vitest を 4.x 以外に上げ下げして再現するか見る
+
+## `continue-on-error` にした理由 (excluding ではなく)
+
+`todo.test.ts` を除外すると lines 99.6% → **84.9%**、branches → **72.6%** に
+落ちる。閾値を実力より下げることになり、**「守られているように見えて実は
+緩い門禁」は、明示的に advisory な門禁より悪い。**
+
+`bun run test` は 580 テスト全部を**硬い門禁**として回し続けている。
+失われているのは coverage の閾値チェックだけ。
+
+## 否定された仮説 (再検証しないこと)
+
+    subprocess 系テストが遅い       -> 除外しても CI は hang (別途 4m40s→11.7s の実利はあり)
+    プロセスが終了しない            -> hanging-process reporter が何も報告しない
+    TTY の有無                      -> < /dev/null でも変わらず
+    Node のバージョン差 (26 vs 24)  -> 24 でもローカルは 1-2 秒
+    fork pool の worker 起動        -> --maxWorkers=1 で CI は直らず
+    sleep stub の restore 漏れ      -> guard を入れても CI は直らず
+    harness の top-level await      -> 静的 import にしても直らず
+    worker の共有 / ファイル間干渉  -> 単独実行でも hang
 
 以下は当時の調査記録。**否定された仮説**の一覧としてそのまま残す。
 
