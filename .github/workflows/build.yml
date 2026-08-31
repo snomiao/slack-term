@@ -59,18 +59,14 @@ jobs:
       # 15-minute job limit, where the runner discards the log and the failure
       # reads as "cancelled" rather than naming a cause. Failing at 5 minutes
       # with output intact is what made the actual bug findable.
-      # `continue-on-error` is a KNOWN, DELIBERATE gap, not an oversight.
+      # `--maxWorkers=1`: the fork pool spawning workers is what hung this job.
+      # Measured on Node 24 (the runner's version) with the ts/cli.ts
+      # instrumentation removed: the run is ~16s, and pinning one worker keeps
+      # it there instead of paying per-fork startup on a 2-core runner. The
+      # suite already runs with --no-file-parallelism, so a second worker buys
+      # nothing but startup cost.
       #
-      # This step still times out on GitHub's runner for a reason nobody has
-      # isolated yet: the three files it reaches (tail, slack, todo) take 5.4s
-      # locally on the runner's own Node 24, and 300s+ here. Every hypothesis
-      # tested and rejected so far is recorded in docs/ci-coverage-hang.md so
-      # the next attempt does not re-run them.
-      #
-      # What is NOT lost by this: `bun run test` above runs all 553 tests as a
-      # hard gate. Only the branch-coverage THRESHOLD is advisory until this is
-      # fixed. The alternative — leaving the job red — meant every PR shipped
-      # against a failing check, which is strictly worse: a red build that is
-      # always red stops being read at all.
-      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism
-        continue-on-error: true
+      # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
+      # is always green regardless of outcome is the same as no job. If this
+      # regresses it must go red.
+      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --maxWorkers=1

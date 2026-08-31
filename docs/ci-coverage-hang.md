@@ -1,7 +1,20 @@
 # CI の coverage step が hang する件 — 調査記録
 
-**状態: 未解決。** `continue-on-error: true` で暫定回避している。
-この文書の目的は、**次に挑む人が同じ仮説を再検証しないで済むようにすること**。
+**状態: 解決済み (2026-08-31)。** `continue-on-error` は外し、CI は
+失敗すれば赤くなる状態に戻した。
+
+原因は **2 つ**あり、片方だけでは直らなかった:
+
+1. **`coverage.include` が広すぎた** — istanbul が `ts/cli.ts` (4220 行) を
+   毎回 instrument して結果を捨てていた。Node 24 で 2m59s → 33s。
+2. **fork pool の worker 起動** — 残った 33s のうち大半がこれ。
+   `--maxWorkers=1` で **16s**。`--no-file-parallelism` を既に付けているので
+   2 個目の worker は起動コストしか産まない。
+
+決め手は `--pool=threads` が 5.5s で走ったこと。テストではなく
+**fork の起動が支配的**だと分かり、そこから worker 数に辿り着いた。
+
+以下は当時の調査記録。**否定された仮説**の一覧としてそのまま残す。
 
 ## 症状
 
