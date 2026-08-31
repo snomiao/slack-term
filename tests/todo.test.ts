@@ -434,7 +434,23 @@ describe("cache", () => {
   });
 
   test("an unwritable cache path is swallowed", () => {
-    vi.spyOn(cacheMod._internals, "path").mockReturnValue("/proc/definitely/not/writable/cache.json");
+    // The parent is a FILE, so mkdir fails with ENOTDIR — on every platform,
+    // as any uid, root included.
+    //
+    // This used to point at "/proc/definitely/not/writable/cache.json", and
+    // that ONE path is what made this repo's CI unable to go green for months.
+    // On Linux, mkdir under /proc returns ENOENT — not EACCES, not EPERM —
+    // even though /proc itself exists, so node's recursive mkdirp never
+    // terminates: /proc/definitely → ENOENT → push the parent → /proc →
+    // EEXIST → pop back → ENOENT → … It is a native spin, so the worker sits
+    // in state R burning CPU, and no timeout can fire and no diagnostic report
+    // can be taken, because the isolate is never interruptible.
+    //
+    // It could not reproduce on macOS because /proc does not exist there: the
+    // walk reaches "/", mkdir("/proc") returns EPERM, and node has an explicit
+    // case for EPERM that returns. That single errno was the whole difference.
+    writeFileSync(join(dir, "not-a-dir"), "x");
+    vi.spyOn(cacheMod._internals, "path").mockReturnValue(join(dir, "not-a-dir", "sub", "cache.json"));
     cacheMod.resetCacheForTests();
     expect(() => cacheMod.cacheSet("channels", "T_ONE", "#x", "C1")).not.toThrow();
   });
