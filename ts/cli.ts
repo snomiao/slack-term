@@ -38,6 +38,7 @@ import {
   pollParseMessage,
   pollTally,
 } from "./poll.ts";
+import { seedReactionsInOrder } from "./reactionSeed.ts";
 import {
   authTest,
   authScopes,
@@ -2133,25 +2134,21 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // NOTE the colons: the modifier's argument is itself colon-wrapped, and the
   // bare `has:question` form does NOT error — it silently degrades to a
   // full-text search and returns plausible-looking counts. See ts/todo.ts.
-  try {
-    await reactionAdd(token, channelId, ts, ASK_MARKER, cookie);
-  } catch (e: unknown) {
-    // Cosmetic + searchability, not correctness: the body still identifies it.
-    console.error(`  (marker ${ASK_MARKER} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
-  }
-
-  // Seeded one at a time and in order: Slack keeps reactions in the order they
-  // were added, so sequential adds are what make the pills read 1,2,3 rather
-  // than shuffled. A parallel add is not an optimization here, it is a bug.
-  for (let i = 0; i < reactable.length; i++) {
-    try {
-      await reactionAdd(token, channelId, ts, ASK_KEYCAPS[i]!.name, cookie);
-    } catch (e: unknown) {
-      // A missing seed only costs the answerer a trip to the emoji picker, so
-      // warn and keep going rather than abandon a question already posted.
-      console.error(`  (リアクション ${ASK_KEYCAPS[i]!.name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
-    }
-  }
+  // Marker first, then 1,2,3 — and spaced out. Sequential awaits alone are NOT
+  // enough: measured on two real questions from the same build, one came back
+  // `two|one|question|three`. See ts/reactionSeed.ts for the evidence and for
+  // SLACK_REACTION_SEED_GAP_MS.
+  await seedReactionsInOrder(
+    [ASK_MARKER, ...reactable.map((_, i) => ASK_KEYCAPS[i]!.name)],
+    (name) => reactionAdd(token, channelId, ts, name, cookie),
+    (name, e) => {
+      const why = e instanceof Error ? e.message : String(e);
+      // The marker is cosmetic + searchability; a keycap only costs the
+      // answerer a trip to the emoji picker. Neither abandons a posted question.
+      if (name === ASK_MARKER) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
+      else console.error(`  (リアクション ${name} を付けられませんでした: ${why})`);
+    },
+  );
 
   let permalink = "";
   try {
@@ -2453,24 +2450,19 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
   // already ignored by the tally (it counts keycap names only), so this costs
   // the ballot nothing.
-  try {
-    await reactionAdd(token, channelId, ts, POLL_MARKER, cookie);
-  } catch (e: unknown) {
-    console.error(`  (marker ${POLL_MARKER} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
-  }
-
-  // Sequential and in order: Slack keeps reactions in the order they were added,
-  // so this is what makes the pills read 1,2,3 rather than shuffled. Parallel
-  // adds are not an optimization here, they are a bug.
-  for (let i = 0; i < choices.length; i++) {
-    try {
-      await reactionAdd(token, channelId, ts, POLL_KEYCAPS[i]!.name, cookie);
-    } catch (e: unknown) {
+  // Marker first, then 1,2,3 — and spaced out, for the reason `ask` documents
+  // at its own seeding call and ts/reactionSeed.ts documents in full.
+  await seedReactionsInOrder(
+    [POLL_MARKER, ...choices.map((_, i) => POLL_KEYCAPS[i]!.name)],
+    (name) => reactionAdd(token, channelId, ts, name, cookie),
+    (name, e) => {
+      const why = e instanceof Error ? e.message : String(e);
       // A missing seed costs a voter a trip to the emoji picker; it does not
       // invalidate a poll that is already posted.
-      console.error(`  (リアクション ${POLL_KEYCAPS[i]!.name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
-    }
-  }
+      if (name === POLL_MARKER) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
+      else console.error(`  (リアクション ${name} を付けられませんでした: ${why})`);
+    },
+  );
 
   let permalink = "";
   try {
