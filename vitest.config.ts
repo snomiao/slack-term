@@ -34,6 +34,14 @@ export default defineConfig({
       "node_modules/**",
     ],
     testTimeout: 30_000,
+    // A wedged hook or teardown must REPORT, not consume the job budget.
+    // Both default to 10s but were unset, and the defaults do not cover the
+    // gap that actually bit here: a file that stops producing output between
+    // tests leaves the run silent until the CI job timeout, with the last test
+    // still marked green and no failure to point at. These make the runner say
+    // where it stopped.
+    hookTimeout: 20_000,
+    teardownTimeout: 20_000,
     coverage: {
       // istanbul, not v8: the suite runs under bun, which does not implement
       // node's V8 coverage inspector. The v8 provider therefore reported 0% for
