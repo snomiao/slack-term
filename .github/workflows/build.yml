@@ -69,4 +69,7 @@ jobs:
       # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
       # is always green regardless of outcome is the same as no job. If this
       # regresses it must go red.
-      - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --maxWorkers=1
+      # DIAGNOSTIC: hookTimeout/teardownTimeout make a stuck HOOK report itself
+      # instead of hanging silently. testTimeout was already 30s and never
+      # fired, which is the evidence that the block is NOT in a test body.
+      - run: timeout --signal=INT 240 node node_modules/vitest/vitest.mjs run --coverage --no-file-parallelism --maxWorkers=1 --hookTimeout=15000 --teardownTimeout=15000 --reporter=verbose
