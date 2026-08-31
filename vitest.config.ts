@@ -93,6 +93,7 @@ export default defineConfig({
         "ts/poll.ts",
         "ts/profiles.ts",
         "ts/quietHours.ts",
+        "ts/reactionSeed.ts",
         "ts/rtm.ts",
         "ts/slack.ts",
         "ts/tail.ts",
