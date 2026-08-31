@@ -44,18 +44,18 @@ export default defineConfig({
     teardownTimeout: 20_000,
     // One fresh process per test FILE.
     //
-    // `todo.test.ts` replaces `ts/slack.ts` with `vi.doMock` and then imports
-    // the module under test at top level. When an earlier file in the SAME
-    // worker has already imported the real `ts/slack.ts`, that import can
-    // deadlock on Node 24 — the condition tests/todo.test.ts documents at its
-    // mockModule call. Module evaluation has no timeout (testTimeout,
-    // hookTimeout and teardownTimeout all sit above it), so the run simply goes
-    // silent with the last test still green and nothing to point at. Measured
-    // in CI: tail and slack complete, todo starts and never finishes.
+    // NOT for the reason previously written here. This block used to blame a
+    // deadlocking dynamic import for the CI hang ("tail and slack complete,
+    // todo starts and never finishes"); the observation was real, the
+    // explanation was wrong, and it sent the investigation down a dead end for
+    // weeks. The actual cause was a /proc path in one cache test — see
+    // docs/ci-coverage-hang.md and the test's own comment.
     //
-    // `--no-file-parallelism` alone does NOT prevent this: it serialises files
-    // but reuses the worker, which is exactly the sharing that triggers it.
-    // Isolating per file costs a process spawn each and buys determinism.
+    // What isolation is still worth: `todo.test.ts` replaces `ts/slack.ts` with
+    // `vi.doMock` and imports the subject at top level, so a worker that has
+    // already imported the real module gives it a different graph than a fresh
+    // one. One process per file makes that deterministic rather than
+    // order-dependent, and at 33s for the whole pass the spawns are affordable.
     isolate: true,
     fileParallelism: false,
     coverage: {
@@ -75,7 +75,8 @@ export default defineConfig({
       // then threw the result away.
       //
       // That cost is what made this job unrunnable in CI. Measured on Node 24
-      // (GitHub's runner version; local dev is on 26 and hides it):
+      // (local dev is on 26 and hides it; GitHub's runner is on 22, and the
+      // note here used to claim 24 was the runner's version — it is not):
       //
       //   glob    2m59s   transform 19.6s + import 26.0s, tests only 13.1s
       //   listed    33s   same coverage, to the digit

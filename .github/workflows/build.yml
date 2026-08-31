@@ -60,34 +60,21 @@ jobs:
       # reads as "cancelled" rather than naming a cause. Failing at 5 minutes
       # with output intact is what made the actual bug findable.
       # `--maxWorkers=1`: the fork pool spawning workers is what hung this job.
-      # Measured on Node 24 (the runner's version) with the ts/cli.ts
-      # instrumentation removed: the run is ~16s, and pinning one worker keeps
-      # it there instead of paying per-fork startup on a 2-core runner. The
-      # suite already runs with --no-file-parallelism, so a second worker buys
-      # nothing but startup cost.
+      # Measured on Node 22 (the runner's version — the earlier note here said
+      # 24, and that wrong number is part of why the hang took so long to pin
+      # down) with the ts/cli.ts instrumentation removed: the run is ~16s, and
+      # pinning one worker keeps it there instead of paying per-fork startup.
+      # The suite already runs with --no-file-parallelism, so a second worker
+      # buys nothing but startup cost.
       #
-      # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
-      # is always green regardless of outcome is the same as no job. If this
-      # regresses it must go red.
       # `timeout` stays as a backstop, and NOT as continue-on-error: a job that
       # is green regardless of outcome is the same as no job. If this regresses
       # it must go red.
-      # KNOWN GAP — see docs/ci-coverage-hang.md for the full investigation.
       #
-      # `tests/todo.test.ts` wedges on GitHub's runner and ONLY there. Measured
-      # in CI it hangs even ALONE, in a clean process, with coverage off — so it
-      # is the file itself, not worker sharing, not the instrumentation, and not
-      # an interaction with another file. The identical command on the same Node
-      # 24, with CI=true and no TTY, finishes in 1-2s locally.
-      #
-      # `continue-on-error` rather than excluding the file: dropping it would
-      # take lines from 99.6% to 84.9% and branches to 72.6%, i.e. the gate
-      # would have to be lowered below what the suite actually achieves —
-      # a weaker gate that LOOKS enforced is worse than one that is visibly
-      # advisory.
-      #
-      # What is NOT lost: `bun run test` above runs all 580 tests, todo.test.ts
-      # included, as a hard gate on every push. Only the coverage THRESHOLD is
-      # advisory until this is understood.
+      # This step was advisory (continue-on-error) while `tests/todo.test.ts`
+      # wedged here and only here. Root cause, found 2026-08-31 and recorded in
+      # docs/ci-coverage-hang.md: one test pointed the cache at a path under
+      # /proc, where mkdir returns ENOENT even though /proc exists, so node's
+      # recursive mkdirp spun forever in native code. Fixed at the test, so the
+      # gate is enforced again.
       - run: timeout --signal=INT 300 node node_modules/vitest/vitest.mjs run --coverage
-        continue-on-error: true
