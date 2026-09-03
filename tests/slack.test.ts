@@ -855,4 +855,114 @@ describe("slack.ts", () => {
       process.env.SLACK_API_BASE = originalBase;
     }
   });
+
+  // A Slack Connect counterpart belongs to ANOTHER team, so `users.list` — which
+  // is scoped to your own workspace — never returns them. Every lookup used to
+  // walk only that list and answer "User not found", which is indistinguishable
+  // from a typo'd handle even though the person is right there in your DMs.
+  // Reported against a real workspace 2026-09-03.
+  const connectFixtures = {
+    "auth.test": { ok: true, user_id: "U00000001", user: "alice", team: "Acme", team_id: "T00000001" },
+    "users.list__limit=200": {
+      ok: true,
+      members: [
+        { id: "U00000001", name: "alice", real_name: "Alice", profile: { display_name: "" } },
+        { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } },
+      ],
+      response_metadata: { next_cursor: "" },
+    },
+    "conversations.list__limit=200&types=im": {
+      ok: true,
+      channels: [
+        { id: "D00000001", user: "U00000002", is_im: true },
+        { id: "D00000002", user: "U00000003", is_im: true, is_ext_shared: true },
+      ],
+      response_metadata: { next_cursor: "" },
+    },
+    "users.info__user=U00000003": {
+      ok: true,
+      user: { id: "U00000003", name: "carol", real_name: "Carol Connect", team_id: "T00000002", profile: { display_name: "carol" } },
+    },
+  };
+
+  async function withMock<T>(inline: Record<string, unknown>, fn: () => Promise<T>): Promise<T> {
+    const m = await startMock({ inline });
+    const originalBase = process.env.SLACK_API_BASE;
+    process.env.SLACK_API_BASE = `${m.baseUrl}/api`;
+    try {
+      return await fn();
+    } finally {
+      await m.stop();
+      process.env.SLACK_API_BASE = originalBase;
+    }
+  }
+
+  test("resolveChannel finds the DM of a Connect user users.list cannot see", async () => {
+    await withMock(connectFixtures, async () => {
+      expect(await slack.resolveChannel(token, "@carol")).toBe("D00000002");
+    });
+  });
+
+  test("resolveUserId finds a Connect user users.list cannot see", async () => {
+    await withMock(connectFixtures, async () => {
+      expect(await slack.resolveUserId(token, "@carol")).toBe("U00000003");
+    });
+  });
+
+  test("a failed lookup names the populations it searched", async () => {
+    await withMock(connectFixtures, async () => {
+      // The counts are the fix: "none of 2 members and 1 DM partner" is a
+      // wrong handle, and the reader can see the search actually happened.
+      await expect(slack.resolveUserId(token, "@nobody")).rejects.toThrow(
+        /searched 2 workspace account\(s\) and 1 Slack Connect DM partner\(s\)/,
+      );
+      await expect(slack.resolveUserId(token, "@nobody")).rejects.toThrow(/user ls --external/);
+    });
+  });
+
+  test("an empty users.list is not reported as a missing user", async () => {
+    // The failure this whole change exists for: a lookup that cannot see its
+    // population must not answer "not found", which claims the population was
+    // searched. Nothing here says anything about whether @carol exists.
+    await withMock(
+      {
+        ...connectFixtures,
+        "users.list__limit=200": { ok: true, members: [], response_metadata: { next_cursor: "" } },
+        "conversations.list__limit=200&types=im": { ok: true, channels: [], response_metadata: { next_cursor: "" } },
+      },
+      async () => {
+        await expect(slack.resolveUserId(token, "@carol")).rejects.toThrow(/returned no members at all/);
+        await expect(slack.resolveUserId(token, "@carol")).rejects.not.toThrow(/User not found/);
+      },
+    );
+  });
+
+  test("a Connect user with no DM still reports the DM as the missing part", async () => {
+    await withMock(
+      { ...connectFixtures, "conversations.list__limit=200&types=im": { ok: true, channels: [], response_metadata: { next_cursor: "" } } },
+      async () => {
+        await expect(slack.resolveChannel(token, "@bob")).rejects.toThrow(/No existing DM with @bob \(U00000002\)/);
+      },
+    );
+  });
+
+  // A `U…` is a person, and the conversation a person names is the DM with them.
+  // Both forms used to be refused: the bare id as a malformed target, the `@`
+  // form as a user nobody is named.
+  test("resolveChannel accepts a bare user ID as that person's DM", async () => {
+    expect(await slack.resolveChannel(token, "U00000002")).toBe("D00000001");
+  });
+
+  test("resolveChannel accepts a user ID that was given an @ prefix", async () => {
+    expect(await slack.resolveChannel(token, "@U00000002")).toBe("D00000001");
+  });
+
+  test("resolveUserId accepts a user ID that was given an @ prefix", async () => {
+    expect(await slack.resolveUserId(token, "@U99999999")).toBe("U99999999");
+  });
+
+  test("a lowercase name that looks id-ish is still resolved as a name", async () => {
+    // Handles are lowercase and IDs are not, so `@u1234567` must stay a name.
+    await expect(slack.resolveUserId(token, "@u1234567")).rejects.toThrow(/User not found/);
+  });
 });

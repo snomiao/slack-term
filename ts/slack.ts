@@ -501,10 +501,150 @@ export async function openDm(token: string, userId: string, cookie?: string): Pr
   return id;
 }
 
+/** The existing IM with `userId`, or "" when there is none. Paginated: a
+ *  workspace with many DMs pages its im list like any other conversation, and
+ *  reading only the first page is how a DM that exists reads as missing. */
+async function findExistingDm(token: string, userId: string, cookie?: string): Promise<string> {
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { types: "im", limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "conversations.list", params, cookie)) as {
+      channels?: Array<{ id?: string; user?: string }>;
+      response_metadata?: { next_cursor?: string };
+    };
+    for (const ch of resp.channels ?? []) {
+      if (ch.user === userId) return String(ch.id ?? "");
+    }
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return "";
+}
+
+/** The DM channel with a known user id. Read-only on purpose: opening a DM
+ *  needs im:write, which plenty of read tokens do not carry, so an absent DM is
+ *  reported rather than created. */
+async function dmWithUser(token: string, userId: string, cookie?: string, label?: string): Promise<string> {
+  const dm = await findExistingDm(token, userId, cookie);
+  if (dm) return dm;
+  const who = label ? `${label} (${userId})` : userId;
+  throw new Error(`No existing DM with ${who}. Open it once in Slack first.`);
+}
+
 /** Normalize for loose matching: lowercase + strip hyphens/underscores/whitespace.
  *  Lets `@deploy-bot` match handles like `deploybot` or display names like `Deploy-Bot`. */
 function normName(s: string): string {
   return s.toLowerCase().replace(/[-_\s]/g, "");
+}
+
+type Member = {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  profile?: { display_name?: string; real_name?: string };
+};
+
+function memberMatches(u: Member, nameNorm: string): boolean {
+  const n = normName(u.name ?? "");
+  const rn = normName(u.real_name ?? u.profile?.real_name ?? "");
+  const dn = normName(u.profile?.display_name ?? "");
+  return n === nameNorm || rn === nameNorm || (!!dn && dn === nameNorm);
+}
+
+/** What a `@name` lookup found, and — when it found nothing — which populations
+ *  it actually searched. The counts are the whole point: "not found" out of 40
+ *  people is a wrong handle, "not found" out of 0 is a broken token, and the
+ *  caller cannot tell those apart from the sentence alone. */
+type UserSearch = {
+  /** "" when nothing matched. */
+  id: string;
+  /** The existing IM with them, when the match came from the DM scan. */
+  dm?: string;
+  workspaceCount: number;
+  connectCount: number;
+};
+
+/** Search every population this token can see for `@name`.
+ *
+ *  `users.list` is scoped to YOUR workspace, so a Slack Connect counterpart —
+ *  who belongs to another team entirely — is never in it, no matter what
+ *  parameters the call is given. The only place they exist is the membership of
+ *  a conversation you share, and for a person you DM the cheapest such place is
+ *  your own IM list: it costs one `users.info` per external DM partner and hands
+ *  back the channel id the caller was about to look up anyway. */
+async function searchUsers(token: string, nameNorm: string, cookie?: string): Promise<UserSearch> {
+  let workspaceCount = 0;
+  const known = new Set<string>();
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { limit: "200" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.list", params, cookie)) as {
+      members?: Member[];
+      response_metadata?: { next_cursor?: string };
+    };
+    for (const u of resp.members ?? []) {
+      workspaceCount++;
+      if (u.id) known.add(u.id);
+      if (memberMatches(u, nameNorm)) return { id: u.id ?? "", workspaceCount, connectCount: 0 };
+    }
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+
+  let connectCount = 0;
+  let dmCursor = "";
+  while (true) {
+    const params: Record<string, string> = { types: "im", limit: "200" };
+    if (dmCursor) params.cursor = dmCursor;
+    const resp = (await get(token, "conversations.list", params, cookie)) as {
+      channels?: Array<{ id?: string; user?: string }>;
+      response_metadata?: { next_cursor?: string };
+    };
+    for (const ch of resp.channels ?? []) {
+      const uid = ch.user;
+      if (!uid || known.has(uid)) continue;
+      known.add(uid);
+      connectCount++;
+      let u: Member | undefined;
+      try {
+        u = ((await get(token, "users.info", { user: uid }, cookie)) as { user?: Member }).user;
+      } catch {
+        // One profile we cannot read costs us that person, not the whole scan.
+        continue;
+      }
+      if (u && memberMatches(u, nameNorm)) {
+        return { id: uid, dm: String(ch.id ?? ""), workspaceCount, connectCount };
+      }
+    }
+    dmCursor = resp.response_metadata?.next_cursor ?? "";
+    if (!dmCursor) break;
+  }
+  return { id: "", workspaceCount, connectCount };
+}
+
+/** The error for a lookup that came back empty. An empty roster and a wrong
+ *  handle must not share a sentence: the first is a token or scope fault the
+ *  caller can fix, the second is a typo, and "User not found" told both stories
+ *  at once — so a lookup that could not see its population reported absence. */
+function userNotFoundError(ref: string, found: UserSearch): Error {
+  if (found.workspaceCount === 0) {
+    return new Error(
+      `Cannot resolve ${ref}: users.list returned no members at all, so nothing could have matched.\n` +
+      `That is a token or scope fault, not a wrong handle — this says nothing about whether ${ref} exists.\n` +
+      `  Check who you are:  slack auth ls`,
+    );
+  }
+  const searched = found.connectCount
+    ? `${found.workspaceCount} workspace account(s) and ${found.connectCount} Slack Connect DM partner(s)`
+    : `${found.workspaceCount} workspace account(s)`;
+  return new Error(
+    `User not found: ${ref} — searched ${searched}, none matched.\n` +
+    `Slack Connect people from another workspace are not in users.list, so if they never\n` +
+    `DMed you they cannot be found by name at all. Look them up and use their ID:\n` +
+    `  slack user ls --external`,
+  );
 }
 
 /**
@@ -513,34 +653,21 @@ function normName(s: string): string {
  * opens the DM with the bot token — so the bot never needs users:read.
  */
 export async function resolveUserId(token: string, ref: string, cookie?: string): Promise<string> {
-  if (!ref.startsWith("@")) {
-    if (/^[UW][A-Za-z0-9]{6,}$/.test(ref)) return ref;
-    throw new Error(`Expected @user or a user ID, got: ${ref}`);
-  }
-  const nameNorm = normName(ref.slice(1));
+  // `@U0123456789` — an id wearing the `@` that every other user target takes.
+  // Nobody is NAMED that, so the name walk below would end in "user not found"
+  // and point at the wrong problem: the user is there, only the `@` is not.
+  const bare = ref.startsWith("@") ? ref.slice(1) : ref;
+  if (isUserId(bare)) return bare;
+  if (!ref.startsWith("@")) throw new Error(`Expected @user or a user ID, got: ${ref}`);
+  const nameNorm = normName(bare);
   const selfInfo = (await get(token, "auth.test", {}, cookie)) as { user_id?: string; user?: string };
   if (nameNorm === "you" || nameNorm === "me" || normName(selfInfo.user ?? "") === nameNorm) {
     if (!selfInfo.user_id) throw new Error("auth.test did not return user_id");
     return selfInfo.user_id;
   }
-  let cursor = "";
-  while (true) {
-    const params: Record<string, string> = { limit: "200" };
-    if (cursor) params.cursor = cursor;
-    const resp = (await get(token, "users.list", params, cookie)) as {
-      members?: Array<{ id?: string; name?: string; real_name?: string; profile?: { display_name?: string } }>;
-      response_metadata?: { next_cursor?: string };
-    };
-    for (const u of resp.members ?? []) {
-      const n = normName(u.name ?? "");
-      const rn = normName(u.real_name ?? "");
-      const dn = normName(u.profile?.display_name ?? "");
-      if (n === nameNorm || rn === nameNorm || (dn && dn === nameNorm)) return u.id ?? "";
-    }
-    cursor = resp.response_metadata?.next_cursor ?? "";
-    if (!cursor) break;
-  }
-  throw new Error(`User not found: ${ref}`);
+  const found = await searchUsers(token, nameNorm, cookie);
+  if (found.id) return found.id;
+  throw userNotFoundError(ref, found);
 }
 
 /** Parse a Slack permalink, returning channel ID, optional message ts, and optional thread_ts.
@@ -576,6 +703,13 @@ function isChannelId(s: string): boolean {
   return /^[CDG][A-Z0-9]{8,}$/.test(s);
 }
 
+/** A Slack user ID: `U…` (member) or `W…` (Enterprise Grid member). Upper-case
+ *  only — that is what keeps a lowercase handle like `@u1234567` reading as a
+ *  name instead of being swallowed by the id branch. */
+function isUserId(s: string): boolean {
+  return /^[UW][A-Z0-9]{6,}$/.test(s);
+}
+
 export async function resolveChannel(token: string, ref: string, cookie?: string): Promise<string> {
   // Accept Slack permalinks directly
   const fromUrl = parseSlackUrl(ref);
@@ -583,6 +717,10 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
   // Accept raw IDs (C..., D..., G...) as-is
   if (!ref.startsWith("@") && !ref.startsWith("#")) {
     if (isChannelId(ref)) return ref;
+    // A bare `U…` names a person, and the conversation meant by a person is the
+    // DM with them. Refusing it as a malformed target sent callers hunting for a
+    // syntax error when what they had handed over was a perfectly good user.
+    if (isUserId(ref)) return dmWithUser(token, ref, cookie);
     throw new Error(`Target must start with # or @ (or be a Slack URL/ID), got: ${ref}`);
   }
   // `#C0123456789` — an ID that was given the `#` every other target form takes.
@@ -596,6 +734,9 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
   const nameNorm = normName(rawName);
 
   if (isIm) {
+    // `@U0123456789` — the id form wearing the `@`, same reasoning as the bare
+    // id above: resolve it as a person, not as a name nobody has.
+    if (isUserId(rawName)) return dmWithUser(token, rawName, cookie);
     // Use auth.test to check if @name refers to self (avoids users:read scope requirement).
     // auth.test is always available; users.list requires users:read which xoxc- tokens lack.
     const selfInfo = (await get(token, "auth.test", {}, cookie)) as { user_id?: string; user?: string };
@@ -603,55 +744,16 @@ export async function resolveChannel(token: string, ref: string, cookie?: string
     if (isSelf) {
       const userId = selfInfo.user_id;
       if (!userId) throw new Error("auth.test did not return user_id");
-      const dmResp = (await get(token, "conversations.list", { types: "im", limit: "200" }, cookie)) as {
-        channels?: Array<{ id?: string; user?: string }>;
-      };
-      const dm = (dmResp.channels ?? []).find((ch) => ch.user === userId);
-      if (dm?.id) return String(dm.id);
-      return openDm(token, userId, cookie);
+      const dm = await findExistingDm(token, userId, cookie);
+      return dm || openDm(token, userId, cookie);
     }
 
-    // Find user ID first via users.list (batch), then locate existing DM.
-    let userId = "";
-    let userCursor = "";
-    while (true) {
-      const params: Record<string, string> = { limit: "200" };
-      if (userCursor) params.cursor = userCursor;
-      const resp = (await get(token, "users.list", params, cookie)) as {
-        members?: Array<{ id?: string; name?: string; real_name?: string; profile?: { display_name?: string } }>;
-        response_metadata?: { next_cursor?: string };
-      };
-      for (const u of resp.members ?? []) {
-        const n = normName(u.name ?? "");
-        const rn = normName(u.real_name ?? "");
-        const dn = normName(u.profile?.display_name ?? "");
-        if (n === nameNorm || rn === nameNorm || (dn && dn === nameNorm)) {
-          userId = u.id ?? "";
-          break;
-        }
-      }
-      if (userId) break;
-      userCursor = resp.response_metadata?.next_cursor ?? "";
-      if (!userCursor) break;
-    }
-    if (!userId) throw new Error(`User not found: ${ref}`);
-
-    // Find an existing DM (avoids needing im:write scope)
-    let dmCursor = "";
-    while (true) {
-      const params: Record<string, string> = { types: "im", limit: "200" };
-      if (dmCursor) params.cursor = dmCursor;
-      const resp = (await get(token, "conversations.list", params, cookie)) as {
-        channels?: Array<{ id?: string; user?: string }>;
-        response_metadata?: { next_cursor?: string };
-      };
-      for (const ch of resp.channels ?? []) {
-        if (ch.user === userId) return String(ch.id ?? "");
-      }
-      dmCursor = resp.response_metadata?.next_cursor ?? "";
-      if (!dmCursor) break;
-    }
-    throw new Error(`No existing DM with ${ref} (${userId}). Open it once in Slack first.`);
+    const found = await searchUsers(token, nameNorm, cookie);
+    if (!found.id) throw userNotFoundError(ref, found);
+    // The Connect scan already walked the IM list to find them, so it knows the
+    // channel — asking again would only pay for the same pages twice.
+    if (found.dm) return found.dm;
+    return dmWithUser(token, found.id, cookie, ref);
   }
 
   // Channel lookup

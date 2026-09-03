@@ -238,7 +238,9 @@ export async function cmdTail(
     process.exit(1);
   }
 
-  const channelId = await resolveChannel(token, target);
+  // Cookie included: a desktop (xoxc-) token is rejected by the public Web API
+  // without it, so dropping it here failed the lookup before the tail started.
+  const channelId = await resolveChannel(token, target, opts.cookie);
   const interval = opts.interval ?? 60000;
   // Optional auto-stop deadline (e.g. wait at most 30m for a reply).
   const deadline = opts.timeout ? _internals.now() + parseSince(opts.timeout) * 1000 : Infinity;

@@ -3317,17 +3317,23 @@ async function main(): Promise<void> {
           (y2) => y2.positional("user", { type: "string", demandOption: true, describe: "@handle or user ID" }),
           async (argv) => {
             const token = tok(argv as W);
-            const ref = argv.user!.startsWith("@") ? argv.user!.slice(1) : argv.user!;
-            // If not a Slack user ID (U + alphanumeric), resolve from users list by handle
-            let userId = ref;
-            if (!/^U[A-Z0-9]+$/.test(ref)) {
-              const listResp = (await listUsers(token, ck(argv as W))) as Record<string, Json>;
-              const match = asArray(listResp.members).map(asRecord)
-                .find((u) => String(u.name ?? "") === ref);
-              if (!match) { console.error(`User not found: @${ref}`); process.exit(1); }
-              userId = String(match.id);
+            const cookie = ck(argv as W);
+            const ref = argv.user!.startsWith("@") ? argv.user! : `@${argv.user!}`;
+            // resolveUserId owns every population: the id form, self, the
+            // workspace roster, and the Slack Connect partners users.list cannot
+            // see. Matching `u.name` against this list by hand — as this used to
+            // — missed display names, real names, and everyone from another team.
+            let userId = "";
+            try {
+              userId = await resolveUserId(token, ref, cookie);
+            } catch (e) {
+              console.error(e instanceof Error ? e.message : String(e));
+              process.exit(1);
             }
-            const resp = asRecord((await userInfo(token, userId)) as Json);
+            // The cookie is not optional here: on a desktop (xoxc-) token the
+            // public Web API answers invalid_auth without it, which read as
+            // "your token is wrong" on a lookup that was about to succeed.
+            const resp = asRecord((await userInfo(token, userId, cookie)) as Json);
             const u = asRecord(resp.user);
             const profile = asRecord(u.profile);
             const localTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
