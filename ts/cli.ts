@@ -2615,6 +2615,37 @@ async function cmdDoctor(token: string): Promise<void> {
 }
 
 // --- schedule ---
+
+/** The xoxb bot token, or a clean exit. `--as-bot` is only ever a token switch,
+ *  and its failure is always the same one: the env var is not set. */
+function requireBotToken(): string {
+  const botToken = resolveBotToken();
+  if (!botToken) {
+    console.error(
+      "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+      "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+    );
+    process.exit(1);
+  }
+  return botToken;
+}
+
+/** The bot↔user DM for an `@handle`. The handle is resolved on the USER token
+ *  (which has users:read) and the DM is opened on the BOT token, so the channel
+ *  is the bot's IM with that person and not the person's own self-DM. That
+ *  distinction is the entire point of `--as-bot` here: Slack never notifies you
+ *  about your own message, so a digest scheduled into a self-DM is delivered
+ *  into silence at the one moment nobody is at the terminal to notice. */
+async function botDmForTarget(
+  target: string,
+  botToken: string,
+  userToken: string,
+  userCookie?: string,
+): Promise<string> {
+  const userId = await resolveUserId(userToken, target, userCookie);
+  return openDm(botToken, userId);
+}
+
 function parsePostAt(at: string): number {
   if (/^\d{10,}$/.test(at)) return parseInt(at, 10);
   const d = new Date(at.replace(" ", "T"));
@@ -2650,6 +2681,7 @@ interface ScheduleSendArgs {
   channelId?: string;
   userId?: string;
   cookie?: string;
+  asBot?: boolean;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
   const getSelf = selfLookup(token, args.cookie);
@@ -2670,9 +2702,13 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   // Self-DM is worst here: the message fires later, unattended, and Slack never
   // notifies you about your own post — so a scheduled reminder to yourself is
   // delivered into silence at exactly the moment you were counting on it.
-  if (await isSelfDmChannel(token, channelId, self?.userId, args.cookie)) {
+  // --as-bot is exempt: that posts as the app, a different identity, which does
+  // notify you. Being unable to say that is what made this warning a dead end —
+  // it named the problem and offered no way out.
+  if (!args.asBot && await isSelfDmChannel(token, channelId, self?.userId, args.cookie)) {
     console.error(
-      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you when this fires.`,
+      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you when this fires.\n` +
+      `  To be notified, schedule it as the bot:  slack schedule send '${args.target}' '...' --at '${args.at}' --as-bot`,
     );
   }
 
@@ -2681,7 +2717,7 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Scheduling message -----------------------`,
-      fromLine(self, { pad: 9 }),
+      fromLine(self, { asBot: args.asBot, pad: 9 }),
       `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
       `  At:      ${fmtPostAt(postAt)}`,
       `  Message: ${args.message}`,
@@ -2690,6 +2726,37 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   }
   const id = await scheduleMessage(token, channelId, args.message, postAt, threadTs, args.cookie);
   console.log(`✓ Scheduled (id: ${id}, at: ${postAtDate})`);
+
+  if (args.asBot) {
+    // The message now belongs to the BOT, so `schedule ls` on the user token
+    // cannot see it and `schedule rm` cannot cancel it. Said at the only moment
+    // the id is in front of the reader.
+    console.error(
+      `  Scheduled as the bot — the user token cannot see or cancel it. Use the same flag:\n` +
+      `    slack schedule ls --as-bot\n` +
+      `    slack schedule rm '${args.target}' ${id} --as-bot`,
+    );
+    // A scheduled bot DM fires unattended, so an app that cannot actually carry
+    // a DM fails at the one moment nobody is watching. Same check `send --as-bot`
+    // runs after the fact; here it is the difference between finding out now and
+    // finding out from an empty inbox.
+    if (channelId.startsWith("D")) {
+      try {
+        const diag = await diagnoseBotMessaging(token);
+        if (!diag.ok) {
+          for (const line of formatDiagnosis(diag, true)) console.error(line);
+        } else {
+          const appUrl = diag.appId ? `https://api.slack.com/apps/${diag.appId}` : "https://api.slack.com/apps";
+          console.error(
+            `Note: if ${args.target} can't reply (app messaging may be off), ` +
+            `enable Messages Tab: ${appUrl} → App Home.`,
+          );
+        }
+      } catch {
+        // diagnosis is best-effort; never turn a successful schedule into a failure.
+      }
+    }
+  }
 }
 
 async function cmdScheduleList(token: string, target?: string, channelId?: string, cookie?: string): Promise<void> {
@@ -2716,6 +2783,7 @@ interface ScheduleRmArgs {
   code?: string;
   channelId?: string;
   cookie?: string;
+  asBot?: boolean;
 }
 async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void> {
   let channelId: string;
@@ -2727,7 +2795,7 @@ async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void>
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Deleting scheduled message ---------------`,
-      fromLine(self, { pad: 9 }),
+      fromLine(self, { asBot: args.asBot, pad: 9 }),
       `  Channel: ${args.target}`,
       `  ID:      ${args.id}`,
       `---------------------------------------------`,
@@ -3729,15 +3797,43 @@ async function main(): Promise<void> {
             .option("at", { type: "string", demandOption: true, describe: "Delivery time (ISO datetime or Unix ts)" })
             .option("code", { type: "string", describe: "Safety hash to confirm" })
             .option("channel-id", { type: "string", describe: "Raw channel ID" })
-            .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" }),
+            .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
+            .option("as-bot", { type: "boolean", default: false, describe: "Schedule via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient. Without it a scheduled DM to yourself is posted by you, and Slack never notifies you of your own message — it fires into silence." }),
           async (argv) => {
             const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
             if (argv.code) args.code = argv.code;
             if (argv["channel-id"]) args.channelId = argv["channel-id"];
             if (argv["user-id"]) args.userId = argv["user-id"];
-            const cookie = ck(argv as W);
-            if (cookie) args.cookie = cookie;
-            await cmdScheduleSend(tok(argv as W), args);
+            let scheduleToken: string;
+            if (argv["as-bot"]) {
+              const botToken = requireBotToken();
+              // Resolve @user → user_id with the *user* token (has users:read),
+              // then let cmdScheduleSend open the DM with the bot token
+              // (im:write). Same split as `send --as-bot`: the bot never needs
+              // users:read, and the DM is bot↔user rather than a self-DM.
+              if (!args.channelId && !args.userId && args.target.startsWith("@")) {
+                try {
+                  args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
+                } catch (e: unknown) {
+                  console.error(
+                    `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
+                    `  ${e instanceof Error ? e.message : String(e)}\n` +
+                    `  Tip: pass --user-id <Uxxxx> to skip the lookup.`,
+                  );
+                  process.exit(1);
+                }
+              }
+              scheduleToken = botToken;
+              args.asBot = true;
+            } else {
+              scheduleToken = tok(argv as W);
+              // Session cookie for the token that will actually schedule — an
+              // xoxc- desktop token is rejected by the public API without it.
+              // Bot tokens need none.
+              const cookie = ck(argv as W);
+              if (cookie) args.cookie = cookie;
+            }
+            await cmdScheduleSend(scheduleToken, args);
           },
         )
         .command(
@@ -3745,9 +3841,20 @@ async function main(): Promise<void> {
           "List pending scheduled messages",
           (y2) => y2
             .positional("target", { type: "string", describe: "#channel to filter by" })
-            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+            .option("channel-id", { type: "string", describe: "Raw channel ID" })
+            .option("as-bot", { type: "boolean", default: false, describe: "List what the BOT token scheduled. A message from `schedule send --as-bot` belongs to the app, so the user token's listing does not contain it — and an invisible pending message cannot be cancelled." }),
           async (argv) => {
-            await cmdScheduleList(tok(argv as W), argv.target as string | undefined, argv["channel-id"], ck(argv as W));
+            const target = argv.target as string | undefined;
+            if (argv["as-bot"]) {
+              const botToken = requireBotToken();
+              let channelId = argv["channel-id"] as string | undefined;
+              if (!channelId && target?.startsWith("@")) {
+                channelId = await botDmForTarget(target, botToken, tok(argv as W), ck(argv as W));
+              }
+              await cmdScheduleList(botToken, target, channelId);
+              return;
+            }
+            await cmdScheduleList(tok(argv as W), target, argv["channel-id"], ck(argv as W));
           },
         )
         .command(
@@ -3757,13 +3864,23 @@ async function main(): Promise<void> {
             .positional("target", { type: "string", demandOption: true, describe: "#channel or @user" })
             .positional("id", { type: "string", demandOption: true, describe: "Scheduled message ID" })
             .option("code", { type: "string", describe: "Safety hash to confirm" })
-            .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+            .option("channel-id", { type: "string", describe: "Raw channel ID" })
+            .option("as-bot", { type: "boolean", default: false, describe: "Cancel a message scheduled with `schedule send --as-bot`. It belongs to the bot token, so the user token cannot delete it." }),
           async (argv) => {
             const args: ScheduleRmArgs = { target: argv.target!, id: argv.id! };
             if (argv.code) args.code = argv.code;
+            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            if (argv["as-bot"]) {
+              const botToken = requireBotToken();
+              if (!args.channelId && args.target.startsWith("@")) {
+                args.channelId = await botDmForTarget(args.target, botToken, tok(argv as W), ck(argv as W));
+              }
+              args.asBot = true;
+              await cmdScheduleRm(botToken, args);
+              return;
+            }
             const cookie = ck(argv as W);
             if (cookie) args.cookie = cookie;
-            if (argv["channel-id"]) args.channelId = argv["channel-id"];
             await cmdScheduleRm(tok(argv as W), args);
           },
         )
