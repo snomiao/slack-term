@@ -2682,6 +2682,9 @@ interface ScheduleSendArgs {
   userId?: string;
   cookie?: string;
   asBot?: boolean;
+  /** How the caller overrode the target text, e.g. `--user-id U0123`. Set only
+   *  when a FLAG supplied it — never when the command resolved the id itself. */
+  targetOverride?: string;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
   const getSelf = selfLookup(token, args.cookie);
@@ -2714,11 +2717,18 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
 
   const code = safetyCode(channelId, args.message, String(postAt), self?.userId ?? "");
 
+  // `--channel-id` / `--user-id` win over the target text, so the target stops
+  // being where this goes the moment the two disagree — and the gate printed
+  // only the target. `schedule send @alice … --user-id <bob>` read "To: @alice"
+  // and went to bob. A confirm gate that names the wrong recipient with no sign
+  // it was overridden is worse than no gate: it gets read, and it gets passed.
+  const destOverride = args.targetOverride ? `  [${args.targetOverride} → ${channelId}]` : "";
+
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Scheduling message -----------------------`,
       fromLine(self, { asBot: args.asBot, pad: 9 }),
-      `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}`,
+      `  To:      ${ref}${threadTs ? ` (thread ${threadTs})` : ""}${destOverride}`,
       `  At:      ${fmtPostAt(postAt)}`,
       `  Message: ${args.message}`,
       `---------------------------------------------`,
@@ -2784,6 +2794,8 @@ interface ScheduleRmArgs {
   channelId?: string;
   cookie?: string;
   asBot?: boolean;
+  /** How the caller overrode the target text, e.g. `--channel-id C0123`. */
+  targetOverride?: string;
 }
 async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void> {
   let channelId: string;
@@ -2796,7 +2808,7 @@ async function cmdScheduleRm(token: string, args: ScheduleRmArgs): Promise<void>
     requireCode(args.code, code, [
       `--- Deleting scheduled message ---------------`,
       fromLine(self, { asBot: args.asBot, pad: 9 }),
-      `  Channel: ${args.target}`,
+      `  Channel: ${args.target}${args.targetOverride ? `  [${args.targetOverride} → ${channelId}]` : ""}`,
       `  ID:      ${args.id}`,
       `---------------------------------------------`,
     ]);
@@ -3802,8 +3814,17 @@ async function main(): Promise<void> {
           async (argv) => {
             const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
             if (argv.code) args.code = argv.code;
-            if (argv["channel-id"]) args.channelId = argv["channel-id"];
-            if (argv["user-id"]) args.userId = argv["user-id"];
+            // Recorded here, not in the command, because only a flag counts as an
+            // override — under --as-bot the command sets args.userId itself from
+            // the target, and claiming THAT was an override would be a new lie.
+            if (argv["channel-id"]) {
+              args.channelId = argv["channel-id"];
+              args.targetOverride = `--channel-id ${argv["channel-id"]}`;
+            }
+            if (argv["user-id"]) {
+              args.userId = argv["user-id"];
+              args.targetOverride = `--user-id ${argv["user-id"]}`;
+            }
             let scheduleToken: string;
             if (argv["as-bot"]) {
               const botToken = requireBotToken();
@@ -3869,7 +3890,10 @@ async function main(): Promise<void> {
           async (argv) => {
             const args: ScheduleRmArgs = { target: argv.target!, id: argv.id! };
             if (argv.code) args.code = argv.code;
-            if (argv["channel-id"]) args.channelId = argv["channel-id"];
+            if (argv["channel-id"]) {
+              args.channelId = argv["channel-id"];
+              args.targetOverride = `--channel-id ${argv["channel-id"]}`;
+            }
             if (argv["as-bot"]) {
               const botToken = requireBotToken();
               if (!args.channelId && args.target.startsWith("@")) {
