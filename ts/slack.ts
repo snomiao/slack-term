@@ -563,7 +563,18 @@ type UserSearch = {
   dm?: string;
   workspaceCount: number;
   connectCount: number;
+  /** DM partners whose profile could not be read, so they were never compared. */
+  skipped: number;
+  /** True when the scan stopped at CONNECT_SCAN_LIMIT with partners left over. */
+  capped: boolean;
 };
+
+/** How many non-roster DM partners a failed lookup will resolve one at a time.
+ *  Each costs a `users.info`, so an account with thousands of Slack Connect DMs
+ *  would otherwise turn a single typo into thousands of sequential calls and
+ *  rate-limit the caller out of the API. Past the cap the scan stops and says it
+ *  stopped — an incomplete answer that admits it beats a complete-looking one. */
+const CONNECT_SCAN_LIMIT = 200;
 
 /** Search every population this token can see for `@name`.
  *
@@ -587,13 +598,17 @@ async function searchUsers(token: string, nameNorm: string, cookie?: string): Pr
     for (const u of resp.members ?? []) {
       workspaceCount++;
       if (u.id) known.add(u.id);
-      if (memberMatches(u, nameNorm)) return { id: u.id ?? "", workspaceCount, connectCount: 0 };
+      if (memberMatches(u, nameNorm)) {
+        return { id: u.id ?? "", workspaceCount, connectCount: 0, skipped: 0, capped: false };
+      }
     }
     cursor = resp.response_metadata?.next_cursor ?? "";
     if (!cursor) break;
   }
 
   let connectCount = 0;
+  let skipped = 0;
+  let capped = false;
   let dmCursor = "";
   while (true) {
     const params: Record<string, string> = { types: "im", limit: "200" };
@@ -605,29 +620,45 @@ async function searchUsers(token: string, nameNorm: string, cookie?: string): Pr
     for (const ch of resp.channels ?? []) {
       const uid = ch.user;
       if (!uid || known.has(uid)) continue;
+      if (connectCount >= CONNECT_SCAN_LIMIT) {
+        capped = true;
+        break;
+      }
       known.add(uid);
       connectCount++;
       let u: Member | undefined;
       try {
         u = ((await get(token, "users.info", { user: uid }, cookie)) as { user?: Member }).user;
-      } catch {
-        // One profile we cannot read costs us that person, not the whole scan.
+      } catch (e) {
+        // A rate limit is not "this person does not match" — it is the scan
+        // being cut off mid-way, and swallowing it is precisely how a lookup
+        // that could not see its population ends up reporting absence. Let it
+        // out. Any other per-profile failure costs us that one person, and is
+        // counted so the error can admit the search was incomplete.
+        if (e instanceof RateLimitError) throw e;
+        skipped++;
         continue;
       }
       if (u && memberMatches(u, nameNorm)) {
-        return { id: uid, dm: String(ch.id ?? ""), workspaceCount, connectCount };
+        return { id: uid, dm: String(ch.id ?? ""), workspaceCount, connectCount, skipped, capped };
       }
     }
+    if (capped) break;
     dmCursor = resp.response_metadata?.next_cursor ?? "";
     if (!dmCursor) break;
   }
-  return { id: "", workspaceCount, connectCount };
+  return { id: "", workspaceCount, connectCount, skipped, capped };
 }
 
 /** The error for a lookup that came back empty. An empty roster and a wrong
  *  handle must not share a sentence: the first is a token or scope fault the
  *  caller can fix, the second is a typo, and "User not found" told both stories
- *  at once — so a lookup that could not see its population reported absence. */
+ *  at once — so a lookup that could not see its population reported absence.
+ *
+ *  "account(s)", not "member(s)", and the count will not match `user ls`: that
+ *  command hides deleted accounts and bots, and this counts the raw users.list
+ *  the search actually walked. The two differ by design — the number here is a
+ *  report on the search, not a headcount of the workspace. */
 function userNotFoundError(ref: string, found: UserSearch): Error {
   if (found.workspaceCount === 0) {
     return new Error(
@@ -639,8 +670,19 @@ function userNotFoundError(ref: string, found: UserSearch): Error {
   const searched = found.connectCount
     ? `${found.workspaceCount} workspace account(s) and ${found.connectCount} Slack Connect DM partner(s)`
     : `${found.workspaceCount} workspace account(s)`;
+  // Anything the scan did not actually look at is said out loud. "None matched"
+  // is only true of what was compared, and the gap between that and "not there"
+  // is the whole bug this function exists to stop repeating.
+  const gaps: string[] = [];
+  if (found.capped) {
+    gaps.push(`stopped after ${CONNECT_SCAN_LIMIT} Slack Connect DM partners, so there may be more`);
+  }
+  if (found.skipped) {
+    gaps.push(`${found.skipped} DM partner profile(s) could not be read and were never compared`);
+  }
   return new Error(
     `User not found: ${ref} — searched ${searched}, none matched.\n` +
+    (gaps.length ? `This search was incomplete: ${gaps.join("; ")}.\n` : "") +
     `Slack Connect people from another workspace are not in users.list, so if they never\n` +
     `DMed you they cannot be found by name at all. Look them up and use their ID:\n` +
     `  slack user ls --external`,
