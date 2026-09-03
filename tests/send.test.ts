@@ -657,6 +657,35 @@ describe("schedule send (CLI)", { timeout: 60_000 }, () => {
     expect(r.stdout).not.toContain("QUIET HOURS");
   });
 
+  // Raised by the adversarial review pass: the new recipient-timezone lookup on
+  // the gate could crash the CLI before it prints the code. It cannot —
+  // recipientTzFor wraps its whole body and returns null — but the reviewer
+  // could only see the call site, and "the clock must never break sending" is
+  // exactly the property worth pinning rather than re-reading.
+  test("a failed recipient-timezone lookup never blocks the gate", async () => {
+    const m = await startMock({
+      inline: {
+        "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+        // Every route the lookup could take is denied.
+        "conversations.info__channel=D00000001": { ok: false, error: "missing_scope" },
+      },
+    });
+    try {
+      const r = await run(
+        ["schedule", "send", "@bob", "digest", "--at", "2026-12-31T03:00:00+09:00", "--channel-id", "D00000001"],
+        { baseUrl: m.baseUrl, env: { TZ: "Asia/Tokyo" } },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toContain("--- Scheduling message");
+      expect(r.stderr).toContain("Rerun with --code=");
+      // Still judged on post_at, and honest that it could not learn their zone.
+      expect(r.stdout).toContain("🕐 Thu, 31/12/2026, 03:00");
+      expect(r.stdout).toContain("recipient's timezone unknown");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("schedule rm gate names the identity whose scheduled message is being dropped", async () => {
     const r = await run(["schedule", "rm", "#channel-01", "Q00000001"]);
     expect(r.exitCode).toBe(1);
