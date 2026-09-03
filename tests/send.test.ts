@@ -1095,3 +1095,174 @@ describe("bot DM + doctor (CLI)", { timeout: 60_000 }, () => {
     }
   });
 });
+
+// `schedule send` had no --as-bot, so a scheduled DM went out on the USER token —
+// a self-DM, which Slack never notifies about. The message fires later and
+// unattended, so nobody is at the terminal to notice the silence: four CTO
+// digests landed this way. Reported 2026-09-04.
+describe("schedule send --as-bot (CLI)", { timeout: 60_000 }, () => {
+  const AT = "2026-08-10T09:00:00Z";
+  const SELF = "U00000001";
+
+  // The user token's view: self is user1, and D00000001 is user1's own DM.
+  const selfDmFixtures = {
+    "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+    "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
+    "conversations.list__limit=200&types=im": { ok: true, channels: [{ id: "D00000001", user: SELF }] },
+    "conversations.open": { ok: true, channel: { id: "D00000001" } },
+    "users.list__limit=200": { ok: true, members: [{ id: SELF, name: "user1", real_name: "User One" }] },
+  };
+
+  // The bot token's view. Kept separate because the whole point of --as-bot is
+  // that auth.test answers with a DIFFERENT identity.
+  const botFixtures = {
+    "auth.test": {
+      ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
+      url: "https://acme.slack.com/", __headers: { "x-oauth-scopes": "chat:write,im:write,im:history,im:read" },
+    },
+    "bots.info__bot=B00000001": { ok: true, bot: { app_id: "A00000001", user_id: "U00000BOT" } },
+    "conversations.info__channel=D00000BOT": { ok: true, channel: { id: "D00000BOT", is_im: true, user: SELF, name: "" } },
+    "chat.scheduledMessages.list": {
+      ok: true,
+      scheduled_messages: [{ id: "Q00000BOT", channel_id: "D00000BOT", post_at: 1786352400, text: "digest" }],
+    },
+  };
+
+  test("without a bot token → clean error, exit 1", async () => {
+    const r = await run(["schedule", "send", "@me", "digest", "--at", AT, "--as-bot"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("--as-bot needs a bot token");
+    expect(r.stdout).not.toContain("slack schedule send"); // clean error, not a usage dump
+  });
+
+  // The gap that made this silent: the warning existed but named no way out.
+  test("a scheduled self-DM warns AND points at --as-bot", async () => {
+    const m = await startMock({ inline: selfDmFixtures });
+    try {
+      const r = await run(["schedule", "send", "@me", "digest", "--at", AT], { baseUrl: m.baseUrl });
+      expect(r.stderr).toContain("DM to yourself");
+      expect(r.stderr).toContain("--as-bot");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--as-bot is exempt from the self-DM warning and names the BOT in the gate", async () => {
+    const m = await startMock({ inline: { ...selfDmFixtures, ...botFixtures } });
+    try {
+      const r = await run(
+        ["schedule", "send", "@me", "digest", "--at", AT, "--as-bot", "--channel-id", "D00000BOT"],
+        { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } },
+      );
+      expect(r.exitCode).toBe(1); // confirm gate
+      expect(r.stderr).not.toContain("DM to yourself");
+      expect(r.stdout).toContain("From:    @acmebot (U00000BOT) — Acme [as bot]");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("confirmed --as-bot schedules on the BOT token and says how to cancel it", async () => {
+    const m = await startMock({ inline: { ...selfDmFixtures, ...botFixtures } });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const argv = ["schedule", "send", "@me", "digest", "--at", AT, "--as-bot", "--channel-id", "D00000BOT"];
+      const dry = await run(argv, { baseUrl: m.baseUrl, env });
+      const before = m.requests.length;
+      const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Scheduled");
+      const sched = m.requests.slice(before).find((q) => q.method === "chat.scheduleMessage");
+      expect(sched).toBeDefined();
+      // The token that scheduled it is the bot's — that is the whole fix.
+      expect(sched!.headers.authorization).toBe("Bearer xoxb-fake");
+      // A pending message the user token cannot see or cancel must say so at the
+      // one moment its id is on screen.
+      expect(r.stderr).toContain("slack schedule ls --as-bot");
+      expect(r.stderr).toContain("slack schedule rm '@me' Q00000001 --as-bot");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--as-bot @user resolves the handle on the user token, opens the DM on the bot", async () => {
+    const m = await startMock({
+      inline: {
+        ...botFixtures,
+        // The user token's lookup — auth.test here is answered per-token below.
+        "users.list__limit=200": { ok: true, members: [{ id: "U00000BOB", name: "bob", real_name: "Bob" }] },
+        "auth.test": {
+          __byAuth: {
+            "Bearer xoxp-fake": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+            "*": botFixtures["auth.test"],
+          },
+        },
+        "conversations.open": { ok: true, channel: { id: "D00000BOB" } },
+        "conversations.info__channel=D00000BOB": { ok: true, channel: { id: "D00000BOB", is_im: true, user: "U00000BOB", name: "" } },
+      },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const argv = ["schedule", "send", "@bob", "digest", "--at", AT, "--as-bot"];
+      const dry = await run(argv, { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1);
+      const before = m.requests.length;
+      const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      const reqs = m.requests.slice(before);
+      const open = reqs.find((q) => q.method === "conversations.open");
+      // Opened by the BOT, with the id the USER token resolved — a bot↔user DM,
+      // not the user's own.
+      expect(open!.headers.authorization).toBe("Bearer xoxb-fake");
+      expect(JSON.parse(open!.body).users).toBe("U00000BOB");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // One empty store does not disprove a scheduled message: before this, `ls`
+  // could only ever read the user's, and printed "(no scheduled messages)" for a
+  // digest sitting in the bot's.
+  test("schedule ls --as-bot reads the BOT's store", async () => {
+    const m = await startMock({ inline: { ...selfDmFixtures, ...botFixtures } });
+    try {
+      const before = m.requests.length;
+      const r = await run(["schedule", "ls", "--as-bot"], {
+        baseUrl: m.baseUrl,
+        env: { SLACK_BOT_TOKEN: "xoxb-fake" },
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("Q00000BOT");
+      const list = m.requests.slice(before).find((q) => q.method === "chat.scheduledMessages.list");
+      expect(list!.headers.authorization).toBe("Bearer xoxb-fake");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("schedule ls --as-bot without a bot token → clean error", async () => {
+    const r = await run(["schedule", "ls", "--as-bot"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("--as-bot needs a bot token");
+  });
+
+  test("schedule rm --as-bot deletes on the BOT token", async () => {
+    const m = await startMock({
+      inline: { ...selfDmFixtures, ...botFixtures, "chat.deleteScheduledMessage": { ok: true } },
+    });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const argv = ["schedule", "rm", "@me", "Q00000BOT", "--as-bot", "--channel-id", "D00000BOT"];
+      const dry = await run(argv, { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("[as bot]");
+      const before = m.requests.length;
+      const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      const del = m.requests.slice(before).find((q) => q.method === "chat.deleteScheduledMessage");
+      expect(del!.headers.authorization).toBe("Bearer xoxb-fake");
+    } finally {
+      await m.stop();
+    }
+  });
+});
