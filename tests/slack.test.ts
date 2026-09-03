@@ -965,4 +965,57 @@ describe("slack.ts", () => {
     // Handles are lowercase and IDs are not, so `@u1234567` must stay a name.
     await expect(slack.resolveUserId(token, "@u1234567")).rejects.toThrow(/User not found/);
   });
+
+  // Both from an external review of this change. The scan must not turn a cut-off
+  // search into a claim of absence, and must not turn one typo into thousands of
+  // sequential users.info calls.
+  test("a rate limit during the Connect scan surfaces instead of reading as absence", async () => {
+    await withMock(
+      { ...connectFixtures, "users.info__user=U00000003": { __status: 429, __retryAfter: "30" } },
+      async () => {
+        await expect(slack.resolveUserId(token, "@carol")).rejects.toMatchObject({ retryAfter: 30 });
+      },
+    );
+  });
+
+  test("an unreadable profile is counted, not silently dropped", async () => {
+    await withMock(
+      { ...connectFixtures, "users.info__user=U00000003": { ok: false, error: "user_not_visible" } },
+      async () => {
+        await expect(slack.resolveUserId(token, "@carol")).rejects.toThrow(
+          /This search was incomplete: 1 DM partner profile\(s\) could not be read/,
+        );
+      },
+    );
+  });
+
+  test("the Connect scan stops at its cap and says that it did", async () => {
+    // 250 external DM partners: the scan must resolve 200 and admit the rest.
+    const channels: Array<Record<string, unknown>> = [];
+    const infos: Record<string, unknown> = {};
+    for (let i = 1; i <= 250; i++) {
+      const uid = `U1${String(i).padStart(7, "0")}`;
+      channels.push({ id: `D1${String(i).padStart(7, "0")}`, user: uid, is_im: true });
+      infos[`users.info__user=${uid}`] = {
+        ok: true,
+        user: { id: uid, name: `ext${i}`, real_name: `Ext ${i}`, profile: { display_name: "" } },
+      };
+    }
+    await withMock(
+      {
+        ...connectFixtures,
+        ...infos,
+        "conversations.list__limit=200&types=im": { ok: true, channels, response_metadata: { next_cursor: "" } },
+      },
+      async () => {
+        // ext250 is real and is past the cap: the answer is "I stopped looking",
+        // not "there is no such person".
+        await expect(slack.resolveUserId(token, "@ext250")).rejects.toThrow(
+          /This search was incomplete: stopped after 200 Slack Connect DM partners/,
+        );
+        // Inside the cap it still resolves.
+        expect(await slack.resolveUserId(token, "@ext1")).toBe("U10000001");
+      },
+    );
+  });
 });
