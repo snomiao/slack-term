@@ -929,14 +929,27 @@ async function recipientTzFor(token: string, channelId: string, cookie?: string)
   }
 }
 
-function requireCode(provided: string | undefined, expected: string, contextLines: string[], recipientTz?: string | null): void {
+/** `when` is the moment the message will ACTUALLY reach the person — which is
+ *  now for a send, and `post_at` for a schedule. Judging a scheduled message by
+ *  the clock at schedule time answers a question nobody asked: `schedule send`
+ *  is the one command where the delivery time is stated outright, and reading
+ *  it off `Date.now()` warned about a message set for December because it was
+ *  scheduled after 23:00. A warning that is false on the command where the
+ *  answer is written in the arguments teaches people to ignore the warning. */
+function requireCode(
+  provided: string | undefined,
+  expected: string,
+  contextLines: string[],
+  recipientTz?: string | null,
+  when: Date = new Date(),
+): void {
   // The clock goes to stdout with the rest of the preview, not to stderr with
   // the code. The preview is what you are asked to LOOK at before committing,
   // and "what time is it where they are" is part of that picture — a caller
   // doing `send ... 2>/dev/null` to read the preview would otherwise drop the
   // one line added to stop a 01:00 send.
   for (const line of contextLines) console.log(line);
-  const clock = quietHoursNotice(new Date(), recipientTz);
+  const clock = quietHoursNotice(when, recipientTz);
   if (clock) console.log(clock);
   if (provided !== undefined) {
     console.error(`Code mismatch (got ${provided}, expected ${expected})`);
@@ -2725,6 +2738,11 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
   const destOverride = args.targetOverride ? `  [${args.targetOverride} → ${channelId}]` : "";
 
   if (args.code !== code) {
+    // Quiet hours are judged on post_at, in the recipient's zone — the two facts
+    // that decide whether a phone buzzes at 3am, and the two this gate was
+    // guessing at. `send` already resolves the zone; here the time is known
+    // exactly, which is the one command where it is.
+    const recipientTz = await recipientTzFor(token, channelId, args.cookie);
     requireCode(args.code, code, [
       `--- Scheduling message -----------------------`,
       fromLine(self, { asBot: args.asBot, pad: 9 }),
@@ -2732,7 +2750,7 @@ async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<v
       `  At:      ${fmtPostAt(postAt)}`,
       `  Message: ${args.message}`,
       `---------------------------------------------`,
-    ]);
+    ], recipientTz, new Date(postAt * 1000));
   }
   const id = await scheduleMessage(token, channelId, args.message, postAt, threadTs, args.cookie);
   console.log(`✓ Scheduled (id: ${id}, at: ${postAtDate})`);
