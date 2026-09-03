@@ -1265,4 +1265,35 @@ describe("schedule send --as-bot (CLI)", { timeout: 60_000 }, () => {
       await m.stop();
     }
   });
+
+  // gemini review of this branch: `--user-id` / `--channel-id` override the
+  // target text, and the gate printed only the target — so it said "@alice"
+  // while the message was bound for someone else.
+  test("the gate discloses when --user-id overrode the target", async () => {
+    const m = await startMock({
+      inline: {
+        ...botFixtures,
+        "auth.test": {
+          __byAuth: {
+            "Bearer xoxp-fake": { ok: true, user_id: SELF, user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+            "*": botFixtures["auth.test"],
+          },
+        },
+        "conversations.open": { ok: true, channel: { id: "D00000BOB" } },
+        "conversations.info__channel=D00000BOB": { ok: true, channel: { id: "D00000BOB", is_im: true, user: "U00000BOB", name: "" } },
+      },
+    });
+    try {
+      const r = await run(
+        ["schedule", "send", "@alice", "digest", "--at", AT, "--as-bot", "--user-id", "U00000BOB"],
+        { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } },
+      );
+      expect(r.exitCode).toBe(1);
+      // The destination came from the flag, not from "@alice" — and the gate
+      // has to name both halves: which flag won, and where it actually lands.
+      expect(r.stdout).toContain("To:      @alice  [--user-id U00000BOB → D00000BOB]");
+    } finally {
+      await m.stop();
+    }
+  });
 });
