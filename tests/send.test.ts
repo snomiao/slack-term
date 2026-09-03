@@ -631,6 +631,32 @@ describe("schedule send (CLI)", { timeout: 60_000 }, () => {
     expect(JSON.parse(sched!.body).text).toBe("morning reminder");
   });
 
+  // The quiet-hours clock judged `Date.now()`, not `post_at` — so scheduling
+  // after 23:00 warned about a message set for the following lunchtime, and
+  // scheduling at noon stayed silent about one set for 03:00. `schedule send` is
+  // the ONE command where the delivery time is written in the arguments, and it
+  // was the one reading it off the wrong clock. Both cases below are pinned to a
+  // fixed --at, so they assert the same thing whatever time the suite runs.
+  test("quiet hours are judged on post_at, not on when you scheduled it", async () => {
+    const r = await run(
+      ["schedule", "send", "#channel-01", "digest", "--at", "2026-12-31T03:00:00+09:00"],
+      { env: { TZ: "Asia/Tokyo" } },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("🕐 Thu, 31/12/2026, 03:00");
+    expect(r.stdout).toContain("QUIET HOURS");
+  });
+
+  test("a daytime post_at does not warn, however late it was scheduled", async () => {
+    const r = await run(
+      ["schedule", "send", "#channel-01", "digest", "--at", "2026-12-31T12:00:00+09:00"],
+      { env: { TZ: "Asia/Tokyo" } },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("🕐 Thu, 31/12/2026, 12:00");
+    expect(r.stdout).not.toContain("QUIET HOURS");
+  });
+
   test("schedule rm gate names the identity whose scheduled message is being dropped", async () => {
     const r = await run(["schedule", "rm", "#channel-01", "Q00000001"]);
     expect(r.exitCode).toBe(1);
