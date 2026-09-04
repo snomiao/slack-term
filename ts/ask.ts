@@ -370,12 +370,28 @@ export function askMatchChoice(reply: string, choices: string[]): AskChoiceMatch
   // 3. A number: bare, or introducing the choice it names. `1` and `1. foo` are
   //    the same act. A number followed by DIFFERENT text is not a match — that
   //    is someone writing prose that happens to start with a digit.
-  const m = norm.match(/^(\d{1,2})\s*[.):：、。]?\s*(.*)$/);
+  //
+  //    The separator is REQUIRED once text follows, and matched as its own
+  //    alternative rather than as an optional group. With it optional, `100`
+  //    parsed as choice 10 followed by "0" — so a ten-option question whose
+  //    tenth choice is "0" matched a reply nobody meant as a choice. That is the
+  //    expensive direction of the error, invented while fixing the same one.
+  //    (cross-vendor review, 2026-09-05)
+  let n = 0;
+  let rest = "";
+  let m = norm.match(/^(\d{1,2})$/);
   if (m) {
-    const n = Number(m[1]);
-    const rest = m[2]!.trim();
-    if (n >= 1 && n <= choices.length && (rest === "" || rest === normChoices[n - 1])) hits.add(n);
+    n = Number(m[1]);
+  } else if ((m = norm.match(/^(\d{1,2})(?:\s*[.):：、。\-\]]\s*|\s+)(.*)$/))) {
+    n = Number(m[1]);
+    // Normalised AGAIN, not merely trimmed: `1. (Release)` reaches here as
+    // `(release` — the number kept the opening bracket from being stripped at
+    // the head of the string while the closing one went at the tail, leaving an
+    // unbalanced remainder that matched nothing. Re-running the same normaliser
+    // on the remainder is what makes a bracketed choice answerable by number.
+    rest = askNormalizeChoice(m[2]!);
   }
+  if (n >= 1 && n <= choices.length && (rest === "" || rest === normChoices[n - 1])) hits.add(n);
 
   const indexes = [...hits].sort((a, b) => a - b);
   if (!indexes.length) return { kind: "none" };
