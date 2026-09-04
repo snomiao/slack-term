@@ -116,7 +116,8 @@ RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待っ�
 #   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'
 # Run it whenever you like: it re-reads the question from Slack, so nothing is
 # stored locally and any machine holding the link can collect. Same stdout/exit
-# contract as --wait, plus --timeout 0 = check once (exit 2 while still open),
+# contract as --wait, plus --timeout 0 = check once (exit 2 while still open, 4 if
+# somebody replied without choosing any of the offered options),
 # which is what a periodic monitor should use instead of parking on --wait.
 eval "$RESUME --timeout 0" && echo answered
 # A pressed pill is invisible to `slack tail` (it only sees `type: "message"`

@@ -161,9 +161,16 @@ without losing clicks. A reaction is durable state anyone can read back later.
   reactions and thread replies do (a channel carries unrelated traffic).
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
-- **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` timed
-  out, `3` transport/config failure. Everything human-facing goes to stderr, so
+- **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
+  replied, `3` transport/config failure, `4` somebody replied but picked none of the
+  offered choices. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
+- **A reply that chooses nothing is not an answer.** When choices were offered, only a
+  reaction, the choice text, or its number counts. A reply like 「意味が分かりません」 or a
+  question back exits `4` with **stdout empty** — measured 2026-09-04, a clarifying
+  question was returned as `rc=0` and stored as the decision, which is what an automated
+  caller acts on. `2` and `4` need different reactions: one waits, the other answers a
+  person who is standing there.
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack

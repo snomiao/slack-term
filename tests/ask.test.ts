@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askMatchChoice } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -685,6 +685,106 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     }
   });
 
+  // THE LIVE CASE, 2026-09-04. Three options were offered; the answerer replied
+  // 「没懂，能给我讲前因后果吗」— a question BACK — and this exited 0 with that
+  // stored as the decision. A lane harvesting rc=0 unparks the work and proceeds
+  // with nothing behind it, and the recorded answer reads as though he chose.
+  test("a reply that picks none of the choices is NOT an answer", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "没懂，能给我讲前因后果吗 用中文" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      // NOT 0 (a decision nobody took) and NOT 2 (nobody replied) — the third state.
+      expect(r.exitCode).toBe(4);
+      // stdout stays empty: the caller must not be handed something to act on.
+      expect(r.stdout.trim()).toBe("");
+      expect(r.stderr).toContain("選択肢のどれも選ばれていません");
+      // The reply itself has to reach the operator — it is usually a question back.
+      expect(r.stderr).toContain("没懂");
+      // And the question is left standing, not stamped answered.
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a reply that names a choice IS an answer, and normalises to the choice", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "2" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      // "2" reaches the caller as the CHOICE, so a pill press and a typed number
+      // are the same decision rather than two spellings of it.
+      expect(r.stdout.trim()).toBe("B");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The direction that keeps this from being an outage: a question asked with NO
+  // choices is still answered by whatever comes back. Without this, the fix would
+  // make every free-text ask uncollectable.
+  test("with no choices offered, any reply is still the answer", async () => {
+    const freeText = askBuildText(`<@${BOB}> なぜ落ちた?`, "", [], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: freeText },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "ディスクが一杯でした" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("ディスクが一杯でした");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // A clarifying question does not poison the well: whoever asked it can still
+  // choose afterwards, and the later reply settles it.
+  test("a choice made AFTER a non-choice reply still resolves it", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "どういう意味?" },
+        { type: "message", user: BOB, ts: "1700000200.000300", text: "A" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("A");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("a message that is not a question is refused instead of polled", async () => {
     const inline: InlineFixtures = {
       ...AUTH,
@@ -737,5 +837,72 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     } finally {
       await m.stop();
     }
+  });
+});
+
+// The live case that started this: three options offered, the answerer asked a
+// question BACK, and `--waitFor` exited 0 with that stored as the decision.
+// Reported 2026-09-04.
+describe("askMatchChoice", () => {
+  const CH = ["月曜に延期", "今週中に実施", "中止"];
+
+  test("a clarifying question is NOT a choice", () => {
+    expect(askMatchChoice("没懂，能给我讲前因后果吗 用中文", CH)).toEqual({ kind: "none" });
+  });
+
+  test("the exact choice text is a choice", () => {
+    expect(askMatchChoice("今週中に実施", CH)).toEqual({ kind: "chosen", index: 2 });
+  });
+
+  test("a bare number is a choice", () => {
+    expect(askMatchChoice("2", CH)).toEqual({ kind: "chosen", index: 2 });
+    expect(askMatchChoice(" 3 ", CH)).toEqual({ kind: "chosen", index: 3 });
+  });
+
+  test("a keycap glyph is a choice — what you copy when you cannot react", () => {
+    expect(askMatchChoice("1️⃣", CH)).toEqual({ kind: "chosen", index: 1 });
+  });
+
+  test("a number introducing its own choice text is a choice", () => {
+    expect(askMatchChoice("1. 月曜に延期", CH)).toEqual({ kind: "chosen", index: 1 });
+    expect(askMatchChoice("2) 今週中に実施", CH)).toEqual({ kind: "chosen", index: 2 });
+  });
+
+  // The direction that matters: every loosening here re-creates the defect.
+  test("a number introducing DIFFERENT text is not a choice", () => {
+    expect(askMatchChoice("2 people already objected", CH)).toEqual({ kind: "none" });
+  });
+
+  test("a number out of range is not a choice", () => {
+    expect(askMatchChoice("9", CH)).toEqual({ kind: "none" });
+    expect(askMatchChoice("0", CH)).toEqual({ kind: "none" });
+  });
+
+  test("paraphrase and reference are NOT choices, on purpose", () => {
+    expect(askMatchChoice("the second one", CH)).toEqual({ kind: "none" });
+    expect(askMatchChoice("中止でいいと思います", CH)).toEqual({ kind: "none" });
+  });
+
+  test("full-width digits and decoration still match", () => {
+    expect(askMatchChoice("２", CH)).toEqual({ kind: "chosen", index: 2 });
+    expect(askMatchChoice("*中止*", CH)).toEqual({ kind: "chosen", index: 3 });
+    expect(askMatchChoice("「中止」。", CH)).toEqual({ kind: "chosen", index: 3 });
+  });
+
+  // Choices past the tenth carry no reaction at all, so text is the ONLY way to
+  // answer them. A matcher that only knew the ten reactable ones would call
+  // every legitimate answer to a long question "not chosen".
+  test("an overflow choice past the tenth is matchable by number and by text", () => {
+    const many = Array.from({ length: 12 }, (_, i) => `opt${i + 1}`);
+    expect(askMatchChoice("11", many)).toEqual({ kind: "chosen", index: 11 });
+    expect(askMatchChoice("opt12", many)).toEqual({ kind: "chosen", index: 12 });
+  });
+
+  test("two identical choices are ambiguous, never a coin flip", () => {
+    expect(askMatchChoice("同じ", ["同じ", "同じ", "別"])).toEqual({ kind: "ambiguous", indexes: [1, 2] });
+  });
+
+  test("an empty or whitespace reply is not a choice", () => {
+    expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });
 });
