@@ -305,3 +305,83 @@ export function askParseMessage(text: string): AskParsed {
 
   return { kind: "open", question, reactable, overflow, threadOnly };
 }
+
+/** Did a free-text reply actually PICK one of the offered choices?
+ *
+ *  Reported from real use 2026-09-04: three options were offered, the answerer
+ *  replied 「没懂，能给我讲前因后果吗」 ("I don't follow — can you explain the
+ *  background?"), and `--waitFor` exited 0 with that stored AS the decision. Any
+ *  reply from an addressed person counted, because nothing compared the reply to
+ *  the candidates. A lane harvesting that unparks the work and proceeds with
+ *  nothing behind it, and the recorded answer reads as though he had chosen.
+ *
+ *  Deliberately NARROW. Every loosening here re-creates the same defect one step
+ *  further out, and the two error directions are not symmetric: calling a
+ *  non-answer an answer makes an automated flow act on a decision nobody took,
+ *  while calling an answer a non-answer parks it in front of a human who can
+ *  settle it with one reaction. So: an exact choice, a bare number, a keycap, or
+ *  a number introducing its own choice text. Nothing fuzzy, nothing partial —
+ *  "the second one" and "option B" are NOT matches, on purpose.
+ *
+ *  `choices` is the full candidate list, reactable and overflow together, in
+ *  presentation order. The overflow ones (11+) can only ever be answered as
+ *  text, so a matcher that ignored them would call every legitimate answer to a
+ *  long question "not chosen" — the failure the caller cannot see. */
+export type AskChoiceMatch =
+  | { kind: "chosen"; index: number }        // 1-based, matching the printed numbering
+  | { kind: "none" }
+  | { kind: "ambiguous"; indexes: number[] };
+
+/** Lowercase, NFKC-fold (full-width ７ and ７．become 7), strip decoration and
+ *  one trailing sentence mark, collapse runs of space. NFKC is what lets a reply
+ *  typed on a Japanese IME match a choice typed on an ASCII keyboard. */
+function askNormalizeChoice(s: string): string {
+  return s
+    .normalize("NFKC")
+    .replace(/[*_`~]/g, "")
+    .trim()
+    // Brackets and sentence marks are stripped in ONE class at each end rather
+    // than in two passes: 「中止」。 puts the full stop OUTSIDE the quote, so
+    // stripping quotes and then punctuation leaves the closing 」 behind and the
+    // reply stops matching a choice it plainly names.
+    .replace(/^[\s"'`「『（(\[]+/, "")
+    .replace(/[\s"'`」』）)\]。．.!！?？、,]+$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+export function askMatchChoice(reply: string, choices: string[]): AskChoiceMatch {
+  const norm = askNormalizeChoice(reply);
+  if (!norm) return { kind: "none" };
+  const normChoices = choices.map(askNormalizeChoice);
+
+  const hits = new Set<number>();
+
+  // 1. The reply IS the choice text.
+  normChoices.forEach((c, i) => { if (c && c === norm) hits.add(i + 1); });
+
+  // 2. A keycap glyph, which is what someone copies out of the message when they
+  //    cannot react (a thread on mobile, or a choice past the tenth).
+  ASK_KEYCAPS.forEach((k, i) => {
+    if (i < choices.length && reply.trim() === k.glyph) hits.add(i + 1);
+  });
+
+  // 3. A number: bare, or introducing the choice it names. `1` and `1. foo` are
+  //    the same act. A number followed by DIFFERENT text is not a match — that
+  //    is someone writing prose that happens to start with a digit.
+  const m = norm.match(/^(\d{1,2})\s*[.):：、。]?\s*(.*)$/);
+  if (m) {
+    const n = Number(m[1]);
+    const rest = m[2]!.trim();
+    if (n >= 1 && n <= choices.length && (rest === "" || rest === normChoices[n - 1])) hits.add(n);
+  }
+
+  const indexes = [...hits].sort((a, b) => a - b);
+  if (!indexes.length) return { kind: "none" };
+  // Two distinct choices matched — the same refusal-to-guess the poller already
+  // applies when someone presses two pills. Identical choice TEXT is the usual
+  // cause, and picking the lower index would answer with a coin flip.
+  if (indexes.length > 1) return { kind: "ambiguous", indexes };
+  return { kind: "chosen", index: indexes[0]! };
+}

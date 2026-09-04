@@ -23,6 +23,7 @@ import {
   askParseMessage,
   askExplainReject,
   askFlatten,
+  askMatchChoice,
   applyInvalidNotice,
   readInvalidNotice,
   type AskFound,
@@ -1642,12 +1643,18 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 // Exit codes are the contract for `--wait`, and a non-zero one must never be
 // mistakable for "an answer arrived":
 //   0  answered   (the answer text is on stdout, and nothing else is)
-//   2  timed out
+//   2  timed out   (nobody replied)
 //   3  transport/config failure
+//   4  replied, but chose none of the offered choices — stdout stays EMPTY
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
 const ASK_EXIT_TIMEOUT = 2;
 const ASK_EXIT_ERROR = 3;
+/** Somebody replied, and what they wrote picks none of the offered choices.
+ *  A THIRD state, distinct from both 0 and 2 on purpose: exit 0 would have an
+ *  automated caller act on a decision nobody took, and exit 2 ("nobody
+ *  answered") would hide that a human is standing there waiting for something. */
+const ASK_EXIT_UNCHOSEN = 4;
 
 const ASK_PHI = 1.618033988749895;
 const ASK_POLL_MIN_MS = 1000;
@@ -1730,6 +1737,11 @@ interface AskWaitCtx {
   threadParentTs?: string;
   question: string;
   reactable: string[];
+  /** Choices past the tenth. They carry NO reaction — text is the only way to
+   *  answer them — so they must be in the candidate list the reply is matched
+   *  against, or every legitimate answer to a long question reads as "chose
+   *  nothing". */
+  overflow: string[];
   threadOnly: boolean;
   /** Who may answer. Empty + broadcast=false would accept nobody, which is why
    *  posting an unaddressed question is refused up front. */
@@ -1762,6 +1774,12 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // deliberately opens it to everyone — that is what the asker asked for.
   const isAnswerer = (user: unknown): user is string =>
     typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
+
+  /** The earliest reply from an answerer that picked none of the choices. Kept
+   *  across polls so the timeout can report it, and so the operator is told once
+   *  rather than on every tick. */
+  let unchosen: { text: string; who: string; ts: string; ambiguous: boolean } | undefined;
+  let unchosenReported = "";
 
   /** Every seed an answerer is on — not just the first. Changing your mind
    *  leaves BOTH reactions in place (Slack only drops one when you actively
@@ -1822,6 +1840,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     return null;
   }
 
+  /** The full candidate list — reactable pills AND the text-only overflow —
+   *  empty when the question was asked free-text. */
+  const candidates = [...reactable, ...ctx.overflow];
+
   function answerFromMessages(messages: Record<string, Json>[], before = Infinity): AskFound | null {
     // Oldest first: if someone wrote twice, the first reply is the answer.
     const ordered = [...messages].sort((a, b) => Number(a.ts) - Number(b.ts));
@@ -1833,7 +1855,23 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
       if (Number(m.ts) >= before) break;
       const t = typeof m.text === "string" ? m.text.trim() : "";
-      if (t) return { answer: t, how: "返信", who: m.user };
+      if (!t) continue;
+      // A question asked WITHOUT choices is answered by whatever comes back —
+      // there is nothing to match against, and every reply is the answer.
+      if (!candidates.length) return { answer: t, how: "返信", who: m.user };
+      const match = askMatchChoice(t, candidates);
+      if (match.kind === "chosen") {
+        // Answer with the CHOICE, not with the reply that selected it: "2" and
+        // "2. 中止" have to reach the caller as the same decision a pill would
+        // have produced, or the same answer arrives in three spellings.
+        return { answer: candidates[match.index - 1]!, how: `返信 (${match.index})`, who: m.user };
+      }
+      // Replied, but picked nothing. Recorded rather than returned: a later
+      // reply may still choose, and the first one is what the operator needs to
+      // see — it is usually a question back.
+      if (!unchosen || Number(m.ts) < Number(unchosen.ts)) {
+        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous: match.kind === "ambiguous" };
+      }
     }
     return null;
   }
@@ -1955,6 +1993,25 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.log(found.answer);
       process.exit(0);
     }
+    // Said as soon as it is seen, not only at the timeout: the reply is usually
+    // a question BACK, and the person who can unblock it is the one watching
+    // this command. Once per reply — a poller that repeated itself every tick
+    // would be noise nobody reads.
+    if (unchosen && unchosen.ts !== unchosenReported) {
+      unchosenReported = unchosen.ts;
+      let who = unchosen.who;
+      try {
+        if (who) who = await userName(token, who, cookie);
+      } catch {
+        // the id is still a usable answer to "who"
+      }
+      console.error(
+        unchosen.ambiguous
+          ? `  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`
+          : `  (${stripTerminalControls(who)} が返信しましたが、選択肢のどれでもありません。待機を続けます)`,
+      );
+      console.error(`    「${stripTerminalControls(unchosen.text)}」`);
+    }
     // Checked after the first poll, never before it: `--timeout 0` means one
     // look, and one look must still be a real look.
     if (Date.now() >= deadline) break;
@@ -1966,6 +2023,23 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // question is still standing, and they have just decided not to block on it.
   // Printing only the permalink here leaves them where `ask` used to: holding a
   // link with nothing that reads a pressed pill back.
+  // Three states, not two. "Nobody replied" and "somebody replied and chose
+  // nothing" need different reactions from whoever reads this — the first waits,
+  // the second answers a person — and collapsing them into exit 2 hides a human
+  // standing there. stdout stays empty in both: the caller must not be handed
+  // something to act on.
+  if (unchosen) {
+    console.error(
+      unchosen.ambiguous
+        ? `Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`
+        : `Error: 返信はありましたが、選択肢のどれも選ばれていません (メッセージはそのまま残っています)`,
+    );
+    console.error(`  返信: 「${stripTerminalControls(unchosen.text)}」`);
+    console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
+    console.error(`  ${shown}`);
+    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
+    process.exit(ASK_EXIT_UNCHOSEN);
+  }
   if (timeout === 0) {
     console.error(`まだ回答がありません: ${shown}`);
   } else {
@@ -2190,6 +2264,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     ts,
     question,
     reactable,
+    overflow,
     threadOnly,
     audience,
     broadcast,
@@ -2304,6 +2379,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     ts,
     question: parsed.question,
     reactable: parsed.reactable,
+    overflow: parsed.overflow,
     threadOnly: parsed.threadOnly,
     audience,
     broadcast,
@@ -3560,7 +3636,7 @@ async function main(): Promise<void> {
         .positional("choices", { type: "string", array: true, describe: "Up to 10 choices, seeded as 1️⃣..🔟 reactions. Beyond 10 they are listed but answerable only by text. With none, the question asks for a free-text reply." })
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = timed out, 3 = transport failure." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = somebody replied but picked none of the choices (stdout empty — do not act on it)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
