@@ -927,6 +927,36 @@ describe("askMatchChoice", () => {
     expect(askMatchChoice("10", many)).toEqual({ kind: "chosen", index: 10 });
   });
 
+  // Second review pass, both on the expensive side of the asymmetry.
+  test("a separator with nothing after it is not a choice", () => {
+    // Someone who started typing and stopped. Selecting option 1 for them is the
+    // error that costs a lane unparking on a decision nobody finished making.
+    expect(askMatchChoice("1 -", ["A", "B"])).toEqual({ kind: "none" });
+  });
+
+  test("a range is not a numbered choice", () => {
+    // `1-2` against options that are THEMSELVES numbers matched as "option 1,
+    // whose text is 2". Rejecting it fails to the cheap side: a genuine `1. 2`
+    // costs one re-ask.
+    expect(askMatchChoice("1-2", ["2", "3"])).toEqual({ kind: "none" });
+  });
+
+  // Accepted behaviour, recorded so it is not "fixed" later: when one choice
+  // contains another prefixed by its own number, a reply naming it matches both
+  // and refuses to guess. Ambiguous routes to exit 4 — the cheap side.
+  test("a choice nested inside another is ambiguous, not a guess", () => {
+    expect(askMatchChoice("1. (Release)", ["(Release)", "1. (Release)"]))
+      .toEqual({ kind: "ambiguous", indexes: [1, 2] });
+  });
+
+  // 🔟 decomposes to "10" under NFKC, so the keycap branch and the number branch
+  // both fire. They agree, and a Set collapses them — this pins that they never
+  // disagree into a spurious ambiguity.
+  test("the ten keycap fires two branches that agree", () => {
+    expect(askMatchChoice("🔟", Array.from({ length: 10 }, (_, i) => `o${i + 1}`)))
+      .toEqual({ kind: "chosen", index: 10 });
+  });
+
   test("an empty or whitespace reply is not a choice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });

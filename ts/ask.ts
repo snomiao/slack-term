@@ -390,6 +390,16 @@ export function askMatchChoice(reply: string, choices: string[]): AskChoiceMatch
     // unbalanced remainder that matched nothing. Re-running the same normaliser
     // on the remainder is what makes a bracketed choice answerable by number.
     rest = askNormalizeChoice(m[2]!);
+    // A separator with NOTHING after it is not a choice: `1 -` is someone who
+    // started typing and stopped, and selecting option 1 for them is the
+    // expensive error. `1.` and `1)` still work — their punctuation is stripped
+    // at the tail, so they arrive at the bare-number branch above.
+    if (!rest) return { kind: "none" };
+    // An all-digit remainder is a range or a score (`1-2`), not a numbered
+    // choice. Without this, a question whose options are themselves numbers
+    // matched `1-2` as "option 1, whose text is 2". Rejecting it fails to the
+    // CHEAP side: a genuine `1. 2` re-asks, a false selection does not.
+    if (/^\d+$/.test(rest)) return { kind: "none" };
   }
   if (n >= 1 && n <= choices.length && (rest === "" || rest === normChoices[n - 1])) hits.add(n);
 
