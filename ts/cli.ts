@@ -1877,6 +1877,13 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   }
 
   async function poll(): Promise<AskFound | null> {
+    // Recomputed every pass rather than accumulated. A reply that has since been
+    // DELETED must stop counting: carrying it forward would let the timeout
+    // report "somebody replied and chose nothing" about a message that is no
+    // longer there, and exit 4 where exit 2 is the truth. `unchosenReported`
+    // persists on purpose — it is what keeps the operator from being told the
+    // same thing on every tick.
+    unchosen = undefined;
     // A question that is itself a thread reply is invisible to
     // `conversations.history`, so the entire poll — reactions included — has to
     // come from the thread.

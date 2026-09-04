@@ -902,6 +902,31 @@ describe("askMatchChoice", () => {
     expect(askMatchChoice("同じ", ["同じ", "同じ", "別"])).toEqual({ kind: "ambiguous", indexes: [1, 2] });
   });
 
+  // All four from the cross-vendor review of this change, each reproduced by
+  // running it before it was fixed.
+  test("a bracketed choice is answerable by number", () => {
+    // `1. (Release)` normalises to `1. (release` — the digit keeps the opening
+    // bracket from being stripped at the head while the closing one goes at the
+    // tail, and the unbalanced remainder matched nothing.
+    const br = ["(Release)", "「中止」", "延期"];
+    expect(askMatchChoice("1. (Release)", br)).toEqual({ kind: "chosen", index: 1 });
+    expect(askMatchChoice("2. 「中止」", br)).toEqual({ kind: "chosen", index: 2 });
+  });
+
+  test("a dash or bracket separator is a separator", () => {
+    expect(askMatchChoice("3 - 延期", ["(Release)", "「中止」", "延期"])).toEqual({ kind: "chosen", index: 3 });
+  });
+
+  // The expensive direction, invented while fixing the cheap one: with the
+  // separator OPTIONAL, "100" parsed as choice 10 followed by "0", so a
+  // ten-option question whose tenth choice is "0" matched a reply nobody meant
+  // as a choice. A number introducing text now REQUIRES a separator.
+  test("digits do not fuse into a choice number plus its text", () => {
+    const many = [...Array.from({ length: 9 }, (_, i) => `o${i + 1}`), "0"];
+    expect(askMatchChoice("100", many)).toEqual({ kind: "none" });
+    expect(askMatchChoice("10", many)).toEqual({ kind: "chosen", index: 10 });
+  });
+
   test("an empty or whitespace reply is not a choice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });
