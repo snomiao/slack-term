@@ -549,6 +549,55 @@ describe("delete (CLI)", { timeout: 60_000 }, () => {
   });
 });
 
+describe("delete --as-bot", () => {
+  const botAuth = {
+    "auth.test": {
+      ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
+      url: "https://acme.slack.com/",
+    },
+  };
+
+  test("confirmed --as-bot deletes on the BOT token", async () => {
+    const m = await startMock({ inline: { ...fixtures, ...botAuth } });
+    try {
+      const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+      const argv = ["delete", MSG_PERMALINK, "--as-bot"];
+      const dry = await run(argv, { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("[as bot]");
+      const before = m.requests.length;
+      const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      const del = m.requests.slice(before).find((q) => q.method === "chat.delete");
+      expect(del!.headers.authorization).toBe("Bearer xoxb-fake");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The direction that would make this an outage, same as for edit.
+  test("without --as-bot it still deletes on the USER token", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const argv = ["delete", MSG_PERMALINK];
+      const dry = await run(argv, { baseUrl: m.baseUrl });
+      const before = m.requests.length;
+      const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      const del = m.requests.slice(before).find((q) => q.method === "chat.delete");
+      expect(del!.headers.authorization).toBe("Bearer xoxp-fake");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("without a bot token it refuses cleanly", async () => {
+    const r = await run(["delete", MSG_PERMALINK, "--as-bot"]);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("--as-bot needs a bot token");
+  });
+});
+
 describe("edit (CLI)", { timeout: 60_000 }, () => {
   test("gate names the editing identity above the original/replacement diff", async () => {
     const r = await run(["edit", MSG_PERMALINK, "fixed wording"]);
@@ -672,6 +721,53 @@ describe("edit (CLI)", { timeout: 60_000 }, () => {
 
     // A correction that silently drops its @mentions is the same class of defect
     // this command exists to fix, so mention resolution stays on the USER token.
+    // Found by the cross-vendor review, and it names why the tests above missed
+    // it: they all target a PERMALINK, which resolveChannel parses locally
+    // without any API call. An `@user:ts` target goes through users.list — on
+    // whichever token cmdEdit was handed — and a bot token has no users:read.
+    test("an @user target resolves on the USER token and opens the BOT's DM", async () => {
+      const m = await startMock({
+        inline: {
+          ...botAuth,
+          // The bot cannot read the directory; the user can. This is the split
+          // the command has to make, expressed as the API actually behaves.
+          "users.list__limit=200": {
+            __byAuth: {
+              "Bearer xoxp-user": { ok: true, members: [{ id: "U00000BOB", name: "bob", real_name: "Bob" }] },
+              "*": { ok: false, error: "missing_scope" },
+            },
+          },
+          "conversations.open": { ok: true, channel: { id: "D00000BOB" } },
+          "conversations.replies__channel=D00000BOB&limit=1&ts=1700000000.000100": {
+            ok: true,
+            messages: [{ type: "message", bot_id: "B00000001", ts: "1700000000.000100", text: "original" }],
+          },
+        },
+      });
+      try {
+        const env = { SLACK_BOT_TOKEN: "xoxb-fake", SLACK_TOKEN: "xoxp-user" };
+        const argv = ["edit", "@bob:1700000000.000100", "fixed", "--as-bot", "--no-mentions"];
+        const dry = await run(argv, { baseUrl: m.baseUrl, env });
+        expect(dry.exitCode).toBe(1); // the confirm gate, NOT a missing_scope crash
+        const before = m.requests.length;
+        const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+        expect(r.exitCode).toBe(0);
+        const reqs = m.requests.slice(before);
+        // The handle was looked up as the USER …
+        expect(reqs.find((q) => q.method === "users.list")?.headers.authorization).toBe("Bearer xoxp-user");
+        // … and the DM was opened as the BOT, because a bot-authored DM lives in
+        // the BOT's conversation with that person, not in the user's.
+        const open = reqs.find((q) => q.method === "conversations.open");
+        expect(open!.headers.authorization).toBe("Bearer xoxb-fake");
+        expect(JSON.parse(open!.body).users).toBe("U00000BOB");
+        const upd = reqs.find((q) => q.method === "chat.update");
+        expect(upd!.headers.authorization).toBe("Bearer xoxb-fake");
+        expect(JSON.parse(upd!.body).channel).toBe("D00000BOB");
+      } finally {
+        await m.stop();
+      }
+    });
+
     test("mentions still resolve on the user token while editing as the bot", async () => {
       const m = await startMock({ inline: { ...fixtures, ...botAuth } });
       try {
@@ -707,6 +803,11 @@ describe("schedule send (CLI)", { timeout: 60_000 }, () => {
     expect(r.stdout).toContain("  To:      #channel-01");
     expect(r.stdout).toContain("  Message: morning reminder");
   });
+
+  // The SECOND call site of one defect. `delete` had the identical unconditional
+  // tok(argv), and chat.delete refuses another token's message exactly as
+  // chat.update does — so a message the bot posted could not be removed either.
+  // Fixed in the same change because it is one defect, not two.
 
   test("At: shows local and UTC — a UTC --at renders in the sender's zone too", async () => {
     const r = await run(["schedule", "send", "#channel-01", "morning reminder", "--at", AT], { env: { TZ: "Asia/Tokyo" } });
