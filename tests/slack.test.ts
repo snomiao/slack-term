@@ -1019,3 +1019,27 @@ describe("slack.ts", () => {
     );
   });
 });
+
+// RateLimitError.method — deterministic, no mock server.
+//
+// The HTTP-level 429 tests above go through startMock, which is ECONNRESET-flaky
+// on some machines (it is red on main here), so they cannot be relied on to
+// cover this. These construct the error directly.
+describe("RateLimitError.method", () => {
+  test("names the throttled method in the message when given one", () => {
+    const e = new slack.RateLimitError(30, "conversations.history");
+    expect(e.method).toBe("conversations.history");
+    expect(e.message).toContain("conversations.history");
+    expect(e.retryAfter).toBe(30);
+  });
+
+  test("keeps the old shape when no method is passed", () => {
+    // Callers (and the tests above) construct this with one argument. A required
+    // field would break them, so the method stays optional and the message keeps
+    // its original wording.
+    const e = new slack.RateLimitError(60);
+    expect(e.method).toBeUndefined();
+    expect(e.message).toBe("Slack rate limited — retry after 60s");
+    expect(e.retryAfter).toBe(60);
+  });
+});

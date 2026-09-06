@@ -2,10 +2,27 @@
 
 export class RateLimitError extends Error {
   retryAfter: number;
-  constructor(retryAfter: number) {
-    super(`Slack rate limited — retry after ${retryAfter}s`);
+  /**
+   * The Web API method that was throttled ("conversations.history", ...).
+   *
+   * Slack's limits are PER METHOD, so "retry after 30s" alone cannot say whether
+   * a caller's own polling caused the 429 or something else sharing the token
+   * did. The method name is already in scope at every throw site below; not
+   * passing it was the only reason the question was unanswerable.
+   *
+   * Optional because callers (and tests) constructed this with one argument
+   * before, and a required field would break them for no diagnostic gain.
+   */
+  method?: string;
+  constructor(retryAfter: number, method?: string) {
+    super(
+      method
+        ? `Slack rate limited on ${method} — retry after ${retryAfter}s`
+        : `Slack rate limited — retry after ${retryAfter}s`,
+    );
     this.name = "RateLimitError";
     this.retryAfter = retryAfter;
+    if (method) this.method = method;
   }
 }
 
@@ -34,12 +51,12 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
   });
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
-    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter, method);
   }
   const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
   if (body.ok !== true) {
     const err = body.error ?? "unknown";
-    if (err === "ratelimited") throw new RateLimitError(60);
+    if (err === "ratelimited") throw new RateLimitError(60, method);
     // A desktop session token (xoxc-) is only accepted by the public Web API when
     // paired with its xoxd session cookie — without one, point at the xoxp fallback.
     if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
@@ -84,12 +101,12 @@ async function callSession(token: string, method: string, init: RequestInit, coo
   });
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
-    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter, method);
   }
   const body = (await res.json()) as { ok?: boolean; error?: string } & Record<string, Json>;
   if (body.ok !== true) {
     const err = body.error ?? "unknown";
-    if (err === "ratelimited") throw new RateLimitError(60);
+    if (err === "ratelimited") throw new RateLimitError(60, method);
     if ((err === "invalid_auth" || err === "not_authed") && !token.startsWith("xoxc-")) {
       throw new Error(
         `The draft API requires a desktop app session token (xoxc-).\n` +
@@ -157,7 +174,7 @@ export async function authScopes(token: string, cookie?: string): Promise<{
   const res = await fetch(`${base()}/auth.test`, { method: "GET", headers });
   if (res.status === 429) {
     const retryAfter = parseInt(res.headers.get("retry-after") ?? "60", 10);
-    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter);
+    throw new RateLimitError(isNaN(retryAfter) ? 60 : retryAfter, "auth.test");
   }
   const scopesHeader = res.headers.get("x-oauth-scopes") ?? "";
   const body = (await res.json()) as {
