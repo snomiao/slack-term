@@ -1177,6 +1177,47 @@ interface EditArgs {
   mentionToken?: string;
   mentionCookie?: string;
 }
+/** The bot token, plus the bot↔user DM when the target names an `@handle`.
+ *
+ *  Both halves are load-bearing. A bot token has no `users:read`, so resolving
+ *  `@bob` with it does not merely pick the wrong channel — it fails outright with
+ *  `missing_scope`, before the confirm gate is ever printed. And even where it
+ *  could resolve, a BOT-authored DM lives in the bot's conversation with that
+ *  person, not in the user's: looking the handle up as the user and opening the
+ *  DM as the bot is the only combination that names the message being corrected.
+ *  Same split `send --as-bot` makes.
+ *
+ *  Found by the cross-vendor review of this change, which also named why the
+ *  first round of tests missed it: they all targeted a permalink, and
+ *  `resolveChannel` parses those locally without touching the API. */
+async function asBotTarget(
+  target: string,
+  userToken: string,
+  userCookie: string | undefined,
+): Promise<{ botToken: string; channelId?: string }> {
+  const botToken = resolveBotToken();
+  if (!botToken) {
+    console.error(
+      "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+      "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+    );
+    process.exit(1);
+  }
+  const { ref } = splitRefTs(target);
+  if (!ref.startsWith("@")) return { botToken };
+  try {
+    const userId = await resolveUserId(userToken, ref, userCookie);
+    return { botToken, channelId: await openDm(botToken, userId) };
+  } catch (e: unknown) {
+    console.error(
+      `Error: could not resolve ${stripTerminalControls(ref)} to the bot's DM.\n` +
+      `  ${e instanceof Error ? e.message : String(e)}\n` +
+      `  Tip: pass the message permalink, or --channel-id <D…>, to skip the lookup.`,
+    );
+    process.exit(1);
+  }
+}
+
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const getSelf = selfLookup(token, args.cookie);
   const { ref, ts } = splitRefTs(args.target);
@@ -1233,6 +1274,7 @@ interface DeleteArgs {
   code?: string;
   channelId?: string;
   cookie?: string;
+  asBot?: boolean;
 }
 async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
   const getSelf = selfLookup(token, args.cookie);
@@ -1264,7 +1306,7 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
     const dest = await destLabel(token, channelId, ref, args.cookie);
     requireCode(args.code, code, [
       `--- Deleting message -------------------------`,
-      fromLine(self),
+      fromLine(self, { asBot: args.asBot }),
       `  → ${dest} at ${slackTsToIso(ts)}`,
       ...originalText.split("\n").map((l) => `  ${l}`),
       `---------------------------------------------`,
@@ -4045,15 +4087,9 @@ async function main(): Promise<void> {
           // reached for was RESENDING, which this repo's own etiquette forbids.
           // Bot identity is what makes a DM notify at all, so "uncorrectable"
           // applied to exactly the messages that matter most.
-          const botToken = resolveBotToken();
-          if (!botToken) {
-            console.error(
-              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
-              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
-            );
-            process.exit(1);
-          }
-          editToken = botToken;
+          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W));
+          editToken = resolved.botToken;
+          if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
           args.asBot = true;
           // Mentions still resolve on the USER token: the bot has no users:read,
           // and a silently unresolved @handle in a CORRECTION is the same defect
@@ -4077,14 +4113,28 @@ async function main(): Promise<void> {
       (y) => y
         .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
         .option("code", { type: "string", describe: "Safety hash to confirm delete" })
-        .option("channel-id", { type: "string", describe: "Raw channel ID" }),
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Delete as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED for a message the bot posted: chat.delete refuses another token's message exactly as chat.update does." }),
       async (argv) => {
         const args: DeleteArgs = { target: argv.target! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        const cookie = ck(argv as W);
-        if (cookie) args.cookie = cookie;
-        await cmdDelete(tok(argv as W), args);
+        let deleteToken: string;
+        if (argv["as-bot"]) {
+          // The SECOND call site of one defect, not a second defect: `delete`
+          // had the identical unconditional `tok(argv)`, and chat.delete refuses
+          // another token's message exactly as chat.update does. Fixing one and
+          // leaving the other is how the next person finds it the hard way.
+          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W));
+          deleteToken = resolved.botToken;
+          if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
+          args.asBot = true;
+        } else {
+          deleteToken = tok(argv as W);
+          const cookie = ck(argv as W);
+          if (cookie) args.cookie = cookie;
+        }
+        await cmdDelete(deleteToken, args);
       },
     )
     .command(
