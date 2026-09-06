@@ -593,6 +593,109 @@ describe("edit (CLI)", { timeout: 60_000 }, () => {
 
 // A scheduled message goes out later, unattended, as whoever the token was at
 // schedule time — so the gate has to name that identity and bind it to the code.
+
+  // Diagnosed from live use 2026-09-06. `--as-bot` is not a switch on
+  // chat.update — it selects a DIFFERENT resolved token — and `edit` never wired
+  // one, so `cmdEdit` always ran on the USER token and Slack answered
+  // cant_update_message for anything the bot had posted. Bot identity is what
+  // makes a DM notify at all, so every notifying message was uncorrectable and
+  // people worked around it by RESENDING, which this repo's etiquette forbids.
+  describe("edit --as-bot", () => {
+    const botAuth = {
+      "auth.test": {
+        ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
+        url: "https://acme.slack.com/",
+      },
+    };
+
+    test("without a bot token it refuses cleanly", async () => {
+      const r = await run(["edit", MSG_PERMALINK, "fixed", "--as-bot"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--as-bot needs a bot token");
+      expect(r.stdout).not.toContain("slack edit <target>"); // not a yargs usage dump
+    });
+
+    test("the gate names the BOT identity", async () => {
+      const m = await startMock({ inline: { ...fixtures, ...botAuth } });
+      try {
+        const r = await run(["edit", MSG_PERMALINK, "fixed"], {
+          baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" },
+        });
+        expect(r.exitCode).toBe(1); // confirm gate
+        expect(r.stdout).not.toContain("[as bot]"); // control: plain edit is NOT as-bot
+        const b = await run(["edit", MSG_PERMALINK, "fixed", "--as-bot"], {
+          baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" },
+        });
+        expect(b.exitCode).toBe(1);
+        expect(b.stdout).toContain("@acmebot (U00000BOT) — Acme [as bot]");
+      } finally {
+        await m.stop();
+      }
+    });
+
+    // THE defect: which token chat.update actually runs on. Asserted on the
+    // Authorization header the mock received, not on wording.
+    test("confirmed --as-bot updates on the BOT token", async () => {
+      const m = await startMock({ inline: { ...fixtures, ...botAuth } });
+      try {
+        const env = { SLACK_BOT_TOKEN: "xoxb-fake" };
+        const argv = ["edit", MSG_PERMALINK, "fixed", "--as-bot"];
+        const dry = await run(argv, { baseUrl: m.baseUrl, env });
+        const before = m.requests.length;
+        const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+        expect(r.exitCode).toBe(0);
+        expect(r.stdout).toContain("✓ Edited");
+        const upd = m.requests.slice(before).find((q) => q.method === "chat.update");
+        expect(upd!.headers.authorization).toBe("Bearer xoxb-fake");
+      } finally {
+        await m.stop();
+      }
+    });
+
+    // The other direction, and the one that would make this an outage: a plain
+    // edit must still run on the USER token. Without this, "fix it for the bot"
+    // silently breaks every ordinary correction.
+    test("without --as-bot it still updates on the USER token", async () => {
+      const m = await startMock({ inline: fixtures });
+      try {
+        const argv = ["edit", MSG_PERMALINK, "fixed"];
+        const dry = await run(argv, { baseUrl: m.baseUrl });
+        const before = m.requests.length;
+        const r = await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+        expect(r.exitCode).toBe(0);
+        const upd = m.requests.slice(before).find((q) => q.method === "chat.update");
+        expect(upd!.headers.authorization).toBe("Bearer xoxp-fake");
+      } finally {
+        await m.stop();
+      }
+    });
+
+    // A correction that silently drops its @mentions is the same class of defect
+    // this command exists to fix, so mention resolution stays on the USER token.
+    test("mentions still resolve on the user token while editing as the bot", async () => {
+      const m = await startMock({ inline: { ...fixtures, ...botAuth } });
+      try {
+        // SLACK_TOKEN is what makes the two tokens DIFFERENT here. With only
+        // SLACK_BOT_TOKEN set and no profiles, resolveToken falls back to the
+        // bot token, so "the user token" and "the bot token" are the same string
+        // and this test could not tell them apart — it would pass on a build
+        // that had no split at all.
+        const env = { SLACK_BOT_TOKEN: "xoxb-fake", SLACK_TOKEN: "xoxp-user" };
+        const argv = ["edit", MSG_PERMALINK, "ping @bob", "--as-bot"];
+        const dry = await run(argv, { baseUrl: m.baseUrl, env });
+        const before = m.requests.length;
+        await run([...argv, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+        const lookup = m.requests.slice(before).find((q) => q.method === "users.list");
+        expect(lookup?.headers.authorization).toBe("Bearer xoxp-user");
+        // …and the edit itself still went out as the bot.
+        const upd = m.requests.slice(before).find((q) => q.method === "chat.update");
+        expect(upd!.headers.authorization).toBe("Bearer xoxb-fake");
+      } finally {
+        await m.stop();
+      }
+    });
+  });
+
 describe("schedule send (CLI)", { timeout: 60_000 }, () => {
   const AT = "2026-08-10T09:00:00Z";
 
