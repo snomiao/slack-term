@@ -1168,6 +1168,14 @@ interface EditArgs {
   // Session cookie (xoxd) for `token` — required for an xoxc- desktop session
   // token to be accepted by the public Slack API at all.
   cookie?: string;
+  asBot?: boolean;
+  /** The USER token, kept for mention resolution when the edit itself runs as
+   *  the bot. A bot token has no users:read, and an unresolved @handle degrades
+   *  to plain text SILENTLY — which is the precise failure `edit` exists to
+   *  correct, so re-introducing it here would be circular. Same split as
+   *  `send --as-bot`. */
+  mentionToken?: string;
+  mentionCookie?: string;
 }
 async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const getSelf = selfLookup(token, args.cookie);
@@ -1192,8 +1200,9 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const originalText = typeof original.text === "string" ? original.text : "";
 
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
+  const mentionCookie = args.mentionCookie ?? args.cookie;
   const newText = args.mentions
-    ? await encodeMentions(token, args.newText, channelId, args.cookie ? { cookie: args.cookie } : {})
+    ? await encodeMentions(args.mentionToken ?? token, args.newText, channelId, mentionCookie ? { cookie: mentionCookie } : {})
     : args.newText;
 
   // Identity is part of the hash for the same reason it is on `send`: a code
@@ -1205,7 +1214,7 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   if (args.code !== code) {
     requireCode(args.code, code, [
       `--- Editing as -------------------------------`,
-      fromLine(self),
+      fromLine(self, { asBot: args.asBot }),
       `--- Original message -------------------------`,
       ...originalText.split("\n").map((l) => `  ${l}`),
       `--- Replacing with ---------------------------`,
@@ -4021,15 +4030,45 @@ async function main(): Promise<void> {
         .positional("newText", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
-        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." }),
+        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
+        .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),
       async (argv) => {
         const args: EditArgs = { target: argv.target!, newText: argv.newText! };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv.mentions !== false) args.mentions = true;
-        const cookie = ck(argv as W);
-        if (cookie) args.cookie = cookie;
-        await cmdEdit(tok(argv as W), args);
+        let editToken: string;
+        if (argv["as-bot"]) {
+          // --as-bot is not a switch on chat.update. It selects a DIFFERENT
+          // resolved token, and until now `edit` never wired one — so every
+          // message the bot posted was uncorrectable, and the workaround people
+          // reached for was RESENDING, which this repo's own etiquette forbids.
+          // Bot identity is what makes a DM notify at all, so "uncorrectable"
+          // applied to exactly the messages that matter most.
+          const botToken = resolveBotToken();
+          if (!botToken) {
+            console.error(
+              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+            );
+            process.exit(1);
+          }
+          editToken = botToken;
+          args.asBot = true;
+          // Mentions still resolve on the USER token: the bot has no users:read,
+          // and a silently unresolved @handle in a CORRECTION is the same defect
+          // twice.
+          args.mentionToken = tok(argv as W);
+          const mc = ck(argv as W);
+          if (mc) args.mentionCookie = mc;
+        } else {
+          editToken = tok(argv as W);
+          // Not set under --as-bot: a bot token needs no session cookie, and
+          // attaching one is how a working call starts failing.
+          const cookie = ck(argv as W);
+          if (cookie) args.cookie = cookie;
+        }
+        await cmdEdit(editToken, args);
       },
     )
     .command(
