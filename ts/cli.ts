@@ -1194,6 +1194,11 @@ async function asBotTarget(
   target: string,
   userToken: string,
   userCookie: string | undefined,
+  /** Already known from `--channel-id`. Passed in so the DM lookup is SKIPPED
+   *  rather than performed and discarded: `conversations.open` is a side effect,
+   *  and opening a DM the caller did not ask for is not undone by ignoring the
+   *  result. */
+  knownChannelId?: string,
 ): Promise<{ botToken: string; channelId?: string }> {
   const botToken = resolveBotToken();
   if (!botToken) {
@@ -1203,6 +1208,7 @@ async function asBotTarget(
     );
     process.exit(1);
   }
+  if (knownChannelId) return { botToken };
   const { ref } = splitRefTs(target);
   if (!ref.startsWith("@")) return { botToken };
   try {
@@ -4087,7 +4093,7 @@ async function main(): Promise<void> {
           // reached for was RESENDING, which this repo's own etiquette forbids.
           // Bot identity is what makes a DM notify at all, so "uncorrectable"
           // applied to exactly the messages that matter most.
-          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W));
+          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
           editToken = resolved.botToken;
           if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
           args.asBot = true;
@@ -4125,7 +4131,7 @@ async function main(): Promise<void> {
           // had the identical unconditional `tok(argv)`, and chat.delete refuses
           // another token's message exactly as chat.update does. Fixing one and
           // leaving the other is how the next person finds it the hard way.
-          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W));
+          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
           deleteToken = resolved.botToken;
           if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
           args.asBot = true;
