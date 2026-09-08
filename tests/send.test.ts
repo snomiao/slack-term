@@ -591,6 +591,62 @@ describe("delete --as-bot", () => {
     }
   });
 
+  // Second review pass claimed a bot token in `destLabel` would crash the gate
+  // with missing_scope before it printed. It does not — destLabel wraps the whole
+  // lookup and falls back to the bare channel id — but nothing was pinning that,
+  // and "the gate still renders when the label cannot be resolved" is exactly the
+  // property a confirm gate must never lose.
+  test("a label lookup the bot cannot make degrades the label, not the gate", async () => {
+    const m = await startMock({
+      inline: {
+        ...fixtures,
+        "auth.test": {
+          ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
+          url: "https://acme.slack.com/",
+        },
+        "conversations.info__channel=C00000001": { ok: false, error: "missing_scope" },
+      },
+    });
+    try {
+      const r = await run(["delete", MSG_PERMALINK, "--as-bot"], {
+        baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" },
+      });
+      expect(r.exitCode).toBe(1);            // the confirm gate, not a crash
+      expect(r.stderr).toContain("--code=");  // and it still minted a code
+      expect(r.stdout).toContain("[as bot]");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // `--channel-id` already answers "which conversation", so the DM lookup must be
+  // SKIPPED rather than run and discarded: conversations.open is a side effect,
+  // and opening a DM nobody asked for is not undone by ignoring the result.
+  test("--channel-id with an @user target opens no DM at all", async () => {
+    const m = await startMock({
+      inline: {
+        ...fixtures,
+        "auth.test": {
+          ok: true, user_id: "U00000BOT", user: "acmebot", bot_id: "B00000001", team: "Acme",
+          url: "https://acme.slack.com/",
+        },
+      },
+    });
+    try {
+      const before = m.requests.length;
+      const r = await run(
+        ["delete", "@bob:1700000000.000100", "--as-bot", "--channel-id", "C00000001"],
+        { baseUrl: m.baseUrl, env: { SLACK_BOT_TOKEN: "xoxb-fake" } },
+      );
+      expect(r.exitCode).toBe(1); // gate
+      const reqs = m.requests.slice(before);
+      expect(reqs.some((q) => q.method === "conversations.open")).toBe(false);
+      expect(reqs.some((q) => q.method === "users.list")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("without a bot token it refuses cleanly", async () => {
     const r = await run(["delete", MSG_PERMALINK, "--as-bot"]);
     expect(r.exitCode).toBe(1);
