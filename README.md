@@ -23,6 +23,29 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 - Slack `<!date^...>` markup is rendered as human-readable dates
 - Messages are grouped by day (Today / Yesterday / weekday)
 
+## Comparison with other Slack tools
+
+`slack-term` focuses on everyday workspace interaction through shell commands:
+read, search, reply, and coordinate work from a terminal or an agent script.
+The alternatives below serve different workflows; links point to their upstream
+documentation.
+
+| Tool | Main workflow | How it compares with this project |
+| --- | --- | --- |
+| **`slack-term` (this project)** | Workspace messaging and automation | TypeScript and Rust implementations; explicit user-token setup; message previews and confirm codes for `send`, `edit`, and `delete`; `ask` waits for answers and `todo` tracks tasks through reactions. |
+| [`slkcli`](https://github.com/therohitdas/slkcli) | Slack commands for macOS users and agents | Extracts credentials from the Slack desktop app for convenient onboarding. This project offers an explicit-token setup suitable for other platforms, at the cost of configuring an app and scopes. |
+| [Official Slack CLI](https://docs.slack.dev/tools/slack-cli/) | Building, running, and deploying Slack apps | Choose it for Slack app development. This project's commands focus on interacting with messages in an existing workspace. |
+| [Go `slack-term`](https://github.com/jpbruinsslot/slack-term) | Interactive terminal chat | Provides a full-screen terminal client. This project uses individual shell commands, which fit scripts and quick queries. The two projects are unrelated despite sharing a name. |
+| [`wee-slack`](https://github.com/wee-slack/wee-slack) | Slack inside WeeChat | Offers ongoing chat with threads, reactions, and synchronized read markers. Choose it if you already use WeeChat; this project runs as a standalone CLI. |
+| [`slackcat`](https://github.com/bcicen/slackcat) | Posting files and piped command output | Focuses on sending stdin, files, and streaming logs to Slack. This project also covers reading, searching, and following conversations. |
+| [`slackdump`](https://github.com/rusq/slackdump) | Archiving and exporting Slack data | Offers dedicated archives, export formats, and a local viewer. This project's `dump` provides markdown history exports alongside everyday messaging commands. |
+
+Choose this project when you want **scriptable conversations with a preview before
+sending**. The confirmation step adds an extra invocation, and token setup requires
+the appropriate Slack scopes. Reactions are immediate and do not use the confirm
+gate. For a persistent chat UI or a dedicated archive, the specialized tools above
+may be a better fit.
+
 ## Installation
 
 ### TypeScript (npm, recommended)
