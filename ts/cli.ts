@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
+import { guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
@@ -1160,6 +1161,7 @@ function sumCounts(m: Map<string, number>): number {
 
 // --- edit ---
 interface EditArgs {
+  allowUrlAdjacent?: boolean;
   target: string;
   newText: string;
   code?: string;
@@ -1251,6 +1253,8 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   const newText = args.mentions
     ? await encodeMentions(args.mentionToken ?? token, args.newText, channelId, mentionCookie ? { cookie: mentionCookie } : {})
     : args.newText;
+
+  guardUrlBoundaries(newText, args.allowUrlAdjacent);
 
   // Identity is part of the hash for the same reason it is on `send`: a code
   // minted while previewing as one identity must not confirm the write as
@@ -1358,6 +1362,7 @@ async function cmdReact(token: string, args: ReactArgs): Promise<void> {
 
 // --- send ---
 interface SendArgs {
+  allowUrlAdjacent?: boolean;
   target: string;
   message: string;
   code?: string;
@@ -1443,6 +1448,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
   // show the real line breaks so "how many lines is this?" is answered by
   // looking rather than by guessing.
   const rawMessage = unescapeArg(args.message);
+  guardUrlBoundaries(rawMessage, args.allowUrlAdjacent);
   let message = rawMessage;
   let mentionReport: MentionEncodeResult | null = null;
   if (args.mentions) {
@@ -1720,6 +1726,7 @@ const ASK_MAX_CONSECUTIVE_ERRORS = 8;
 
 
 interface AskArgs {
+  allowUrlAdjacent?: boolean;
   target: string;
   question: string;
   choices: string[];
@@ -2219,6 +2226,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // INTO a thread is thread-scoped for the same reason.
   const threadOnly = !channelId.startsWith("D") || !!threadTs;
   const message = askBuildText(question, body, reactable, overflow, threadOnly);
+  guardUrlBoundaries(message, args.allowUrlAdjacent);
 
   // Preview the destination's last message, exactly as `send` does — the gate's
   // job is to make you look at where this is going before it goes. Fail-soft:
@@ -3621,13 +3629,14 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink (a message permalink replies in its thread)" })
         .positional("message", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." }),
       async (argv) => {
-        const args: SendArgs = { target: argv.target!, message: argv.message! };
+        const args: SendArgs = { target: argv.target!, message: argv.message!, allowUrlAdjacent: argv["allow-url-adjacent"] };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
@@ -3699,6 +3708,7 @@ async function main(): Promise<void> {
         .positional("question", { type: "string", describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
         .positional("choices", { type: "string", array: true, describe: "Up to 10 choices, seeded as 1️⃣..🔟 reactions. Beyond 10 they are listed but answerable only by text. With none, the question asks for a free-text reply." })
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = somebody replied but picked none of the choices (stdout empty — do not act on it)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
@@ -3759,6 +3769,7 @@ async function main(): Promise<void> {
           process.exit(ASK_EXIT_ERROR);
         }
         const args: AskArgs = {
+          allowUrlAdjacent: argv["allow-url-adjacent"],
           target: argv.target!,
           question,
           choices: ((argv.choices as string[] | undefined) ?? []).map((s) => String(s).trim()).filter(Boolean),
@@ -4077,11 +4088,12 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
         .positional("newText", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
         .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),
       async (argv) => {
-        const args: EditArgs = { target: argv.target!, newText: argv.newText! };
+        const args: EditArgs = { target: argv.target!, newText: argv.newText!, allowUrlAdjacent: argv["allow-url-adjacent"] };
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv.mentions !== false) args.mentions = true;

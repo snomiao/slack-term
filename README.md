@@ -96,6 +96,11 @@ slack send "#general" "Hello team"
 # as the wrong account.
 slack send "#general" "Hello team" --code=<code>
 
+# send/edit/ask refuse ambiguous bare URLs such as https://example.com/path/内容.
+# Put the URL on its own line or use <https://example.com/path/> (or <url|label>).
+# Intentional Unicode URLs should also be wrapped. --allow-url-adjacent warns only;
+# the normal confirmation code is still required.
+
 # Reply in a thread — #chan:<thread_ts>, or just paste a message permalink
 slack send "#general:1700000000.000100" "Replying in thread"
 slack send "https://acme.slack.com/archives/C0123456789/p1700000000000100" "Replying in thread"

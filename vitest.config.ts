@@ -98,6 +98,7 @@ export default defineConfig({
         "ts/slack.ts",
         "ts/tail.ts",
         "ts/todo.ts",
+        "ts/urlGuard.ts",
       ],
       // Integration/interactive modules: OS keychain, browser cookie extraction,
       // interactive prompts, live-API diagnostics — not meaningfully unit-testable.
