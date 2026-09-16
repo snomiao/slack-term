@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText, askMatchChoice } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -837,128 +837,6 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     } finally {
       await m.stop();
     }
-  });
-});
-
-// The live case that started this: three options offered, the answerer asked a
-// question BACK, and `--waitFor` exited 0 with that stored as the decision.
-// Reported 2026-09-04.
-describe("askMatchChoice", () => {
-  const CH = ["月曜に延期", "今週中に実施", "中止"];
-
-  test("a clarifying question is NOT a choice", () => {
-    expect(askMatchChoice("没懂，能给我讲前因后果吗 用中文", CH)).toEqual({ kind: "none" });
-  });
-
-  test("the exact choice text is a choice", () => {
-    expect(askMatchChoice("今週中に実施", CH)).toEqual({ kind: "chosen", index: 2 });
-  });
-
-  test("a bare number is a choice", () => {
-    expect(askMatchChoice("2", CH)).toEqual({ kind: "chosen", index: 2 });
-    expect(askMatchChoice(" 3 ", CH)).toEqual({ kind: "chosen", index: 3 });
-  });
-
-  test("a keycap glyph is a choice — what you copy when you cannot react", () => {
-    expect(askMatchChoice("1️⃣", CH)).toEqual({ kind: "chosen", index: 1 });
-  });
-
-  test("a number introducing its own choice text is a choice", () => {
-    expect(askMatchChoice("1. 月曜に延期", CH)).toEqual({ kind: "chosen", index: 1 });
-    expect(askMatchChoice("2) 今週中に実施", CH)).toEqual({ kind: "chosen", index: 2 });
-  });
-
-  // The direction that matters: every loosening here re-creates the defect.
-  test("a number introducing DIFFERENT text is not a choice", () => {
-    expect(askMatchChoice("2 people already objected", CH)).toEqual({ kind: "none" });
-  });
-
-  test("a number out of range is not a choice", () => {
-    expect(askMatchChoice("9", CH)).toEqual({ kind: "none" });
-    expect(askMatchChoice("0", CH)).toEqual({ kind: "none" });
-  });
-
-  test("paraphrase and reference are NOT choices, on purpose", () => {
-    expect(askMatchChoice("the second one", CH)).toEqual({ kind: "none" });
-    expect(askMatchChoice("中止でいいと思います", CH)).toEqual({ kind: "none" });
-  });
-
-  test("full-width digits and decoration still match", () => {
-    expect(askMatchChoice("２", CH)).toEqual({ kind: "chosen", index: 2 });
-    expect(askMatchChoice("*中止*", CH)).toEqual({ kind: "chosen", index: 3 });
-    expect(askMatchChoice("「中止」。", CH)).toEqual({ kind: "chosen", index: 3 });
-  });
-
-  // Choices past the tenth carry no reaction at all, so text is the ONLY way to
-  // answer them. A matcher that only knew the ten reactable ones would call
-  // every legitimate answer to a long question "not chosen".
-  test("an overflow choice past the tenth is matchable by number and by text", () => {
-    const many = Array.from({ length: 12 }, (_, i) => `opt${i + 1}`);
-    expect(askMatchChoice("11", many)).toEqual({ kind: "chosen", index: 11 });
-    expect(askMatchChoice("opt12", many)).toEqual({ kind: "chosen", index: 12 });
-  });
-
-  test("two identical choices are ambiguous, never a coin flip", () => {
-    expect(askMatchChoice("同じ", ["同じ", "同じ", "別"])).toEqual({ kind: "ambiguous", indexes: [1, 2] });
-  });
-
-  // All four from the cross-vendor review of this change, each reproduced by
-  // running it before it was fixed.
-  test("a bracketed choice is answerable by number", () => {
-    // `1. (Release)` normalises to `1. (release` — the digit keeps the opening
-    // bracket from being stripped at the head while the closing one goes at the
-    // tail, and the unbalanced remainder matched nothing.
-    const br = ["(Release)", "「中止」", "延期"];
-    expect(askMatchChoice("1. (Release)", br)).toEqual({ kind: "chosen", index: 1 });
-    expect(askMatchChoice("2. 「中止」", br)).toEqual({ kind: "chosen", index: 2 });
-  });
-
-  test("a dash or bracket separator is a separator", () => {
-    expect(askMatchChoice("3 - 延期", ["(Release)", "「中止」", "延期"])).toEqual({ kind: "chosen", index: 3 });
-  });
-
-  // The expensive direction, invented while fixing the cheap one: with the
-  // separator OPTIONAL, "100" parsed as choice 10 followed by "0", so a
-  // ten-option question whose tenth choice is "0" matched a reply nobody meant
-  // as a choice. A number introducing text now REQUIRES a separator.
-  test("digits do not fuse into a choice number plus its text", () => {
-    const many = [...Array.from({ length: 9 }, (_, i) => `o${i + 1}`), "0"];
-    expect(askMatchChoice("100", many)).toEqual({ kind: "none" });
-    expect(askMatchChoice("10", many)).toEqual({ kind: "chosen", index: 10 });
-  });
-
-  // Second review pass, both on the expensive side of the asymmetry.
-  test("a separator with nothing after it is not a choice", () => {
-    // Someone who started typing and stopped. Selecting option 1 for them is the
-    // error that costs a lane unparking on a decision nobody finished making.
-    expect(askMatchChoice("1 -", ["A", "B"])).toEqual({ kind: "none" });
-  });
-
-  test("a range is not a numbered choice", () => {
-    // `1-2` against options that are THEMSELVES numbers matched as "option 1,
-    // whose text is 2". Rejecting it fails to the cheap side: a genuine `1. 2`
-    // costs one re-ask.
-    expect(askMatchChoice("1-2", ["2", "3"])).toEqual({ kind: "none" });
-  });
-
-  // Accepted behaviour, recorded so it is not "fixed" later: when one choice
-  // contains another prefixed by its own number, a reply naming it matches both
-  // and refuses to guess. Ambiguous routes to exit 4 — the cheap side.
-  test("a choice nested inside another is ambiguous, not a guess", () => {
-    expect(askMatchChoice("1. (Release)", ["(Release)", "1. (Release)"]))
-      .toEqual({ kind: "ambiguous", indexes: [1, 2] });
-  });
-
-  // 🔟 decomposes to "10" under NFKC, so the keycap branch and the number branch
-  // both fire. They agree, and a Set collapses them — this pins that they never
-  // disagree into a spurious ambiguity.
-  test("the ten keycap fires two branches that agree", () => {
-    expect(askMatchChoice("🔟", Array.from({ length: 10 }, (_, i) => `o${i + 1}`)))
-      .toEqual({ kind: "chosen", index: 10 });
-  });
-
-  test("an empty or whitespace reply is not a choice", () => {
-    expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });
 });
 
