@@ -1612,3 +1612,33 @@ describe("schedule send --as-bot (CLI)", { timeout: 60_000 }, () => {
     }
   });
 });
+
+describe("URL boundary guard", () => {
+  for (const command of ["send", "edit"]) {
+    test(`${command} refuses ambiguity even with a code and allows an explicit override`, async () => {
+      const target = command === "edit" ? "#chan:1700000000.000100" : "#chan";
+      const base = [command, target, "https://example.com/path/内容", "--channel-id", "C00000001"];
+      const before = mock.requests.length;
+      const rejected = await run([...base, "--code=0000"]);
+      expect(rejected.exitCode).not.toBe(0);
+      expect(rejected.stderr).toContain("Ambiguous URL boundary");
+      expect(mock.requests.slice(before).some((r) => ["chat.postMessage", "chat.update"].includes(r.method))).toBe(false);
+      const dry = await run([...base, "--allow-url-adjacent"]);
+      const confirmed = await run([...base, "--allow-url-adjacent", `--code=${extractCode(dry.stderr)}`]);
+      expect(confirmed.exitCode).toBe(0);
+      expect(confirmed.stderr).toContain("Warning: Ambiguous URL boundary");
+    });
+    for (const text of ["https://example.com/path/\n内容", "<https://example.com/path/>", "<https://example.com/path/|説明>"]) {
+      test(`${command} accepts ${JSON.stringify(text)} and preserves its wire text`, async () => {
+        const target = command === "edit" ? "#chan:1700000000.000100" : "#chan";
+        const base = [command, target, text, "--channel-id", "C00000001"];
+        const dry = await run(base);
+        const before = mock.requests.length;
+        const confirmed = await run([...base, `--code=${extractCode(dry.stderr)}`]);
+        expect(confirmed.exitCode).toBe(0);
+        const request = mock.requests.slice(before).find((r) => r.method === (command === "edit" ? "chat.update" : "chat.postMessage"));
+        expect(JSON.parse(request!.body).text).toBe(text);
+      });
+    }
+  }
+});

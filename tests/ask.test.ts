@@ -961,3 +961,37 @@ describe("askMatchChoice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });
 });
+
+describe("ask URL boundaries", () => {
+  for (const field of ["question", "body", "choice"]) {
+    test(`guards URLs in the ${field} and supports the warning override`, async () => {
+      const m = await startMock({ inline: AUTH });
+      try {
+        const url = field === "question" ? "https://example.com/path/>" : "https://example.com/path/内容";
+        const base = ["ask", "#chan", `@bob ${field === "question" ? url : "Review?"}`,
+          ...(field === "choice" ? [url] : []),
+          ...(field === "body" ? ["--body", url] : []), "--channel-id", CHAN];
+        const rejected = await run(base, m.baseUrl);
+        expect(rejected.stderr).toContain("Ambiguous URL boundary");
+        expect(m.requests.some((r) => r.method === "chat.postMessage")).toBe(false);
+        const dry = await run([...base, "--allow-url-adjacent"], m.baseUrl);
+        const confirmed = await run([...base, "--allow-url-adjacent", `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+        expect(confirmed.exitCode).toBe(0);
+        expect(confirmed.stderr).toContain("Warning: Ambiguous URL boundary");
+      } finally { await m.stop(); }
+    });
+  }
+  for (const body of ["https://example.com/path/\n内容", "<https://example.com/path/>", "<https://example.com/path/|説明>"]) {
+    test(`accepts and preserves body ${JSON.stringify(body)}`, async () => {
+      const m = await startMock({ inline: AUTH });
+      try {
+        const base = ["ask", "#chan", "@bob Review?", "--body", body, "--channel-id", CHAN];
+        const dry = await run(base, m.baseUrl);
+        const confirmed = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+        expect(confirmed.exitCode).toBe(0);
+        const posted = m.requests.find((r) => r.method === "chat.postMessage");
+        expect(JSON.parse(posted!.body).text).toContain(body);
+      } finally { await m.stop(); }
+    });
+  }
+});

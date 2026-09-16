@@ -144,3 +144,18 @@ describe("read — thread visibility", { timeout: 60_000 }, () => {
     }
   });
 });
+
+test("read preserves the newline between a URL and Japanese body text", async () => {
+  const m = await startMock({ inline: {
+    ...FIXTURES,
+    "conversations.history__channel=C00000001&limit=20": {
+      ok: true, messages: [{ type: "message", ts: PLAIN_OTHER, user: OTHER,
+        text: "<https://example.com/path/>\n内容：説明" }],
+    },
+  } });
+  try {
+    const result = await run(["read", "#general", "--format", "text"], m.baseUrl);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("<https://example.com/path/>\n  内容：説明");
+  } finally { await m.stop(); }
+});
