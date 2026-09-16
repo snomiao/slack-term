@@ -45,7 +45,7 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
     if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
       throw new Error(
         `Desktop app token (xoxc-) needs its session cookie to be accepted by the public Slack API.\n` +
-        `Attach it:  slack auth chrome   (macOS)   or   slack auth firefox\n` +
+        `Attach it:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS)\n` +
         `Or replace the token with an xoxp- user token:\n` +
         `  slack auth token`,
       );
@@ -99,7 +99,7 @@ async function callSession(token: string, method: string, init: RequestInit, coo
     if ((err === "invalid_auth" || err === "not_authed") && !cookie) {
       throw new Error(
         `drafts.list also requires the xoxd session cookie.\n` +
-        `Attach it with:  slack auth chrome   (macOS)   or   slack auth firefox`,
+        `Attach it with:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS)`,
       );
     }
     throw new Error(`Slack error on ${method}: ${err}`);

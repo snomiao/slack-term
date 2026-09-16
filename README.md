@@ -321,6 +321,12 @@ Or place it in `~/.config/slack-cli/.env` or a local `.env` file.
 
 See [`SKILL.md`](SKILL.md) for a full token-acquisition walkthrough.
 
+### Ubuntu desktop session
+
+If you use Slack Desktop and Firefox on Ubuntu, sign in to the same Slack workspace in both, then run `slack auth login` and choose the desktop import. The CLI reads the desktop `xoxc-` token from the native, Snap, or Flatpak data directory. When exactly one Firefox profile has a Slack `xoxd` cookie, it saves the token and cookie together. Select the saved workspace with `slack auth use -g <name>`.
+
+If several Firefox profiles have Slack sessions, the desktop import saves a profile without a cookie. Run `slack auth firefox -w <name>` after importing and choose the matching browser profile. Firefox discovery covers native, Snap, and Flatpak profiles. The Chrome cookie importer remains macOS-only. If neither browser nor desktop session is available, use `slack auth token` to add a user token from a Slack app. Treat desktop tokens and browser cookies as credentials; keep profile files and local env files private.
+
 ## Development
 
 ```sh

@@ -55,7 +55,7 @@ async function ask(rl: Interface, q: string): Promise<string> {
 
 async function saveToken(rl: Interface | null, token: string, nameOverride?: string, cookie?: string): Promise<string> {
   console.error("Verifying token...");
-  const info = await authTest(token);
+  const info = await authTest(token, cookie);
   const defaultName = slugify(info.team);
   let name: string;
   if (nameOverride) {
@@ -109,13 +109,24 @@ async function saveToken(rl: Interface | null, token: string, nameOverride?: str
 export async function importFromDesktop(rl?: Interface): Promise<void> {
   console.error("Scanning Slack desktop app...");
   const sessions = await extractSessions();
+  if (process.platform === "linux" && sessions.some((s) => !s.cookie)) {
+    const firefox = discoverFirefoxCookies();
+    if (firefox.length === 1) {
+      for (const session of sessions) session.cookie ??= firefox[0]!.cookie;
+      console.log(`Found Slack session cookie in Firefox profile: ${firefox[0]!.profileName}`);
+    } else {
+      console.log("Desktop session needs an xoxd cookie on Linux. Sign in to Slack in Firefox, then run: slack auth firefox");
+    }
+  }
   if (sessions.length === 0) {
     console.error("No sessions found. Make sure Slack is installed and you have signed in at least once.");
     process.exit(1);
   }
 
-  // Single workspace + interactive: offer save-destination choice
-  if (sessions.length === 1 && rl) {
+  // A desktop token without a cookie cannot pass auth.test yet. Save its
+  // LevelDB metadata as a profile so auth firefox can attach the cookie later.
+  // Single workspace + interactive + cookie: offer save-destination choice
+  if (sessions.length === 1 && rl && sessions[0]?.cookie) {
     const s = sessions[0]!;
     const teamLabel = s.teamName ?? s.teamId;
     console.log(`Found workspace: ${teamLabel}${s.cookie ? " (+ xoxd cookie)" : ""}`);
@@ -485,7 +496,7 @@ export async function cmdAuthLogin(opts: { token?: string; name?: string } = {})
   console.log("");
   console.log("  1) Slack desktop app - import session token");
   console.log("     Reads the xoxc- token directly from the installed app.");
-  console.log("     Token: all platforms  |  xoxd cookie: macOS only");
+  console.log("     Token: all platforms  |  xoxd cookie: macOS, or Firefox on Linux");
   console.log("");
   console.log("  2) Connect existing Slack app  [recommended if you have one]");
   console.log("     Paste a token from an app you already created.");

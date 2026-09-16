@@ -20,7 +20,7 @@
 // Note: lockfiles and profiles.json use .slack-cli/ (older name); new per-dir token storage
 // uses .slack-term/ (current project name). Both coexist intentionally.
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -62,7 +62,9 @@ function load(): ProfileStore {
 function save(store: ProfileStore): void {
   const path = profilesPath();
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify(store, null, 2) + "\n");
+  if (process.platform !== "win32" && existsSync(path)) chmodSync(path, 0o600);
+  writeFileSync(path, JSON.stringify(store, null, 2) + "\n", { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(path, 0o600);
 }
 
 function readLockfile(path: string): string | undefined {
@@ -150,7 +152,9 @@ export function saveToEnvFile(filePath: string, updates: Record<string, string>)
       lines.push(newLine);
     }
   }
-  writeFileSync(filePath, lines.join("\n").trimEnd() + "\n");
+  if (process.platform !== "win32" && existsSync(filePath)) chmodSync(filePath, 0o600);
+  writeFileSync(filePath, lines.join("\n").trimEnd() + "\n", { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(filePath, 0o600);
 }
 
 export function listProfiles(): { name: string; profile: Profile; current: boolean }[] {
@@ -271,7 +275,7 @@ export function resolveToken(workspaceFlag?: string): string {
     "No Slack token found.\n" +
     "  Run one of:\n" +
     "    slack auth token    — paste an existing xoxp-/xoxb- token\n" +
-    "    slack auth chrome   — import from Chrome browser (macOS)\n" +
+    "    slack auth login    — import a desktop session or connect an app\n" +
     "    slack auth app      — guided Slack app creation\n" +
     "  Or set SLACK_TOKEN=xoxp-... in .slack-term/.env.local",
   );

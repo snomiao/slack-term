@@ -14,7 +14,7 @@ import { startMock, type MockHandle } from "./mock.ts";
 mockModule("../ts/slack-app.ts", () => ({
   extractSessions: vi.fn().mockResolvedValue([]),
   discoverChromeCookies: vi.fn().mockResolvedValue([]),
-  discoverFirefoxCookies: vi.fn().mockResolvedValue([]),
+  discoverFirefoxCookies: vi.fn().mockReturnValue([]),
 }));
 
 // Shared readline answer queue — mutated per-test before calling cmdAuthLogin.
@@ -34,14 +34,16 @@ mockModule("node:readline/promises", () => ({
 // Filesystem isolation comes from process.env.HOME = tmpHome (profiles.ts uses process.env.HOME).
 const { cmdAuthLogin, importFromDesktop } = await import("../ts/auth.ts");
 const { listProfiles, addProfile, useProfile } = await import("../ts/profiles.ts");
-const { extractSessions } = await import("../ts/slack-app.ts");
+const { extractSessions, discoverFirefoxCookies } = await import("../ts/slack-app.ts");
 
 // A direct cast rather than vi.mocked: the shape is all these tests need, and
 // it reads the same under either runner.
 type MockFn<T extends (...args: unknown[]) => unknown> = T & {
   mockResolvedValueOnce: (v: Awaited<ReturnType<T>> | never) => void;
+  mockReturnValueOnce: (v: ReturnType<T>) => void;
 };
 const mockExtractSessions = extractSessions as unknown as MockFn<typeof extractSessions>;
+const mockDiscoverFirefox = discoverFirefoxCookies as unknown as MockFn<typeof discoverFirefoxCookies>;
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -223,13 +225,30 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 1 (desktop import) calls importFromDesktop", async () => {
     mockExtractSessions.mockResolvedValueOnce([
-      { token: "xoxc-desk", teamId: "T1", teamName: "Desk", url: "https://desk.slack.com/" },
+      { token: "xoxc-desk", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
     ]);
     setTTY(true);
     rlState.answers = ["1", "4"]; // "4" = save to profiles.json (no workspace name prompt — nameOverride passed)
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxc-desk");
+      expect(mock.requests.find((r) => r.method === "auth.test")?.headers.cookie).toBe("d=xoxd-fake");
+    } finally {
+      setTTY(undefined);
+    }
+  });
+
+  test("desktop import without a cookie saves a profile for auth firefox", async () => {
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    setTTY(true);
+    rlState.answers = ["1"];
+    try {
+      await cmdAuthLogin({});
+      expect(listProfiles()[0]?.profile.token).toBe("xoxc-fake");
+      expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
+      expect(mock.requests.find((r) => r.method === "auth.test")).toBeUndefined();
     } finally {
       setTTY(undefined);
     }
@@ -325,6 +344,31 @@ describe("auth.ts", () => {
     expect(list).toHaveLength(1);
     expect(list[0]?.name).toBe("acme-corp");
     expect(list[0]?.profile.token).toBe("xoxc-fake");
+  });
+
+  test("Linux desktop import attaches the sole Firefox cookie", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverFirefox.mockReturnValueOnce([
+      { profileDir: "fake.default", profileName: "default", cookie: "xoxd-fake" },
+    ]);
+    await importFromDesktop();
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("Linux desktop import leaves cookie unset when Firefox has multiple sessions", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverFirefox.mockReturnValueOnce([
+      { profileDir: "a.default", profileName: "one", cookie: "xoxd-fake-one" },
+      { profileDir: "b.default", profileName: "two", cookie: "xoxd-fake-two" },
+    ]);
+    await importFromDesktop();
+    expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
   });
 
   test("importFromDesktop saves cookie when session includes one", async () => {

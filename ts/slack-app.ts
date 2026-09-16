@@ -2,7 +2,7 @@
 // Reads raw .ldb/.log files with regex — works even while Slack is running (no exclusive lock).
 // Also extracts the xoxd session cookie from the Slack Cookies SQLite database (macOS only).
 
-import { readdirSync, readFileSync, existsSync, copyFileSync, unlinkSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, copyFileSync, unlinkSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pbkdf2Sync, createDecipheriv } from "node:crypto";
@@ -16,23 +16,27 @@ export type SlackAppSession = {
   url?: string;
 };
 
-function leveldbPath(): string {
-  const home = homedir();
+function leveldbPaths(): string[] {
+  const home = process.env.HOME ?? homedir();
   if (process.platform === "darwin") {
-    return join(home, "Library", "Application Support", "Slack", "Local Storage", "leveldb");
+    return [join(home, "Library", "Application Support", "Slack", "Local Storage", "leveldb")];
   }
   if (process.platform === "linux") {
-    return join(home, ".config", "Slack", "Local Storage", "leveldb");
+    return [
+      join(home, ".config", "Slack", "Local Storage", "leveldb"),
+      join(home, "snap", "slack", "current", ".config", "Slack", "Local Storage", "leveldb"),
+      join(home, ".var", "app", "com.slack.Slack", "config", "Slack", "Local Storage", "leveldb"),
+    ];
   }
   if (process.platform === "win32") {
     const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
-    return join(appData, "Slack", "Local Storage", "leveldb");
+    return [join(appData, "Slack", "Local Storage", "leveldb")];
   }
   throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
 function cookiesDbPath(): string {
-  const home = homedir();
+  const home = process.env.HOME ?? homedir();
   if (process.platform === "darwin") {
     return join(home, "Library", "Application Support", "Slack", "Cookies");
   }
@@ -100,10 +104,10 @@ export function extractXoxd(): string | undefined {
 //  2. .ldb files (sorted tables): values are length-prefixed with binary framing
 //     bytes that can split the token mid-segment. Use gap-bridging as fallback.
 export async function extractSessions(): Promise<SlackAppSession[]> {
-  const dbPath = leveldbPath();
-  if (!existsSync(dbPath)) {
+  const dbPath = leveldbPaths().find(existsSync);
+  if (!dbPath) {
     throw new Error(
-      `Slack desktop app LevelDB not found at:\n  ${dbPath}\nIs Slack installed and opened at least once?`,
+      `Slack desktop app LevelDB not found at:\n  ${leveldbPaths().join("\n  ")}\nIs Slack installed and opened at least once?`,
     );
   }
 
@@ -391,19 +395,24 @@ export type FirefoxCookieCandidate = {
   cookie: string;      // plaintext xoxd-... (Firefox stores cookies unencrypted)
 };
 
-function firefoxProfilesDir(): string {
-  const home = homedir();
-  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Firefox", "Profiles");
-  if (process.platform === "linux") return join(home, ".mozilla", "firefox");
+function firefoxProfilesDirs(): string[] {
+  const home = process.env.HOME ?? homedir();
+  if (process.platform === "darwin") return [join(home, "Library", "Application Support", "Firefox", "Profiles")];
+  if (process.platform === "linux") return [
+    join(home, ".mozilla", "firefox"),
+    join(home, "snap", "firefox", "common", ".mozilla", "firefox"),
+    join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"),
+  ];
   if (process.platform === "win32") {
-    return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles");
+    return [join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles")];
   }
-  return "";
+  return [];
 }
 
 /** Read Firefox profiles.ini to map profile dir names to display names. */
 function firefoxProfileNames(profilesDir: string): Record<string, string> {
-  const iniPath = join(dirname(profilesDir), "profiles.ini");
+  const localIni = join(profilesDir, "profiles.ini");
+  const iniPath = existsSync(localIni) ? localIni : join(dirname(profilesDir), "profiles.ini");
   const map: Record<string, string> = {};
   if (!existsSync(iniPath)) return map;
   try {
@@ -431,39 +440,38 @@ function firefoxProfileNames(profilesDir: string): Record<string, string> {
  * Returns [] if Firefox is not installed or has no Slack session.
  */
 export function discoverFirefoxCookies(): FirefoxCookieCandidate[] {
-  const profilesDir = firefoxProfilesDir();
-  if (!profilesDir || !existsSync(profilesDir)) return [];
-
-  const nameMap = firefoxProfileNames(profilesDir);
   const candidates: FirefoxCookieCandidate[] = [];
-
-  let profileDirs: string[];
-  try {
-    profileDirs = readdirSync(profilesDir);
-  } catch {
-    return [];
-  }
-
-  for (const profileDir of profileDirs) {
-    const dbPath = join(profilesDir, profileDir, "cookies.sqlite");
-    if (!existsSync(dbPath)) continue;
-
-    const tmp = join(tmpdir(), `slack-firefox-cookies-${Date.now()}-${profileDir}.db`);
+  for (const profilesDir of firefoxProfilesDirs().filter(existsSync)) {
+    const nameMap = firefoxProfileNames(profilesDir);
+    let profileDirs: string[];
     try {
-      copyFileSync(dbPath, tmp);
-      const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
-      const db = new Database(tmp, { readonly: true });
-      const row = db
-        .prepare("SELECT value FROM moz_cookies WHERE name='d' AND host LIKE '%slack%' LIMIT 1")
-        .get() as { value: string } | null;
-      db.close();
-      if (!row?.value || !row.value.startsWith("xoxd-")) continue;
-      const profileName = nameMap[profileDir] ?? profileDir;
-      candidates.push({ profileDir, profileName, cookie: row.value });
+      profileDirs = readdirSync(profilesDir);
     } catch {
-      // skip this profile
-    } finally {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
+      continue;
+    }
+
+    for (const profileDir of profileDirs) {
+      const dbPath = join(profilesDir, profileDir, "cookies.sqlite");
+      if (!existsSync(dbPath)) continue;
+
+      const tmpDir = mkdtempSync(join(tmpdir(), "slack-firefox-cookies-"));
+      const tmp = join(tmpDir, "cookies.sqlite");
+      try {
+        copyFileSync(dbPath, tmp);
+        const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+        const db = new Database(tmp, { readonly: true });
+        const row = db
+          .prepare("SELECT value FROM moz_cookies WHERE name='d' AND (host='slack.com' OR host LIKE '%.slack.com') LIMIT 1")
+          .get() as { value: string } | null;
+        db.close();
+        if (!row?.value || !row.value.startsWith("xoxd-")) continue;
+        const profileName = nameMap[profileDir] ?? profileDir;
+        candidates.push({ profileDir, profileName, cookie: row.value });
+      } catch {
+        // skip this profile
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     }
   }
   return candidates;
