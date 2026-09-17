@@ -1,6 +1,6 @@
 // Interactive auth setup: slack auth login / slack login
 import { createInterface, type Interface } from "node:readline/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { addProfile, listProfiles, setCookie, saveToEnvFile } from "./profiles.ts";
 import { authTest } from "./slack.ts";
@@ -52,6 +52,13 @@ async function ask(rl: Interface, q: string): Promise<string> {
   return (await rl.question(q)).trim();
 }
 
+
+async function allowBrowserProfileRead(rl: Interface | undefined, yes: boolean): Promise<boolean> {
+  if (yes) return true;
+  if (!rl) return false;
+  const answer = await ask(rl, "Read local browser profiles and Slack session cookies? [y/N]: ");
+  return answer.toLowerCase() === "y" || answer.toLowerCase() === "yes";
+}
 
 async function saveToken(rl: Interface | null, token: string, nameOverride?: string, cookie?: string): Promise<string> {
   console.error("Verifying token...");
@@ -106,27 +113,47 @@ async function saveToken(rl: Interface | null, token: string, nameOverride?: str
 }
 
 /** Shared logic for importing sessions from the Slack desktop app. */
-export async function importFromDesktop(rl?: Interface): Promise<void> {
+export async function importFromDesktop(
+  rl?: Interface, yes = false, browser: "auto" | "all" | "chrome" | "firefox" | "none" = "auto",
+  saveProfileOnly = false,
+): Promise<void> {
   console.error("Scanning Slack desktop app...");
   const sessions = await extractSessions();
-  if (process.platform === "linux" && sessions.some((s) => !s.cookie)) {
-    const firefox = discoverFirefoxCookies();
-    if (firefox.length === 1) {
-      for (const session of sessions) session.cookie ??= firefox[0]!.cookie;
-      console.log(`Found Slack session cookie in Firefox profile: ${firefox[0]!.profileName}`);
-    } else {
-      console.log("Desktop session needs an xoxd cookie on Linux. Sign in to Slack in Firefox, then run: slack auth firefox");
-    }
-  }
   if (sessions.length === 0) {
     console.error("No sessions found. Make sure Slack is installed and you have signed in at least once.");
     process.exit(1);
+  }
+  if (process.platform === "linux" && browser !== "none" && sessions.some((s) => !s.cookie) && await allowBrowserProfileRead(rl, yes)) {
+    const found: { source: string; profileName: string; cookie: string }[] = [];
+    if (browser !== "chrome") {
+      for (const candidate of discoverFirefoxCookies()) {
+        found.push({ source: "Firefox", profileName: candidate.profileName, cookie: candidate.cookie });
+      }
+    }
+    if (browser === "chrome" || browser === "all" || (browser === "auto" && found.length === 0)) {
+      try {
+        for (const candidate of discoverChromeCookies().candidates) {
+          found.push({ source: "Chrome", profileName: candidate.profileName, cookie: candidate.cookie });
+        }
+      } catch (e: unknown) {
+        console.error(e instanceof Error ? e.message : String(e));
+      }
+    }
+    if (found.length === 1) {
+      for (const session of sessions) session.cookie ??= found[0]!.cookie;
+      console.log(`Found Slack session cookie in ${found[0]!.source} profile: ${found[0]!.profileName}`);
+    } else if (found.length > 1) {
+      console.log("Multiple browser sessions found. Choose one later with slack auth chrome or slack auth firefox.");
+    }
+    if (sessions.some((s) => !s.cookie)) {
+      console.log("Desktop session needs an xoxd cookie on Linux. Run: slack auth chrome or slack auth firefox");
+    }
   }
 
   // A desktop token without a cookie cannot pass auth.test yet. Save its
   // LevelDB metadata as a profile so auth firefox can attach the cookie later.
   // Single workspace + interactive + cookie: offer save-destination choice
-  if (sessions.length === 1 && rl && sessions[0]?.cookie) {
+  if (sessions.length === 1 && rl && sessions[0]?.cookie && !saveProfileOnly) {
     const s = sessions[0]!;
     const teamLabel = s.teamName ?? s.teamId;
     console.log(`Found workspace: ${teamLabel}${s.cookie ? " (+ xoxd cookie)" : ""}`);
@@ -231,9 +258,9 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
  * When run interactively, macOS will show a system dialog asking for the login password
  * to grant access to the "Chrome Safe Storage" keychain item — click Allow.
  */
-export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<void> {
-  if (process.platform !== "darwin") {
-    console.error("Chrome cookie extraction is only supported on macOS.");
+export async function cmdAuthChrome(opts: { workspace?: string; yes?: boolean } = {}): Promise<void> {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
+    console.error("Chrome cookie extraction is supported on macOS and Linux.");
     process.exit(1);
   }
 
@@ -297,8 +324,21 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
     process.exit(1);
   }
 
+  if (!opts.yes && !process.stdin.isTTY) {
+    console.error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
+    process.exit(1);
+  }
+  const confirmRl = opts.yes ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (!await allowBrowserProfileRead(confirmRl, opts.yes ?? false)) {
+      console.log("Browser profile scan cancelled.");
+      return;
+    }
+  } finally {
+    confirmRl?.close();
+  }
   console.log("Scanning Chrome profiles for Slack session...");
-  console.log("macOS may show a dialog asking for your login password — click Allow.");
+  if (process.platform === "darwin") console.log("macOS may show a dialog asking for your login password — click Allow.");
 
   let candidates: import("./slack-app.ts").ChromeCookieCandidate[];
   let totalProfiles: number;
@@ -311,7 +351,7 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
 
   if (candidates.length === 0) {
     console.error(`No Slack session found in Chrome (scanned ${totalProfiles} profile${totalProfiles !== 1 ? "s" : ""}). Possible reasons:`);
-    console.error("  - You denied the keychain dialog (try running again and click Allow)");
+    if (process.platform === "darwin") console.error("  - You denied the keychain dialog (try running again and click Allow)");
     console.error("  - Chrome is not installed or has no Slack session");
     console.error("  - You're not logged in to Slack in Chrome");
     process.exit(1);
@@ -350,7 +390,7 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
  * Attach the xoxd session cookie from Firefox browser to an existing workspace profile.
  * Firefox stores cookies in plaintext — no keychain access needed.
  */
-export async function cmdAuthFirefox(opts: { workspace?: string } = {}): Promise<void> {
+export async function cmdAuthFirefox(opts: { workspace?: string; yes?: boolean } = {}): Promise<void> {
   const profiles = listProfiles();
   if (profiles.length === 0) {
     console.error("No workspaces configured. Run: slack auth token");
@@ -387,6 +427,19 @@ export async function cmdAuthFirefox(opts: { workspace?: string } = {}): Promise
     }
   }
 
+  if (!opts.yes && !process.stdin.isTTY) {
+    console.error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
+    process.exit(1);
+  }
+  const confirmRl = opts.yes ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    if (!await allowBrowserProfileRead(confirmRl, opts.yes ?? false)) {
+      console.log("Browser profile scan cancelled.");
+      return;
+    }
+  } finally {
+    confirmRl?.close();
+  }
   console.log("Scanning Firefox profiles for Slack session...");
   const candidates = discoverFirefoxCookies();
 
@@ -461,7 +514,28 @@ export async function cmdAuthApp(opts: { bot?: boolean } = {}): Promise<void> {
   }
 }
 
-export async function cmdAuthLogin(opts: { token?: string; name?: string } = {}): Promise<void> {
+/** Export a selected profile for env-file based CLI use. */
+export function cmdAuthSave(opts: { envfile: string; workspace?: string }): void {
+  const profiles = listProfiles();
+  const selected = opts.workspace
+    ? profiles.find((entry) => entry.name === opts.workspace)
+    : profiles.find((entry) => entry.current) ?? (profiles.length === 1 ? profiles[0] : undefined);
+  if (!selected) {
+    throw new Error(opts.workspace
+      ? `Workspace "${opts.workspace}" not found. Run: slack auth ls`
+      : "Select a workspace with slack auth use <name>, or pass --workspace <name>.");
+  }
+  if (!selected.profile.cookie) {
+    throw new Error(`Workspace "${selected.name}" has no session cookie. Run: slack auth chrome -w ${selected.name} or slack auth firefox -w ${selected.name}`);
+  }
+  const filePath = resolve(opts.envfile);
+  saveToEnvFile(filePath, { SLACK_TOKEN: selected.profile.token, SLACK_COOKIE: selected.profile.cookie });
+  console.log(`Saved token and cookie for workspace "${selected.name}" to ${filePath}`);
+}
+
+export async function cmdAuthLogin(opts: {
+  token?: string; name?: string; yes?: boolean; fromDesktop?: boolean; fromChrome?: boolean; fromFirefox?: boolean; fromAll?: boolean;
+} = {}): Promise<void> {
   // Show existing profiles if any
   const existing = listProfiles();
   if (existing.length > 0) {
@@ -471,6 +545,23 @@ export async function cmdAuthLogin(opts: { token?: string; name?: string } = {})
     console.log("");
     console.log("Adding another workspace:");
     console.log("");
+  }
+
+  if ([opts.fromChrome, opts.fromFirefox, opts.fromAll].filter(Boolean).length > 1) {
+    throw new Error("Choose only one browser source: --from-chrome, --from-firefox, or --from-all.");
+  }
+  if (opts.fromDesktop || opts.fromChrome || opts.fromFirefox || opts.fromAll) {
+    const browser = opts.fromChrome ? "chrome" : opts.fromFirefox ? "firefox" : opts.fromAll ? "all" : "none";
+    if (browser !== "none" && !opts.yes && !process.stdin.isTTY) {
+      throw new Error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
+    }
+    const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      await importFromDesktop(rl, opts.yes ?? false, browser, true);
+    } finally {
+      rl?.close();
+    }
+    return;
   }
 
   // Non-interactive: token passed via --token flag or piped via stdin
@@ -496,7 +587,7 @@ export async function cmdAuthLogin(opts: { token?: string; name?: string } = {})
   console.log("");
   console.log("  1) Slack desktop app - import session token");
   console.log("     Reads the xoxc- token directly from the installed app.");
-  console.log("     Token: all platforms  |  xoxd cookie: macOS, or Firefox on Linux");
+  console.log("     Token: all platforms  |  xoxd cookie: macOS, or Chrome/Firefox on Linux");
   console.log("");
   console.log("  2) Connect existing Slack app  [recommended if you have one]");
   console.log("     Paste a token from an app you already created.");
@@ -514,7 +605,7 @@ export async function cmdAuthLogin(opts: { token?: string; name?: string } = {})
     console.log("");
 
     if (choice === "1") {
-      await importFromDesktop(rl);
+      await importFromDesktop(rl, opts.yes ?? false);
     } else if (choice === "2") {
       await loginExisting(rl);
     } else if (choice === "3") {

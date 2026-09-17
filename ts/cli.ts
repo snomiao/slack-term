@@ -11,7 +11,7 @@ import { hideBin } from "yargs/helpers";
 import { guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
-import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
@@ -4503,13 +4503,34 @@ async function main(): Promise<void> {
           "Interactive auth wizard (all auth methods: desktop app, token, new app)",
           (y2) => y2
             .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
-            .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
+            .option("name", { type: "string", describe: "Workspace name (used with --token)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" })
+            .option("from-desktop", { type: "boolean", default: false, describe: "Import the Slack Desktop token without scanning a browser" })
+            .option("from-chrome", { type: "boolean", default: false, describe: "Import the desktop token and Chrome cookie" })
+            .option("from-firefox", { type: "boolean", default: false, describe: "Import the desktop token and Firefox cookie" })
+            .option("from-all", { type: "boolean", default: false, describe: "Import the desktop token and scan Chrome and Firefox" }),
           async (argv) => {
             await cmdAuthLogin({
               ...(argv.token !== undefined ? { token: argv.token } : {}),
               ...(argv.name !== undefined ? { name: argv.name } : {}),
+              yes: argv.yes,
+              fromDesktop: argv.fromDesktop,
+              fromChrome: argv.fromChrome,
+              fromFirefox: argv.fromFirefox,
+              fromAll: argv.fromAll,
             });
           },
+        )
+        .command(
+          "save",
+          "Save the active profile token and cookie to an env file",
+          (y2) => y2
+            .option("envfile", { type: "string", demandOption: true, describe: "Destination env file (e.g. ./.env.local)" })
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name (default: active)" }),
+          (argv) => cmdAuthSave({
+            envfile: argv.envfile!,
+            ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}),
+          }),
         )
         .command(["ls", "status"], "Show auth status", () => {}, () => {
           const profiles = listProfiles();
@@ -4540,20 +4561,22 @@ async function main(): Promise<void> {
         )
         .command(
           ["chrome", "cookie"],
-          "Attach Chrome browser xoxd cookie to a workspace (macOS, interactive)",
+          "Attach Chrome browser xoxd cookie to a workspace (macOS/Linux, interactive)",
           (y2) => y2
-            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" }),
           async (argv) => {
-            await cmdAuthChrome({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
+            await cmdAuthChrome({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}), yes: argv.yes });
           },
         )
         .command(
           "firefox",
           "Attach Firefox browser xoxd cookie to a workspace (all platforms)",
           (y2) => y2
-            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" }),
           async (argv) => {
-            await cmdAuthFirefox({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
+            await cmdAuthFirefox({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}), yes: argv.yes });
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),

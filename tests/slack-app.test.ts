@@ -1,9 +1,10 @@
 import { describe, test, expect } from "./harness.ts";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createCipheriv, pbkdf2Sync, createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { extractSessions, discoverFirefoxCookies } from "../ts/slack-app.ts";
+import { extractSessions, discoverFirefoxCookies, discoverChromeCookies } from "../ts/slack-app.ts";
 
 describe("Linux session discovery", () => {
   test("finds a Slack desktop token in the Snap data directory", async () => {
@@ -22,6 +23,76 @@ describe("Linux session discovery", () => {
       expect(sessions[0]?.teamId).toBe("00000001");
     } finally {
       if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("decrypts Ubuntu Chrome v10 cookie in Network/Cookies", () => {
+    if (process.platform !== "linux") return;
+    const home = mkdtempSync(join(tmpdir(), "slack-chrome-test-"));
+    const oldHome = process.env.HOME;
+    const oldConfig = process.env.XDG_CONFIG_HOME;
+    try {
+      process.env.HOME = home;
+      process.env.XDG_CONFIG_HOME = join(home, ".config");
+      const profile = join(home, ".config", "google-chrome", "Default");
+      mkdirSync(join(profile, "Network"), { recursive: true });
+      const db = new Database(join(profile, "Network", "Cookies"));
+      db.exec("CREATE TABLE cookies (name TEXT, host_key TEXT, value TEXT, encrypted_value BLOB)");
+      const key = pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1");
+      const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 32));
+      const encrypted = Buffer.concat([Buffer.from("v10"), cipher.update("xoxd-fake"), cipher.final()]);
+      db.query("INSERT INTO cookies VALUES (?, ?, ?, ?)").run("d", ".slack.com", "", encrypted);
+      db.close();
+      expect(discoverChromeCookies().candidates).toEqual([
+        { profileDir: "Default", profileName: "Default", cookie: "xoxd-fake" },
+      ]);
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+      if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldConfig;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test("decrypts Ubuntu Chrome v11 cookie using a secret-tool key", () => {
+    if (process.platform !== "linux") return;
+    const home = mkdtempSync(join(tmpdir(), "slack-chrome-test-"));
+    const oldHome = process.env.HOME;
+    const oldConfig = process.env.XDG_CONFIG_HOME;
+    const oldPath = process.env.PATH;
+    try {
+      process.env.HOME = home;
+      process.env.XDG_CONFIG_HOME = join(home, ".config");
+      const bin = join(home, "bin");
+      mkdirSync(bin);
+      const secretTool = join(bin, "secret-tool");
+      writeFileSync(secretTool, "#!/bin/sh\nprintf 'fake-password\n'\n");
+      chmodSync(secretTool, 0o700);
+      process.env.PATH = bin;
+      const profile = join(home, ".config", "google-chrome", "Default");
+      mkdirSync(join(profile, "Network"), { recursive: true });
+      const db = new Database(join(profile, "Network", "Cookies"));
+      db.exec("CREATE TABLE cookies (name TEXT, host_key TEXT, value TEXT, encrypted_value BLOB)");
+      const key = pbkdf2Sync("fake-password", "saltysalt", 1, 16, "sha1");
+      const cipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 32));
+      const plaintext = Buffer.concat([createHash("sha256").update(".slack.com").digest(), Buffer.from("xoxd-fake")]);
+      const encrypted = Buffer.concat([Buffer.from("v11"), cipher.update(plaintext), cipher.final()]);
+      db.query("INSERT INTO cookies VALUES (?, ?, ?, ?)").run("d", ".slack.com", "", encrypted);
+      db.close();
+      expect(discoverChromeCookies().candidates[0]?.cookie).toBe("xoxd-fake");
+      const wrongCipher = createCipheriv("aes-128-cbc", key, Buffer.alloc(16, 32));
+      const wrongHost = Buffer.concat([createHash("sha256").update(".other.example").digest(), Buffer.from("xoxd-fake")]);
+      const wrongEncrypted = Buffer.concat([Buffer.from("v11"), wrongCipher.update(wrongHost), wrongCipher.final()]);
+      const db2 = new Database(join(profile, "Network", "Cookies"));
+      db2.query("UPDATE cookies SET encrypted_value = ?").run(wrongEncrypted);
+      db2.close();
+      expect(discoverChromeCookies().candidates).toEqual([]);
+      rmSync(secretTool);
+      expect(() => discoverChromeCookies()).toThrow("Chrome v11 cookie key is unavailable");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
+      if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldConfig;
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
       rmSync(home, { recursive: true, force: true });
     }
   });
