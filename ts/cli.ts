@@ -462,8 +462,8 @@ async function cmdNews(token: string, limit: number): Promise<void> {
 }
 
 // --- channels ---
-async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean, format = "text"): Promise<void> {
-  const resp = (await listConversations(token)) as Record<string, Json>;
+async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean, format = "text", cookie?: string): Promise<void> {
+  const resp = (await listConversations(token, cookie)) as Record<string, Json>;
   const channels = asArray(resp.channels)
     .map(asRecord)
     .filter((c) => all || c.is_member === true)
@@ -3340,7 +3340,7 @@ async function main(): Promise<void> {
             .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text" })
             .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
           async (argv) => {
-            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.json ? "jsonl" : argv.format);
+            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.json ? "jsonl" : argv.format, ck(argv as W));
           },
         )
         .command(
