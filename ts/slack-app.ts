@@ -103,8 +103,8 @@ export function extractXoxd(): string | undefined {
 //     Scan for "token":"xoxc-..." to get complete, clean tokens + workspace URL.
 //  2. .ldb files (sorted tables): values are length-prefixed with binary framing
 //     bytes that can split the token mid-segment. Use gap-bridging as fallback.
-export async function extractSessions(): Promise<SlackAppSession[]> {
-  const dbPath = leveldbPaths().find(existsSync);
+export async function extractSessions(leveldbOverride?: string): Promise<SlackAppSession[]> {
+  const dbPath = leveldbOverride ?? leveldbPaths().find(existsSync);
   if (!dbPath) {
     throw new Error(
       `Slack desktop app LevelDB not found at:\n  ${leveldbPaths().join("\n  ")}\nIs Slack installed and opened at least once?`,
@@ -238,7 +238,7 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
   }
 
   // Attach xoxd cookie to all sessions (shared — one Slack desktop app, one cookie jar)
-  const xoxd = extractXoxd();
+  const xoxd = leveldbOverride ? undefined : extractXoxd();
   const result = [...sessions.values()];
   if (xoxd) {
     for (const s of result) s.cookie = xoxd;
@@ -428,6 +428,35 @@ export function discoverChromeCookies(): ChromeDiscoveryResult {
     throw new Error("Chrome v11 cookie key is unavailable. Install secret-tool and unlock the GNOME keyring, or use slack auth firefox.");
   }
   return { candidates, totalProfiles: profileDirs.length };
+}
+
+/** Read xoxc tokens from Chrome's Slack local storage and pair cookies from the same profile. */
+export async function extractChromeSessions(): Promise<SlackAppSession[]> {
+  if (process.platform !== "linux") throw new Error("Chrome session import is currently supported on Linux only.");
+  const userDataDir = chromeUserDataDir();
+  if (!existsSync(userDataDir)) throw new Error("Chrome profile directory was not found.");
+  const cookies = new Map(discoverChromeCookies().candidates.map((c) => [c.profileDir, c.cookie]));
+  const sessions = new Map<string, SlackAppSession>();
+  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
+  for (const profileDir of profileDirs) {
+    const leveldb = join(userDataDir, profileDir, "Local Storage", "leveldb");
+    if (!existsSync(leveldb)) continue;
+    let found: SlackAppSession[];
+    try {
+      found = await extractSessions(leveldb);
+    } catch {
+      continue;
+    }
+    for (const session of found) {
+      if (sessions.has(session.teamId)) {
+        throw new Error("More than one Chrome profile has a token for the same workspace. Select one browser profile first.");
+      }
+      const cookie = cookies.get(profileDir);
+      if (cookie) session.cookie = cookie;
+      sessions.set(session.teamId, session);
+    }
+  }
+  return [...sessions.values()];
 }
 
 export type FirefoxCookieCandidate = {

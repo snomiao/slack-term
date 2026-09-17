@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createCipheriv, pbkdf2Sync, createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
-import { extractSessions, discoverFirefoxCookies, discoverChromeCookies } from "../ts/slack-app.ts";
+import { extractSessions, extractChromeSessions, discoverFirefoxCookies, discoverChromeCookies } from "../ts/slack-app.ts";
 
 describe("Linux session discovery", () => {
   test("finds a Slack desktop token in the Snap data directory", async () => {
@@ -27,7 +27,7 @@ describe("Linux session discovery", () => {
     }
   });
 
-  test("decrypts Ubuntu Chrome v10 cookie in Network/Cookies", () => {
+  test("imports Ubuntu Chrome token and v10 cookie from one profile", async () => {
     if (process.platform !== "linux") return;
     const home = mkdtempSync(join(tmpdir(), "slack-chrome-test-"));
     const oldHome = process.env.HOME;
@@ -47,6 +47,13 @@ describe("Linux session discovery", () => {
       expect(discoverChromeCookies().candidates).toEqual([
         { profileDir: "Default", profileName: "Default", cookie: "xoxd-fake" },
       ]);
+      const leveldb = join(profile, "Local Storage", "leveldb");
+      mkdirSync(leveldb, { recursive: true });
+      const token = "xoxc-00000001-00000002-00000003-abcdefabcdefabcdefabcdef";
+      writeFileSync(join(leveldb, "000001.log"), JSON.stringify({ token, url: "https://acme.slack.com/", team_name: "Acme" }));
+      const sessions = await extractChromeSessions();
+      expect(sessions[0]?.token).toBe(token);
+      expect(sessions[0]?.cookie).toBe("xoxd-fake");
     } finally {
       if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome;
       if (oldConfig === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldConfig;

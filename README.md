@@ -323,18 +323,19 @@ See [`SKILL.md`](SKILL.md) for a full token-acquisition walkthrough.
 
 ### Ubuntu desktop session
 
-Sign in to the same Slack workspace in Slack Desktop and Chrome or Firefox. The CLI reads the desktop `xoxc-` token from native, Snap, or Flatpak data directories. Browser profiles contain sensitive cookies, so the CLI asks `Read local browser profiles and Slack session cookies? [y/N]` before scanning. Enter `y` to allow a scan; the default is no.
+Sign in to Slack in Chrome or Slack Desktop. `--from-chrome` reads a browser `xoxc-` token and cookie from the same Chrome profile; desktop import reads `xoxc-` tokens from native, Snap, or Flatpak data directories. Browser profiles contain sensitive cookies, so the CLI asks `Read local browser profiles and Slack session cookies? [y/N]` before scanning. Enter `y` to allow a scan; the default is no.
 
 ```sh
 slack auth login --from-desktop                 # desktop token only
-slack auth login --from-chrome                  # desktop token + Chrome cookie
+slack auth login --from-chrome                  # Chrome token + Chrome cookie
 slack auth login --from-firefox                 # desktop token + Firefox cookie
-slack auth login --from-all                     # desktop token + both browsers
+slack auth login --from-all                     # desktop and browser sources
 slack auth login --from-chrome --yes            # bypass the browser-read prompt
+slack auth tokens                              # print active credentials in .env format
 slack auth save --envfile=./.env.local          # export active token + cookie
 ```
 
-`--from-all` attaches a cookie only when exactly one browser session is found. If several are found, the desktop token is saved without a cookie; use `slack auth chrome -w <name>` or `slack auth firefox -w <name>` to select the matching profile. These commands also ask before reading browser profiles, and accept `--yes` for scripts. Select the saved workspace with `slack auth use -g <name>`. `auth save` requires a cookie, writes `SLACK_TOKEN` and `SLACK_COOKIE`, and makes the env file owner-readable only on Unix. `--workspace <name>` selects a specific profile.
+`--from-all` attaches a cookie only when exactly one browser session is found. If several are found, the desktop token is saved without a cookie; use `slack auth chrome -w <name>` or `slack auth firefox -w <name>` to select the matching profile. These commands also ask before reading browser profiles, and accept `--yes` for scripts. Select the saved workspace with `slack auth use -g <name>`. `auth tokens` prints the active `SLACK_TOKEN`, optional `SLACK_COOKIE`, and optional `SLACK_BOT_TOKEN` to stdout; treat its output as secret. `auth save` requires a cookie, writes `SLACK_TOKEN` and `SLACK_COOKIE`, and makes the env file owner-readable only on Unix. `--workspace <name>` selects a specific profile.
 
 Chrome supports Linux `v10` cookies and `v11` cookies when `secret-tool` can read the unlocked GNOME keyring. Other Linux keyring backends are not yet supported. Firefox discovery covers native, Snap, and Flatpak profiles. If browser session access is unavailable, use `slack auth token` to add a user token from a Slack app. Treat desktop tokens and browser cookies as credentials; keep profile files and local env files private.
 

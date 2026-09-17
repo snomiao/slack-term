@@ -2,9 +2,9 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { addProfile, listProfiles, setCookie, saveToEnvFile } from "./profiles.ts";
+import { addProfile, listProfiles, setCookie, saveToEnvFile, resolveToken, resolveCookie, resolveBotToken } from "./profiles.ts";
 import { authTest } from "./slack.ts";
-import { extractSessions, discoverChromeCookies, discoverFirefoxCookies } from "./slack-app.ts";
+import { extractSessions, extractChromeSessions, discoverChromeCookies, discoverFirefoxCookies } from "./slack-app.ts";
 
 const USER_SCOPES = [
   "search:read",
@@ -150,7 +150,13 @@ export async function importFromDesktop(
     }
   }
 
-  // A desktop token without a cookie cannot pass auth.test yet. Save its
+  await saveImportedSessions(sessions, rl, saveProfileOnly);
+}
+
+async function saveImportedSessions(
+  sessions: import("./slack-app.ts").SlackAppSession[], rl?: Interface, saveProfileOnly = false,
+): Promise<void> {
+  // A session token without a cookie cannot pass auth.test yet. Save its
   // LevelDB metadata as a profile so auth firefox can attach the cookie later.
   // Single workspace + interactive + cookie: offer save-destination choice
   if (sessions.length === 1 && rl && sessions[0]?.cookie && !saveProfileOnly) {
@@ -514,6 +520,22 @@ export async function cmdAuthApp(opts: { bot?: boolean } = {}): Promise<void> {
   }
 }
 
+/** Print the currently resolved credentials as dotenv assignments. */
+export function cmdAuthTokens(opts: { workspace?: string } = {}): void {
+  const format = (name: string, value: string): string => {
+    if (/[\r\n]/.test(value)) throw new Error(`Invalid newline in ${name}.`);
+    return `${name}=${/^[A-Za-z0-9._=-]+$/.test(value) ? value : JSON.stringify(value)}`;
+  };
+  const lines = [format("SLACK_TOKEN", resolveToken(opts.workspace))];
+  const cookie = resolveCookie(opts.workspace);
+  if (cookie) lines.push(format("SLACK_COOKIE", cookie));
+  if (!opts.workspace) {
+    const bot = resolveBotToken();
+    if (bot) lines.push(format("SLACK_BOT_TOKEN", bot));
+  }
+  console.log(lines.join("\n"));
+}
+
 /** Export a selected profile for env-file based CLI use. */
 export function cmdAuthSave(opts: { envfile: string; workspace?: string }): void {
   const profiles = listProfiles();
@@ -549,6 +571,51 @@ export async function cmdAuthLogin(opts: {
 
   if ([opts.fromChrome, opts.fromFirefox, opts.fromAll].filter(Boolean).length > 1) {
     throw new Error("Choose only one browser source: --from-chrome, --from-firefox, or --from-all.");
+  }
+  if (opts.fromChrome && !opts.fromDesktop) {
+    if (!opts.yes && !process.stdin.isTTY) {
+      throw new Error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
+    }
+    const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      if (!await allowBrowserProfileRead(rl, opts.yes ?? false)) {
+        console.log("Browser profile scan cancelled.");
+        return;
+      }
+      const sessions = await extractChromeSessions();
+      if (sessions.length === 0) throw new Error("No Slack session token found in Chrome profiles.");
+      await saveImportedSessions(sessions, rl, true);
+    } finally {
+      rl?.close();
+    }
+    return;
+  }
+  if (opts.fromAll && !opts.fromDesktop) {
+    if (!opts.yes && !process.stdin.isTTY) {
+      throw new Error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
+    }
+    const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+    try {
+      try {
+        await importFromDesktop(rl, opts.yes ?? false, "all", true);
+      } catch (e: unknown) {
+        if (!(e instanceof Error) || !e.message.startsWith("Slack desktop app LevelDB not found")) throw e;
+        if (!await allowBrowserProfileRead(rl, opts.yes ?? false)) {
+          console.log("Browser profile scan cancelled.");
+          return;
+        }
+        const sessions = await extractChromeSessions();
+        if (sessions.length === 0) throw new Error("No Slack session token found in Chrome profiles.");
+        if (sessions.every((s) => !s.cookie)) {
+          const firefox = discoverFirefoxCookies();
+          if (firefox.length === 1) for (const session of sessions) session.cookie = firefox[0]!.cookie;
+        }
+        await saveImportedSessions(sessions, rl, true);
+      }
+    } finally {
+      rl?.close();
+    }
+    return;
   }
   if (opts.fromDesktop || opts.fromChrome || opts.fromFirefox || opts.fromAll) {
     const browser = opts.fromChrome ? "chrome" : opts.fromFirefox ? "firefox" : opts.fromAll ? "all" : "none";

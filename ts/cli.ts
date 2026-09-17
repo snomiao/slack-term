@@ -11,7 +11,7 @@ import { hideBin } from "yargs/helpers";
 import { guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
-import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 
 import {
@@ -4522,6 +4522,12 @@ async function main(): Promise<void> {
           },
         )
         .command(
+          "tokens",
+          "Print the selected credentials as dotenv assignments",
+          (y2) => y2.option("workspace", { type: "string", alias: "w", describe: "Workspace name (default: active)" }),
+          (argv) => cmdAuthTokens({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) }),
+        )
+        .command(
           "save",
           "Save the active profile token and cookie to an env file",
           (y2) => y2
@@ -4614,10 +4620,20 @@ async function main(): Promise<void> {
     )
     .command("login", false as unknown as string, (y2) => y2
       .option("token", { type: "string" })
-      .option("name", { type: "string" }), async (argv) => {
+      .option("name", { type: "string" })
+      .option("yes", { type: "boolean", default: false })
+      .option("from-desktop", { type: "boolean", default: false })
+      .option("from-chrome", { type: "boolean", default: false })
+      .option("from-firefox", { type: "boolean", default: false })
+      .option("from-all", { type: "boolean", default: false }), async (argv) => {
       await cmdAuthLogin({
         ...(argv.token !== undefined ? { token: argv.token } : {}),
         ...(argv.name !== undefined ? { name: argv.name } : {}),
+        yes: argv.yes,
+        fromDesktop: argv.fromDesktop,
+        fromChrome: argv.fromChrome,
+        fromFirefox: argv.fromFirefox,
+        fromAll: argv.fromAll,
       });
     })
     .demandCommand(1, "Specify a command. Run with --help for usage.")

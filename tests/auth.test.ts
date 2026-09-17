@@ -13,6 +13,7 @@ import { startMock, type MockHandle } from "./mock.ts";
 // of them is missing (vitest only fails once the missing one is called).
 mockModule("../ts/slack-app.ts", () => ({
   extractSessions: vi.fn().mockResolvedValue([]),
+  extractChromeSessions: vi.fn().mockResolvedValue([]),
   discoverChromeCookies: vi.fn().mockReturnValue({ candidates: [], totalProfiles: 0 }),
   discoverFirefoxCookies: vi.fn().mockReturnValue([]),
 }));
@@ -32,17 +33,18 @@ mockModule("node:readline/promises", () => ({
 // Imported AFTER the mocks above, and dynamically: the registration is not
 // hoisted, so a static import here would bind the real modules.
 // Filesystem isolation comes from process.env.HOME = tmpHome (profiles.ts uses process.env.HOME).
-const { cmdAuthLogin, cmdAuthChrome, cmdAuthSave, importFromDesktop } = await import("../ts/auth.ts");
+const { cmdAuthLogin, cmdAuthChrome, cmdAuthSave, cmdAuthTokens, importFromDesktop } = await import("../ts/auth.ts");
 const { listProfiles, addProfile, useProfile } = await import("../ts/profiles.ts");
-const { extractSessions, discoverFirefoxCookies, discoverChromeCookies } = await import("../ts/slack-app.ts");
+const { extractSessions, extractChromeSessions, discoverFirefoxCookies, discoverChromeCookies } = await import("../ts/slack-app.ts");
 
 // A direct cast rather than vi.mocked: the shape is all these tests need, and
 // it reads the same under either runner.
-type MockFn<T extends (...args: unknown[]) => unknown> = T & {
+type MockFn<T extends (...args: never[]) => unknown> = T & {
   mockResolvedValueOnce: (v: Awaited<ReturnType<T>> | never) => void;
   mockReturnValueOnce: (v: ReturnType<T>) => void;
 };
 const mockExtractSessions = extractSessions as unknown as MockFn<typeof extractSessions>;
+const mockExtractChromeSessions = extractChromeSessions as unknown as MockFn<typeof extractChromeSessions>;
 const mockDiscoverFirefox = discoverFirefoxCookies as unknown as MockFn<typeof discoverFirefoxCookies>;
 const mockDiscoverChrome = discoverChromeCookies as unknown as MockFn<typeof discoverChromeCookies>;
 
@@ -92,6 +94,18 @@ function setTTY(val: boolean | undefined) {
 }
 
 describe("auth.ts", () => {
+  test("auth tokens prints selected credentials in dotenv format", () => {
+    addProfile("acme", { token: "xoxc-fake", cookie: "xoxd-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
+    useProfile("acme");
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      cmdAuthTokens();
+      expect(spy.mock.calls[0]?.[0]).toBe("SLACK_TOKEN=xoxc-fake\nSLACK_COOKIE=xoxd-fake");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   test("auth save writes token and cookie to a private env file", () => {
     addProfile("acme", { token: "xoxc-fake", cookie: "xoxd-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
     const path = join(tmpCwd, ".env.local");
@@ -397,17 +411,24 @@ describe("auth.ts", () => {
     expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
   });
 
-  test("--yes --from-chrome imports desktop token and Chrome cookie", async () => {
+  test("--yes --from-chrome imports Chrome token and cookie without desktop", async () => {
     if (process.platform !== "linux") return;
-    mockExtractSessions.mockResolvedValueOnce([
-      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    mockExtractChromeSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
     ]);
-    mockDiscoverChrome.mockReturnValueOnce({
-      candidates: [{ profileDir: "Default", profileName: "Default", cookie: "xoxd-fake" }],
-      totalProfiles: 1,
-    });
     await cmdAuthLogin({ fromChrome: true, yes: true });
     expect(listProfiles()[0]?.profile.token).toBe("xoxc-fake");
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("--from-all --yes uses Chrome session when desktop is absent", async () => {
+    if (process.platform !== "linux") return;
+    const rejecting = extractSessions as unknown as { mockRejectedValueOnce: (error: Error) => void };
+    rejecting.mockRejectedValueOnce(new Error("Slack desktop app LevelDB not found"));
+    mockExtractChromeSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
+    ]);
+    await cmdAuthLogin({ fromAll: true, yes: true });
     expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
   });
 
