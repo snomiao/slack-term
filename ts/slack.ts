@@ -1,4 +1,5 @@
 // Slack Web API client (user token, Authorization: Bearer)
+import { resolveCookie } from "./profiles.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -22,6 +23,7 @@ function base(): string {
 }
 
 async function call(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  cookie = token.startsWith("xoxc-") ? (cookie ?? resolveCookie()) : undefined;
   const extraHeaders: Record<string, string> = {};
   if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/${method}`, {
@@ -152,6 +154,7 @@ export async function authTest(
 export async function authScopes(token: string, cookie?: string): Promise<{
   userId: string; user: string; botId: string; team: string; url: string; scopes: string[];
 }> {
+  cookie = token.startsWith("xoxc-") ? (cookie ?? resolveCookie()) : undefined;
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (cookie) headers["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/auth.test`, { method: "GET", headers });
