@@ -55,6 +55,9 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
     // Bot tokens (xoxb-) can't act as a user: they lack user scopes (missing_scope) and can't
     // open a DM with themselves (cannot_dm_bot, e.g. `tail @you`). Point at a user-token workspace.
     if ((err === "missing_scope" || err === "cannot_dm_bot") && token.startsWith("xoxb-")) {
+      if (method.startsWith("agents.sessions.")) {
+        throw new Error(`Slack error on ${method}: ${err}. Agent sessions need a granular bot token with chat:write and app membership in the channel.`);
+      }
       const why = err === "cannot_dm_bot"
         ? `you're authenticated as a bot, so "@you" is the bot itself and it can't DM itself`
         : `this bot token lacks the user scope this action needs`;
@@ -130,6 +133,28 @@ function post(token: string, method: string, body: Record<string, Json>, cookie?
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   }, cookie);
+}
+
+// Bound session writes so a stalled heartbeat cannot block final cleanup forever.
+async function agentPost(token: string, method: string, body: Record<string, Json>): Promise<Json> {
+  if (!token.startsWith("xoxb-")) throw new Error("Agent sessions require a bot token (xoxb); user tokens are refused.");
+  return call(token, method, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+export type AgentStatus = "processing" | "active" | "suspended" | "closed";
+export type AgentThread = { channel_id: string; thread_ts: string };
+
+export function setAgentStatus(token: string, thread: AgentThread, status: AgentStatus): Promise<Json> {
+  return agentPost(token, "agents.sessions.setStatus", { ...thread, status });
+}
+
+export function renameAgentSession(token: string, thread: AgentThread, title: string): Promise<Json> {
+  return agentPost(token, "agents.sessions.rename", { ...thread, title });
 }
 
 export async function authTest(

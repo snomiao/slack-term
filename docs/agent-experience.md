@@ -1,16 +1,15 @@
 # Slack Agent experience: decision
 
 Evaluated 2026-09-25 against Slack's current developer documentation and this
-checkout. **Keep this change documentation-only.** Bot session controls fit the
-CLI, but adding three legacy wrappers would not make an agent listen or respond
-in the side panel. Establish the receiving/lifecycle contract first; add small
-bot-only controls once a caller can use them end to end.
+checkout. **Implement bot session controls and a command heartbeat.** An agent
+that already knows its request's Slack thread can use them without an Events
+API receiver. Receiving new requests/context remains a separate concern.
 
 | Feature | Fit | Decision |
 | --- | --- | --- |
-| Session status and title | Yes, later | Useful bot presentation; target current session APIs, with explicit completion handling. |
+| Session status and title | Yes, implemented | Current session APIs, with command lifetime and explicit completion handling. |
 | Dynamic suggested prompts | Later | Useful for contextual entry points; fixed prompts suffice initially. |
-| Agent event receiver | Later | Necessary for native interaction; separate from the user-oriented `tail`. |
+| Agent event receiver | Later | Receives new app events; independent of the command heartbeat and user-oriented `tail`. |
 | Slack MCP alongside slack-term | Yes | Agents with an approved connection can use its user-context tools. |
 | Replace slack-term with MCP | No | Preserve shell workflows, bot identity, confirmation gates, `ask`/`poll`, `todo`, and scheduling. |
 
@@ -120,7 +119,7 @@ Targeted MCP search may reduce discovery work, but that is an efficiency
 hypothesis, not evidence of a higher quota. Keep MCP authentication in the agent
 host initially rather than adding another auth/client stack here.
 
-## Existing behavior and minimal next step
+## Existing behavior
 
 No documented feature change requires rewriting ordinary `read`, `thread`, or
 `send --as-bot`. Use the actual app DM and root timestamp: the user and bot
@@ -138,15 +137,66 @@ agent conversations in one DM make that distinction important: address the
 session root explicitly. Relevant code: [cli.ts](../ts/cli.ts),
 [ask.ts](../ts/ask.ts), [poll.ts](../ts/poll.ts).
 
-**First follow-up:** define and mock-test a small external receiver contract for
-DM-open, message, context, duplicate, and stop events. Confirm the intended app's
-manifest and available scopes before selecting the experience. Then add bot-only
-session status/title commands if the receiver needs shell integration; test
-token selection, thread addressing, API errors, and completion cleanup with a
-mock API. Add dynamic prompts only with an explicit agent/legacy distinction.
+## Command heartbeat
 
-Wrappers alone are small but not clearly useful enough yet: there is no receiver
-contract in this repo, and status now carries lifecycle obligations. This
-evaluation changes no runtime code, Slack app configuration, or credentials,
-and performs no real Slack writes. Workspace rollout and side-panel rendering
-remain unverified.
+```sh
+slack agent status C00000001:1700000000.000100 processing --title "Review request"
+slack agent run C00000001:1700000000.000100 --title "Review request" -- codex-yes -- "Handle the request"
+slack agent run 'https://acme.slack.com/archives/C00000001/p1700000000000100' --bot-token-env AGENT_BOT_TOKEN --every 300 --close -- bun run task.ts
+slack agent status '#general:1700000000.000100' active
+```
+
+Only apps declared as agents in Slack app settings can create sessions. Declaring
+the app adds `assistant:write`; thread session operations require `chat:write`.
+Select that app's bot with `--bot-token-env NAME` if the default `SLACK_BOT_TOKEN`
+belongs to another app. The named variable must already hold an `xoxb` token;
+missing variables and user tokens fail without fallback. The command does not
+change app settings or create credentials. See [Agent sessions](https://docs.slack.dev/ai/agent-sessions/).
+
+The same guide specifies a **one-hour processing timeout**, reset by each new
+`processing` write. The default heartbeat is **300 seconds**, leaving room for
+transient failures. `--every` accepts positive seconds below 3600 (fractions are
+useful for mock tests); very short intervals can exhaust the Tier 3 quota.
+Multiple wrappers using the same bot/thread share status: use one owner per
+thread, or one wrapper finishing can clear another's working indicator.
+
+`status` accepts `processing|active|suspended|closed`. Both commands set status
+first and, when supplied, apply `--title` with `agents.sessions.rename` so an
+existing session is renamed too. Raw `C`/`D`/`G` channel IDs with root timestamps
+and permalinks avoid channel listing. A reply permalink's `thread_ts` query
+selects the parent. Channel names use bot-authorized discovery and may require
+additional read scopes; prefer IDs when rate-limited. These commands target
+threads, not session channels without a root timestamp.
+
+`run` starts the working status before launching the command, inherits its
+stdin/stdout/stderr, preserves arguments after `--`, and returns its exit code.
+No shell expansion is performed; explicitly use `sh -c` when needed. A refresh
+failure is logged and retried on the next tick without interrupting the command.
+Requests have a ten-second timeout and refreshes never overlap.
+
+Normal completion, command failure, and spawn failure all attempt a final
+`active` write (`closed` with `--close`). SIGINT and SIGTERM are forwarded to
+the direct child; if it ignores the signal, it is killed after five seconds.
+Commands are responsible for their own descendant processes. The wrapper waits
+for the child and any in-flight refresh, then clears status before exiting
+130/143. Repeated interrupts do not skip cleanup. Initial status/rename failures
+prevent launching the command and still attempt cleanup, since a failed response
+may follow a successful remote write. A final-clear failure is reported on
+stderr and changes a successful command's exit code to 1; existing failures
+retain their codes.
+
+Immediate clearing cannot be guaranteed after SIGKILL, a runtime crash, machine
+loss, or a failed Slack request. The one-hour timeout after the last successful
+heartbeat is the fallback; `slack agent status <target> active` can clear it
+manually. Other agents in the same session may keep the aggregate status busy.
+
+No legacy fallback is implemented: legacy free-text status has different expiry
+and clearing behavior and cannot represent this lifecycle faithfully. A feature
+or scope error should identify an incompatible app, not silently switch APIs.
+The wrapper does not listen for Slack's native stop-button events; that still
+requires the separate receiver described above.
+
+Validation uses only a local mock API and fake tokens. Real side-panel rendering
+and workspace rollout remain unverified; no real Slack writes or app changes
+are part of QA. A future receiver should mock-test DM-open, message, context,
+duplicate and stop events; dynamic prompts need an explicit agent/legacy mode.
