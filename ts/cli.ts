@@ -13,6 +13,7 @@ import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveTok
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
+import { agentCommands } from "./agent.ts";
 
 import {
   ASK_KEYCAPS,
@@ -3283,7 +3284,7 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (!cmd || cmd === "auth" || cmd === "login") return;
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -3296,6 +3297,7 @@ async function main(): Promise<void> {
         throw e;
       }
     }, true)
+    .command("agent", "Bot agent session status and command heartbeat", (y) => agentCommands(y, parseTargetThread))
     .command(
       ["read [target]", "msgs [target]"],
       "Browse messages",

@@ -31,6 +31,7 @@ export default defineConfig({
       "tests/read-thread.test.ts",
       "tests/upload.test.ts",
       "tests/todo-cli.test.ts",
+      "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
       "node_modules/**",
     ],
     testTimeout: 30_000,
@@ -102,7 +103,7 @@ export default defineConfig({
       ],
       // Integration/interactive modules: OS keychain, browser cookie extraction,
       // interactive prompts, live-API diagnostics — not meaningfully unit-testable.
-      exclude: ["ts/cli.ts", "ts/slack-app.ts", "ts/auth.ts", "ts/botdoctor.ts", "tests/**", "dist/**"],
+      exclude: ["ts/cli.ts", "ts/agent.ts", "ts/slack-app.ts", "ts/auth.ts", "ts/botdoctor.ts", "tests/**", "dist/**"],
       // Recalibrated for istanbul. These are NOT a relaxation of the standard:
       // istanbul counts every function expression, including the injectable
       // seam defaults that tests replace with spies (`now: () => Date.now()`,
