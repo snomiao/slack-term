@@ -342,7 +342,7 @@ export async function cmdAuthChrome(opts: { workspace?: string } = {}): Promise<
 export async function cmdAuthFirefox(opts: { workspace?: string } = {}): Promise<void> {
   const profiles = listProfiles();
   if (profiles.length === 0) {
-    console.error("No workspaces configured. Run: slack auth token");
+    console.error("No workspaces configured. Run: slack auth login");
     process.exit(1);
   }
 

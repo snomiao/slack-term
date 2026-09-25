@@ -387,3 +387,13 @@ A write-up of the design decisions behind the confirm gate lives on the agent-ye
 ## License
 
 MIT
+
+### Print the active token (TypeScript CLI)
+
+`slack auth token` prints the resolved token followed by a newline, like
+`gh auth token`. Select a saved workspace with `slack auth token --workspace acme`.
+It uses the same environment/profile precedence as other commands and makes no
+API request. Diagnostics go to stderr so stdout can be used in scripts.
+
+Use `slack auth login` for interactive setup. Existing imports with
+`slack auth token --token <token> --name acme` continue to work.

@@ -49,7 +49,7 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
         `Desktop app token (xoxc-) needs its session cookie to be accepted by the public Slack API.\n` +
         `Attach it:  slack auth chrome   (macOS)   or   slack auth firefox\n` +
         `Or replace the token with an xoxp- user token:\n` +
-        `  slack auth token`,
+        `  slack auth login`,
       );
     }
     // Bot tokens (xoxb-) can't act as a user: they lack user scopes (missing_scope) and can't

@@ -270,7 +270,7 @@ export function resolveToken(workspaceFlag?: string): string {
   throw new Error(
     "No Slack token found.\n" +
     "  Run one of:\n" +
-    "    slack auth token    — paste an existing xoxp-/xoxb- token\n" +
+    "    slack auth login    — paste an existing xoxp-/xoxb- token\n" +
     "    slack auth chrome   — import from Chrome browser (macOS)\n" +
     "    slack auth app      — guided Slack app creation\n" +
     "  Or set SLACK_TOKEN=xoxp-... in .slack-term/.env.local",
