@@ -2168,14 +2168,46 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   const bEnc = askEncodeBroadcasts(unescapeArg(args.body ?? ""));
   const broadcastKinds = new Set([...qEnc.kinds, ...bEnc.kinds]);
   const mentionToken = args.mentionToken ?? token;
-  const qRep = await encodeMentionsDetailed(mentionToken, qEnc.text, channelId, args.mentionCookie);
-  const bRep = bEnc.text
-    ? await encodeMentionsDetailed(mentionToken, bEnc.text, channelId, args.mentionCookie)
-    : { text: "", resolved: [], unresolved: [] } as MentionEncodeResult;
+  const encodeBoth = async (tk: string, ck: string | undefined): Promise<[MentionEncodeResult, MentionEncodeResult]> => [
+    await encodeMentionsDetailed(tk, qEnc.text, channelId, ck),
+    bEnc.text
+      ? await encodeMentionsDetailed(tk, bEnc.text, channelId, ck)
+      : { text: "", resolved: [], unresolved: [] } as MentionEncodeResult,
+  ];
+  let [qRep, bRep] = await encodeBoth(mentionToken, args.mentionCookie);
+  // The @tags are resolved with the USER token by default (it has users:read).
+  // When that token cannot consult the directory at all (revoked, missing scope,
+  // API error) and the question is POSTED by a different token (--as-bot), retry
+  // with the poster's token: a bot granted users:read can name the audience just
+  // as well, and "the user token is dead" must not turn every ask into a refusal
+  // that suggests @here — which would hand the decision to whoever reacts first.
+  // Only the "unavailable" outcome retries; a definite no-match / ambiguous
+  // verdict from a working directory is kept as-is.
+  if (
+    mentionToken !== token &&
+    [...qRep.unresolved, ...bRep.unresolved].some((u) => u.reason === "unavailable")
+  ) {
+    const retried = await encodeBoth(token, cookie);
+    if (![...retried[0].unresolved, ...retried[1].unresolved].some((u) => u.reason === "unavailable")) {
+      [qRep, bRep] = retried;
+    }
+  }
   const question = qRep.text;
   const body = bRep.text;
   const resolved = [...qRep.resolved, ...bRep.resolved];
   const unresolved = [...qRep.unresolved, ...bRep.unresolved];
+  // A tag the caller already wrote in wire form (`<@U…>`) names its user by id —
+  // the one form no directory lookup can get wrong — so it counts toward the
+  // audience without any resolution. Fleet convention writes mentions this way
+  // precisely because display names drift; refusing them as "nobody is tagged"
+  // made the convention unusable here. The display name is best-effort (falls
+  // back to the id when users.info is unavailable).
+  const preEncodedIds = new Set<string>();
+  for (const m of `${question}\n${body}`.matchAll(/<@([UW][A-Z0-9]{2,})>/g)) preEncodedIds.add(m[1]!);
+  for (const id of preEncodedIds) {
+    if (resolved.some((r) => r.userId === id)) continue;
+    resolved.push({ surface: `<@${id}>`, display: await userName(token, id, cookie), userId: id });
+  }
   // An unresolved tag is not just cosmetic here: it names nobody, so it grants
   // nobody the right to answer. Say so before the rejection below.
   for (const line of mentionWarnings(unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
