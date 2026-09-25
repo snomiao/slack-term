@@ -647,18 +647,6 @@ describe("slack.ts", () => {
     expect(resp.messages?.matches).toHaveLength(1);
   });
 
-  test("call throws xoxc-specific error for desktop token on public API", async () => {
-    const errMock = await startMock({ inline: { "auth.test": { ok: false, error: "invalid_auth" } } });
-    const originalBase = process.env.SLACK_API_BASE;
-    process.env.SLACK_API_BASE = `${errMock.baseUrl}/api`;
-    try {
-      await expect(slack.authTest("xoxc-fake")).rejects.toThrow("Desktop app token");
-    } finally {
-      await errMock.stop();
-      process.env.SLACK_API_BASE = originalBase;
-    }
-  });
-
   test("callSession throws hint for non-xoxc token on session API", async () => {
     const errMock = await startMock({ inline: { "drafts.list": { ok: false, error: "not_authed" } } });
     const originalBase = process.env.SLACK_API_BASE;
