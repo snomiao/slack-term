@@ -10,9 +10,9 @@ let testDir: string;
 beforeEach(() => { testDir = mkdtempSync(join(tmpdir(), "slack-auth-token-")); });
 afterEach(() => { rmSync(testDir, { recursive: true, force: true }); });
 
-function run(args: string[] = [], extraEnv: Record<string, string> = {}) {
+function run(args: string[] = [], extraEnv: Record<string, string> = {}, command = "token") {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("SLACK_")));
-  return spawnSync("bun", [entry, "auth", "token", ...args], {
+  return spawnSync("bun", [entry, "auth", command, ...args], {
     cwd: testDir,
     env: { ...env, HOME: testDir, SLACK_API_BASE: "http://127.0.0.1:1", ...extraEnv },
     encoding: "utf8",
@@ -72,4 +72,62 @@ test("unknown workspace fails without printing a different token", () => {
   expect(result.status).toBe(1);
   expect(result.stdout).toBe("");
   expect(result.stderr).toContain('Workspace "missing" not found');
+});
+
+
+test("env exports the selected desktop token and cookie as dotenv assignments", () => {
+  profile();
+  const result = run([], {}, "env");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("SLACK_TOKEN='xoxc-fake-profile'\nSLACK_COOKIE='xoxd-fake-cookie'\n");
+  expect(result.stderr).toBe("");
+});
+
+test("env workspace overrides both environment credentials", () => {
+  profile();
+  const result = run(["-w", "acme"], {
+    SLACK_TOKEN: "xoxc-fake-env", SLACK_COOKIE: "xoxd-fake-env",
+  }, "env");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("SLACK_TOKEN='xoxc-fake-profile'\nSLACK_COOKIE='xoxd-fake-cookie'\n");
+});
+
+test("env quotes cookie punctuation and round-trips through dotenv loading", () => {
+  const result = run([], {
+    SLACK_TOKEN: "xoxc-fake-env", SLACK_COOKIE: "xoxd-fake+/=$#value",
+  }, "env");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("SLACK_TOKEN='xoxc-fake-env'\nSLACK_COOKIE='xoxd-fake+/=$#value'\n");
+  writeFileSync(join(testDir, ".env.local"), result.stdout);
+  const reloaded = run([], {}, "env");
+  expect(reloaded.status).toBe(0);
+  expect(reloaded.stdout).toBe(result.stdout);
+});
+
+for (const prefix of ["xoxp", "xoxb"]) {
+  test(`env omits cookies for ${prefix} tokens`, () => {
+    const result = run([], { SLACK_TOKEN: `${prefix}-fake-env`, SLACK_COOKIE: "xoxd-fake-env" }, "env");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe(`SLACK_TOKEN='${prefix}-fake-env'\n`);
+  });
+}
+
+test("env omits an unavailable desktop cookie", () => {
+  const result = run([], { SLACK_TOKEN: "xoxc-fake-env" }, "env");
+  expect(result.status).toBe(0);
+  expect(result.stdout).toBe("SLACK_TOKEN='xoxc-fake-env'\n");
+});
+
+test("env missing credentials fails without stdout", () => {
+  const result = run([], {}, "env");
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe("");
+});
+
+test("env rejects multiline credentials without partial output or leaking values", () => {
+  const result = run([], { SLACK_TOKEN: "xoxc-fake-env", SLACK_COOKIE: "xoxd-fake\nINJECTED=value" }, "env");
+  expect(result.status).toBe(1);
+  expect(result.stdout).toBe("");
+  expect(result.stderr).toContain("Cannot export SLACK_COOKIE");
+  expect(result.stderr).not.toContain("xoxd-fake");
 });

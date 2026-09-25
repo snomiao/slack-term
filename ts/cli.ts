@@ -4495,6 +4495,26 @@ async function main(): Promise<void> {
           },
         )
         .command(
+          "env",
+          "Print active workspace credentials in dotenv format",
+          () => {},
+          (argv) => {
+            const token = resolveToken(argv.workspace);
+            const cookie = token.startsWith("xoxc-") ? resolveCookie(argv.workspace) : undefined;
+            const entries = [["SLACK_TOKEN", token]];
+            if (cookie) entries.push(["SLACK_COOKIE", cookie]);
+            // Single quotes keep dotenv and shell consumers from expanding values.
+            // Validate everything before printing so failures cannot leave partial output.
+            const lines = entries.map(([key, value]) => {
+              if (/[\r\n\0']/.test(value!)) {
+                throw new Error(`Cannot export ${key}: unsupported characters in credential`);
+              }
+              return `${key}='${value}'`;
+            });
+            console.log(lines.join("\n"));
+          },
+        )
+        .command(
           "app",
           "Create a new Slack app and obtain a token (guided wizard)",
           (y2) => y2.option("bot", { type: "boolean", describe: "Create a bot token (xoxb-) instead of user (xoxp-)" }),
