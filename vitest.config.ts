@@ -32,6 +32,11 @@ export default defineConfig({
       "tests/upload.test.ts",
       "tests/todo-cli.test.ts",
       "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
+      // Bun-only: imports `bun:sqlite` at top level, which node cannot resolve —
+      // the unresolved import fails the whole vitest run, not just this file.
+      // `ts/slack-app.ts` is already in `coverage.exclude`, so this costs no
+      // measured coverage, and `bun run test` still runs the file.
+      "tests/slack-app.test.ts",
       "node_modules/**",
     ],
     testTimeout: 30_000,

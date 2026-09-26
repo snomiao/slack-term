@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "./harness.ts";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Profile } from "../ts/profiles.ts";
@@ -197,6 +197,20 @@ describe("profiles", () => {
     setCookie("acme", "xoxd-test-cookie");
     const profile = listProfiles().find((p: { name: string }) => p.name === "acme")?.profile;
     expect(profile?.cookie).toBe("xoxd-test-cookie");
+  });
+
+  test("credential files are private after create and update", () => {
+    if (process.platform === "win32") return;
+    addProfile("acme", fakeProfile);
+    const profilePath = join(tmpHome, ".config", "slack-cli", "profiles.json");
+    expect(statSync(profilePath).mode & 0o777).toBe(0o600);
+    chmodSync(profilePath, 0o644);
+    setCookie("acme", "xoxd-fake");
+    expect(statSync(profilePath).mode & 0o777).toBe(0o600);
+
+    const envPath = join(tmpCwd, ".env.local");
+    saveToEnvFile(envPath, { SLACK_TOKEN: "xoxp-fake" });
+    expect(statSync(envPath).mode & 0o777).toBe(0o600);
   });
 
   test("setCookie throws for unknown profile", () => {

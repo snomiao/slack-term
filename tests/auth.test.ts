@@ -1,7 +1,7 @@
 // Tests for ts/auth.ts — uses a mock HTTP server and temp HOME dir.
 
 import { describe, test, expect, beforeEach, afterEach, vi, mockModule } from "./harness.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, type MockHandle } from "./mock.ts";
@@ -13,8 +13,9 @@ import { startMock, type MockHandle } from "./mock.ts";
 // of them is missing (vitest only fails once the missing one is called).
 mockModule("../ts/slack-app.ts", () => ({
   extractSessions: vi.fn().mockResolvedValue([]),
-  discoverChromeCookies: vi.fn().mockResolvedValue([]),
-  discoverFirefoxCookies: vi.fn().mockResolvedValue([]),
+  extractChromeSessions: vi.fn().mockResolvedValue([]),
+  discoverChromeCookies: vi.fn().mockReturnValue({ candidates: [], totalProfiles: 0 }),
+  discoverFirefoxCookies: vi.fn().mockReturnValue([]),
 }));
 
 // Shared readline answer queue — mutated per-test before calling cmdAuthLogin.
@@ -32,16 +33,20 @@ mockModule("node:readline/promises", () => ({
 // Imported AFTER the mocks above, and dynamically: the registration is not
 // hoisted, so a static import here would bind the real modules.
 // Filesystem isolation comes from process.env.HOME = tmpHome (profiles.ts uses process.env.HOME).
-const { cmdAuthLogin, importFromDesktop } = await import("../ts/auth.ts");
+const { cmdAuthLogin, cmdAuthChrome, cmdAuthSave, cmdAuthTokens, importFromDesktop } = await import("../ts/auth.ts");
 const { listProfiles, addProfile, useProfile } = await import("../ts/profiles.ts");
-const { extractSessions } = await import("../ts/slack-app.ts");
+const { extractSessions, extractChromeSessions, discoverFirefoxCookies, discoverChromeCookies } = await import("../ts/slack-app.ts");
 
 // A direct cast rather than vi.mocked: the shape is all these tests need, and
 // it reads the same under either runner.
-type MockFn<T extends (...args: unknown[]) => unknown> = T & {
+type MockFn<T extends (...args: never[]) => unknown> = T & {
   mockResolvedValueOnce: (v: Awaited<ReturnType<T>> | never) => void;
+  mockReturnValueOnce: (v: ReturnType<T>) => void;
 };
 const mockExtractSessions = extractSessions as unknown as MockFn<typeof extractSessions>;
+const mockExtractChromeSessions = extractChromeSessions as unknown as MockFn<typeof extractChromeSessions>;
+const mockDiscoverFirefox = discoverFirefoxCookies as unknown as MockFn<typeof discoverFirefoxCookies>;
+const mockDiscoverChrome = discoverChromeCookies as unknown as MockFn<typeof discoverChromeCookies>;
 
 let tmpHome: string;
 let tmpCwd: string;
@@ -89,6 +94,32 @@ function setTTY(val: boolean | undefined) {
 }
 
 describe("auth.ts", () => {
+  test("auth tokens prints selected credentials in dotenv format", () => {
+    addProfile("acme", { token: "xoxc-fake", cookie: "xoxd-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
+    useProfile("acme");
+    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      cmdAuthTokens();
+      expect(spy.mock.calls[0]?.[0]).toBe("SLACK_TOKEN=xoxc-fake\nSLACK_COOKIE=xoxd-fake");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("auth save writes token and cookie to a private env file", () => {
+    addProfile("acme", { token: "xoxc-fake", cookie: "xoxd-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
+    const path = join(tmpCwd, ".env.local");
+    cmdAuthSave({ envfile: path });
+    expect(readFileSync(path, "utf8")).toContain("SLACK_TOKEN=xoxc-fake\n");
+    expect(readFileSync(path, "utf8")).toContain("SLACK_COOKIE=xoxd-fake\n");
+    if (process.platform !== "win32") expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  test("auth save rejects a profile without a cookie", () => {
+    addProfile("acme", { token: "xoxc-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
+    expect(() => cmdAuthSave({ envfile: join(tmpCwd, ".env.local") })).toThrow("has no session cookie");
+  });
+
   // --- non-interactive (--token flag) ---
 
   test("cmdAuthLogin with --token saves profile named from team", async () => {
@@ -223,13 +254,30 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 1 (desktop import) calls importFromDesktop", async () => {
     mockExtractSessions.mockResolvedValueOnce([
-      { token: "xoxc-desk", teamId: "T1", teamName: "Desk", url: "https://desk.slack.com/" },
+      { token: "xoxc-desk", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
     ]);
     setTTY(true);
     rlState.answers = ["1", "4"]; // "4" = save to profiles.json (no workspace name prompt — nameOverride passed)
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxc-desk");
+      expect(mock.requests.find((r) => r.method === "auth.test")?.headers.cookie).toBe("d=xoxd-fake");
+    } finally {
+      setTTY(undefined);
+    }
+  });
+
+  test("desktop import without a cookie saves a profile for auth firefox", async () => {
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    setTTY(true);
+    rlState.answers = ["1"];
+    try {
+      await cmdAuthLogin({});
+      expect(listProfiles()[0]?.profile.token).toBe("xoxc-fake");
+      expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
+      expect(mock.requests.find((r) => r.method === "auth.test")).toBeUndefined();
     } finally {
       setTTY(undefined);
     }
@@ -325,6 +373,126 @@ describe("auth.ts", () => {
     expect(list).toHaveLength(1);
     expect(list[0]?.name).toBe("acme-corp");
     expect(list[0]?.profile.token).toBe("xoxc-fake");
+  });
+
+  test("Linux desktop import attaches the sole Firefox cookie", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverFirefox.mockReturnValueOnce([
+      { profileDir: "fake.default", profileName: "default", cookie: "xoxd-fake" },
+    ]);
+    await importFromDesktop(undefined, true);
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("Linux desktop import uses Chrome when Firefox has no Slack session", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverChrome.mockReturnValueOnce({
+      candidates: [{ profileDir: "Default", profileName: "Default", cookie: "xoxd-fake" }],
+      totalProfiles: 1,
+    });
+    await importFromDesktop(undefined, true);
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("Linux auth chrome attaches a selected browser cookie", async () => {
+    if (process.platform !== "linux") return;
+    addProfile("acme", { token: "xoxc-fake", team: "Acme", teamId: "T00000001", url: "https://acme.slack.com/", user: "alice" });
+    mockDiscoverChrome.mockReturnValueOnce({
+      candidates: [{ profileDir: "Default", profileName: "Default", cookie: "xoxd-fake" }],
+      totalProfiles: 1,
+    });
+    await cmdAuthChrome({ workspace: "acme", yes: true });
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("--yes --from-chrome imports Chrome token and cookie without desktop", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractChromeSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
+    ]);
+    await cmdAuthLogin({ fromChrome: true, yes: true });
+    expect(listProfiles()[0]?.profile.token).toBe("xoxc-fake");
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("--from-all --yes uses Chrome session when desktop is absent", async () => {
+    if (process.platform !== "linux") return;
+    const rejecting = extractSessions as unknown as { mockRejectedValueOnce: (error: Error) => void };
+    rejecting.mockRejectedValueOnce(new Error("Slack desktop app LevelDB not found"));
+    mockExtractChromeSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/", cookie: "xoxd-fake" },
+    ]);
+    await cmdAuthLogin({ fromAll: true, yes: true });
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-fake");
+  });
+
+  test("--from-all --yes leaves ambiguous browser cookies unselected", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverFirefox.mockReturnValueOnce([
+      { profileDir: "fake.default", profileName: "Firefox", cookie: "xoxd-firefox" },
+    ]);
+    mockDiscoverChrome.mockReturnValueOnce({
+      candidates: [{ profileDir: "Default", profileName: "Chrome", cookie: "xoxd-chrome" }],
+      totalProfiles: 1,
+    });
+    await cmdAuthLogin({ fromAll: true, yes: true });
+    expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
+  });
+
+  test("declining --from-all does not read either browser", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    const chromeCalls = (discoverChromeCookies as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    const firefoxCalls = (discoverFirefoxCookies as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    setTTY(true);
+    rlState.answers = ["n"];
+    try {
+      await cmdAuthLogin({ fromAll: true });
+      expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
+      expect((discoverChromeCookies as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(chromeCalls);
+      expect((discoverFirefoxCookies as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(firefoxCalls);
+    } finally {
+      setTTY(undefined);
+    }
+  });
+
+  test("--from-chrome requires consent without --yes", async () => {
+    if (process.platform !== "linux") return;
+    setTTY(undefined);
+    await expect(cmdAuthLogin({ fromChrome: true })).rejects.toThrow("requires confirmation");
+  });
+
+  test("--from-desktop does not inspect browser profiles", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    await cmdAuthLogin({ fromDesktop: true, yes: true });
+    expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
+  });
+
+  test("Linux desktop import leaves cookie unset when Firefox has multiple sessions", async () => {
+    if (process.platform !== "linux") return;
+    mockExtractSessions.mockResolvedValueOnce([
+      { token: "xoxc-fake", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+    ]);
+    mockDiscoverFirefox.mockReturnValueOnce([
+      { profileDir: "a.default", profileName: "one", cookie: "xoxd-fake-one" },
+      { profileDir: "b.default", profileName: "two", cookie: "xoxd-fake-two" },
+    ]);
+    await importFromDesktop(undefined, true);
+    expect(listProfiles()[0]?.profile.cookie).toBeUndefined();
   });
 
   test("importFromDesktop saves cookie when session includes one", async () => {
