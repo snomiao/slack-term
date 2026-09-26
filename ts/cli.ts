@@ -1947,8 +1947,14 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // Replied, but picked nothing. Recorded rather than returned: a later
       // reply may still choose, and the first one is what the operator needs to
       // see — it is usually a question back.
-      if (!unchosen || Number(m.ts) < Number(unchosen.ts)) {
-        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous: match.kind === "ambiguous" };
+      // A plain free-text reply outranks an ambiguous one, whatever the order:
+      // the free text is delivered (exit 5), and an earlier ambiguous attempt
+      // must not hide it behind the refuse-to-guess path. Within a class, the
+      // earliest wins.
+      const ambiguous = match.kind === "ambiguous";
+      if (!unchosen || (unchosen.ambiguous && !ambiguous) ||
+          (unchosen.ambiguous === ambiguous && Number(m.ts) < Number(unchosen.ts))) {
+        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous };
       }
     }
     return null;
@@ -2093,7 +2099,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.error(`  (${stripTerminalControls(who)} が選択肢外の返信をしました — 決定ではありません。本文を stdout に出します)`);
       console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
       console.error(`  ${shown}`);
-      console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot)} --after=${unchosen.ts}`);
+      console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
       console.log(unchosen.text);
       process.exit(ASK_EXIT_FREETEXT);
     }
@@ -2135,7 +2141,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     console.error(`  返信: 「${stripTerminalControls(unchosen.text)}」`);
     console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
-    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
+    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
     process.exit(ASK_EXIT_UNCHOSEN);
   }
   if (timeout === 0) {
@@ -2143,7 +2149,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   } else {
     console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
     console.error(`  ${shown}`);
-    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
+    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
   }
   process.exit(ASK_EXIT_TIMEOUT);
 }
@@ -2151,8 +2157,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
 /** The `slack ask --waitFor=…` line handed to a caller that did not block.
  *  Printed as a runnable command rather than a bare permalink: the collect step
  *  is the half everyone forgets, and a link does not tell you how to collect. */
-function askResumeCommand(shown: string, asBot: boolean): string {
-  return `slack ask --waitFor='${shown}'${asBot ? " --as-bot" : ""}`;
+/** `after` is carried into EVERY resume hint once set: dropping it would have
+ *  the next `--waitFor` re-deliver a free-text reply already acted on. */
+function askResumeCommand(shown: string, asBot: boolean, after?: string): string {
+  return `slack ask --waitFor='${shown}'${asBot ? " --as-bot" : ""}${after ? ` --after=${after}` : ""}`;
 }
 
 async function cmdAsk(token: string, args: AskArgs): Promise<void> {
