@@ -5,7 +5,7 @@
 
 import { describe, test, expect, beforeEach, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -188,6 +188,17 @@ describe("sender attribution (send/ask/edit)", { timeout: 60_000 }, () => {
       expect(ask.session_id).toBe(SESSION);
       const upd = m.requests.find((q) => q.method === "chat.update")!;
       expect(JSON.parse(upd.body).metadata.event_payload.kind).toBe("edit");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the log is owner-only (it holds DM and private-channel text)", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      expect((await confirmed(["send", "#chan", "secret", "--channel-id", CHAN], m.baseUrl)).exitCode).toBe(0);
+      const mode = statSync(join(tmpHome, ".config", "slack-cli", "sent.sqlite")).mode & 0o777;
+      expect(mode).toBe(0o600);
     } finally {
       await m.stop();
     }

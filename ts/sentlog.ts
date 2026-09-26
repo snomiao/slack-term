@@ -19,7 +19,7 @@
 // Opt out with SLACK_TERM_ATTRIBUTION=off (no log, no metadata).
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -246,6 +246,10 @@ export function openSentLog(): Db | undefined {
   }
   const db = openSqlite(path);
   if (!db) return undefined;
+  // Owner-only: the log holds full outgoing text, DMs and private channels
+  // included, plus session ids. Applied on every open so a log created before
+  // this (or under a loose umask) is tightened too.
+  try { chmodSync(path, 0o600); } catch { /* best-effort */ }
   try {
     db.exec(SCHEMA);
     return db;
@@ -273,7 +277,7 @@ export function recordSent(r: RecordSent): boolean {
   if (!attributionEnabled()) return false;
   const db = openSentLog();
   if (!db) {
-    console.error(`  (送信ログに記録できませんでした: SQLite が使えません — ${sentDbPath()})`);
+    console.error(`  (送信ログに記録できませんでした: ${SENT_LOG_UNAVAILABLE} — ${sentDbPath()})`);
     return false;
   }
   try {
@@ -309,9 +313,16 @@ export interface SentQuery {
 
 /** Newest first. `channel` matches the id or the target as typed (`#eng`, `@bob`);
  *  `session` and `cwd` are prefix matches; `text` is a case-insensitive substring. */
-export function querySent(q: SentQuery): SentRow[] {
+/** Why the log cannot be opened in this runtime — the storage is SQLite, which
+ *  needs bun or node ≥ 22.5 (`node:sqlite`). Surfaced by `slack sent`, which
+ *  must not answer "no matches" when the truth is "no log". */
+export const SENT_LOG_UNAVAILABLE =
+  "送信ログを開けません: SQLite が使えないランタイムです (bun、または node >= 22.5 の node:sqlite が必要)";
+
+/** Newest first, or `undefined` when the log cannot be opened at all. */
+export function querySent(q: SentQuery): SentRow[] | undefined {
   const db = openSentLog();
-  if (!db) return [];
+  if (!db) return undefined;
   try {
     const where: string[] = [];
     const params: unknown[] = [];

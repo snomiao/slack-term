@@ -42,7 +42,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
-import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -4029,6 +4029,10 @@ async function main(): Promise<void> {
         }
         if (argv.kind) q.kind = argv.kind as SentKind;
         const rows = querySent(q);
+        if (!rows) {
+          console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
+          process.exit(1);
+        }
         if (argv.json) {
           for (const r of rows) console.log(JSON.stringify(r));
           return;
