@@ -13,6 +13,7 @@ import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveTok
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
+import { agentCommands } from "./agent.ts";
 
 import {
   ASK_KEYCAPS,
@@ -530,7 +531,7 @@ async function cmdSearch(token: string, query: string, count: number, json: bool
       } else {
         console.error(
           "Error: search requires a user token (xoxp-/xoxc-) — the active profile is a bot token (xoxb-), which Slack rejects for search.messages.\n" +
-          "  Add a user-token profile:  slack auth login   (or slack auth token)\n" +
+          "  Add a user-token profile:  slack auth login   (or slack auth login --token <token>)\n" +
           "  Then select it:            slack auth use <name>   (or pass --workspace <name>)",
         );
         process.exit(1);
@@ -3283,7 +3284,7 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (!cmd || cmd === "auth" || cmd === "login") return;
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -3296,6 +3297,7 @@ async function main(): Promise<void> {
         throw e;
       }
     }, true)
+    .command("agent", "Bot agent session status and command heartbeat", (y) => agentCommands(y, parseTargetThread))
     .command(
       ["read [target]", "msgs [target]"],
       "Browse messages",
@@ -4479,15 +4481,39 @@ async function main(): Promise<void> {
       (y) => y
         .command(
           "token",
-          "Add a workspace — paste an existing xoxp-/xoxb- token",
+          "Print the active token (or save one with --token)",
           (y2) => y2
             .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
             .option("name", { type: "string", describe: "Workspace name (used with --token)" }),
           async (argv) => {
+            if (argv.token === undefined) {
+              console.log(resolveToken(argv.workspace));
+              return;
+            }
             await cmdAuthToken({
               ...(argv.token !== undefined ? { token: argv.token } : {}),
               ...(argv.name !== undefined ? { name: argv.name } : {}),
             });
+          },
+        )
+        .command(
+          "env",
+          "Print active workspace credentials in dotenv format",
+          () => {},
+          (argv) => {
+            const token = resolveToken(argv.workspace);
+            const cookie = token.startsWith("xoxc-") ? resolveCookie(argv.workspace) : undefined;
+            const entries = [["SLACK_TOKEN", token]];
+            if (cookie) entries.push(["SLACK_COOKIE", cookie]);
+            // Single quotes keep dotenv and shell consumers from expanding values.
+            // Validate everything before printing so failures cannot leave partial output.
+            const lines = entries.map(([key, value]) => {
+              if (/[\r\n\0']/.test(value!)) {
+                throw new Error(`Cannot export ${key}: unsupported characters in credential`);
+              }
+              return `${key}='${value}'`;
+            });
+            console.log(lines.join("\n"));
           },
         )
         .command(

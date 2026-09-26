@@ -1,4 +1,5 @@
 // Slack Web API client (user token, Authorization: Bearer)
+import { resolveCookie } from "./profiles.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -22,6 +23,7 @@ function base(): string {
 }
 
 async function call(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  cookie = token.startsWith("xoxc-") ? (cookie ?? resolveCookie()) : undefined;
   const extraHeaders: Record<string, string> = {};
   if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/${method}`, {
@@ -47,12 +49,15 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
         `Desktop app token (xoxc-) needs its session cookie to be accepted by the public Slack API.\n` +
         `Attach it:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS/Linux)\n` +
         `Or replace the token with an xoxp- user token:\n` +
-        `  slack auth token`,
+        `  slack auth login`,
       );
     }
     // Bot tokens (xoxb-) can't act as a user: they lack user scopes (missing_scope) and can't
     // open a DM with themselves (cannot_dm_bot, e.g. `tail @you`). Point at a user-token workspace.
     if ((err === "missing_scope" || err === "cannot_dm_bot") && token.startsWith("xoxb-")) {
+      if (method.startsWith("agents.sessions.")) {
+        throw new Error(`Slack error on ${method}: ${err}. Agent sessions need a granular bot token with chat:write and app membership in the channel.`);
+      }
       const why = err === "cannot_dm_bot"
         ? `you're authenticated as a bot, so "@you" is the bot itself and it can't DM itself`
         : `this bot token lacks the user scope this action needs`;
@@ -130,6 +135,28 @@ function post(token: string, method: string, body: Record<string, Json>, cookie?
   }, cookie);
 }
 
+// Bound session writes so a stalled heartbeat cannot block final cleanup forever.
+async function agentPost(token: string, method: string, body: Record<string, Json>): Promise<Json> {
+  if (!token.startsWith("xoxb-")) throw new Error("Agent sessions require a bot token (xoxb); user tokens are refused.");
+  return call(token, method, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10_000),
+  });
+}
+
+export type AgentStatus = "processing" | "active" | "suspended" | "closed";
+export type AgentThread = { channel_id: string; thread_ts: string };
+
+export function setAgentStatus(token: string, thread: AgentThread, status: AgentStatus): Promise<Json> {
+  return agentPost(token, "agents.sessions.setStatus", { ...thread, status });
+}
+
+export function renameAgentSession(token: string, thread: AgentThread, title: string): Promise<Json> {
+  return agentPost(token, "agents.sessions.rename", { ...thread, title });
+}
+
 export async function authTest(
   token: string,
   cookie?: string,
@@ -152,6 +179,7 @@ export async function authTest(
 export async function authScopes(token: string, cookie?: string): Promise<{
   userId: string; user: string; botId: string; team: string; url: string; scopes: string[];
 }> {
+  cookie = token.startsWith("xoxc-") ? (cookie ?? resolveCookie()) : undefined;
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
   if (cookie) headers["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/auth.test`, { method: "GET", headers });
