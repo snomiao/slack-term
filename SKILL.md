@@ -197,7 +197,13 @@ slack sent --kind ask --session <id-prefix>  # this session's questions
 slack sent --cwd . --json                    # everything posted from this repo, every field
 ```
 
-Read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
+**Answered, never collected.** `slack ask --pending` checks every ask in that log that
+has not been collected, read-only, and lists the ones somebody answered — grouped by
+the asking session, with the agent pid and whether it is still alive (pid alive, started
+before the ask, same CLI). `--deliver` (opt-in) relays each answer to a live asker with
+`ay send`, once. Collecting with `--wait`/`--waitFor` is what takes an ask off the list.
+
+`slack sent` is read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
 metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
 
 ### todo — tasks as reactions

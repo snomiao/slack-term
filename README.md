@@ -152,6 +152,12 @@ eval "$RESUME --timeout 0" && echo answered
 # events and drops `message_changed`), so this is the only way to hear about an
 # answer to a question you did not block on.
 
+# Answered but never collected? Asks from THIS machine whose pill was pressed (or
+# that got a reply) while nobody was waiting, grouped by the asking session, with
+# whether that agent is still alive. Read-only.
+slack ask --pending                    # last 7 days; --since 2h, --json
+slack ask --pending --deliver          # opt-in: relay each answer to its LIVE asker via `ay send`
+
 # Who sent what: every send/ask/poll/edit is logged locally with its sender —
 # pid, cwd, git branch, agent CLI and session id — and the same attribution rides
 # along as invisible Slack message metadata (event_type `slack_term_sent`).

@@ -354,3 +354,84 @@ export function parseSince(s: string, now = Date.now()): number | undefined {
   const t = Date.parse(s);
   return Number.isNaN(t) ? undefined : t;
 }
+
+// --- ask collection ----------------------------------------------------------
+
+/** Mark a logged ask as collected — its answer reached the caller. What
+ *  `ask --pending` keys "answered but nobody heard" off. A no-op when the ask
+ *  is not in this machine's log (asked elsewhere) or already collected. */
+export function markAskCollected(channel: string, ts: string, answer: string, exit: number): void {
+  if (!attributionEnabled()) return;
+  const db = openSentLog();
+  if (!db) return;
+  try {
+    db.prepare(
+      `UPDATE sent SET collected_at = ?, answer = ?, answer_exit = ?
+       WHERE kind = 'ask' AND channel = ? AND ts = ? AND collected_at IS NULL`,
+    ).run(Date.now(), answer, exit, channel, ts);
+  } catch {
+    // bookkeeping only
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+export function markAskDelivered(id: number): void {
+  const db = openSentLog();
+  if (!db) return;
+  try {
+    db.prepare(`UPDATE sent SET delivered_at = ? WHERE id = ?`).run(Date.now(), id);
+  } catch {
+    // bookkeeping only
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+/** Logged asks nobody has collected yet, oldest first. */
+export function uncollectedAsks(sinceMs: number): SentRow[] {
+  const db = openSentLog();
+  if (!db) return [];
+  try {
+    return db.prepare(
+      `SELECT * FROM sent WHERE kind = 'ask' AND collected_at IS NULL AND sent_at >= ? ORDER BY sent_at ASC, id ASC`,
+    ).all(sinceMs) as SentRow[];
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+/** Is the agent that sent this row still the process at that pid? A pid alone
+ *  is not enough — pids are reused, and delivering an answer to whatever now
+ *  holds the number would hand a decision to the wrong agent. So the process
+ *  must also (a) have started before the message was sent, and (b) carry the
+ *  process name of the recorded CLI, when that CLI is one we know by name. */
+export function senderAlive(row: Pick<SentRow, "agent_pid" | "pid" | "cli" | "sent_at">): boolean {
+  const pid = row.agent_pid ?? row.pid;
+  if (!pidAlive(pid)) return false;
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=,comm=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 });
+    const line = (r.stdout ?? "").trim();
+    // lstart is a fixed 24-char date ("Sun Sep 27 10:00:00 2026"), comm follows.
+    const started = Date.parse(line.slice(0, 24));
+    if (!Number.isNaN(started) && started > row.sent_at + 1000) return false;
+    const comm = basename(line.slice(24).trim());
+    const known = new Set(Object.values(AGENT_PROCESS_NAMES));
+    if (row.cli && known.has(row.cli) && comm && AGENT_PROCESS_NAMES[comm] !== row.cli) return false;
+  } catch {
+    // ps unavailable: fall back to the bare pid check
+  }
+  return true;
+}
+
+/** Is this pid still running? `kill(pid, 0)` checks without signalling;
+ *  EPERM means it exists but belongs to someone else — still alive. */
+export function pidAlive(pid: number | null | undefined): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: unknown) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
