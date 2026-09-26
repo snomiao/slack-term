@@ -116,7 +116,17 @@ export async function startMock(
         // {ok:false,...}) overrides the hardcoded success default below — lets
         // tests simulate a failure on an otherwise-faked write endpoint.
         const override = fixtures.get(safeName(method));
-        if (override) {
+        // `{ __whenBodyIncludes: { needle, response } }` answers `response` only
+        // when the POST body contains `needle`, and falls through to the default
+        // otherwise — lets a test refuse one FIELD of a write (e.g. `metadata`)
+        // and check the caller retries without it.
+        const cond = (override as { __whenBodyIncludes?: { needle: string; response: unknown } } | undefined)?.__whenBodyIncludes;
+        if (cond) {
+          if (body.includes(cond.needle)) {
+            respond(cond.response);
+            return;
+          }
+        } else if (override) {
           respond(resolveByAuth(override, req));
           return;
         }
