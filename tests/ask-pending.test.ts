@@ -155,6 +155,21 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     expect(again.stderr).toContain("0 件の未回収の質問を確認");
   });
 
+  test("an ask from another workspace is named, not probed with this token", async () => {
+    await askLogged();
+    const other = { ...slackHas(PRESSED_NO), "auth.test": { ok: true, user_id: SELF, user: "user1", team: "Other", team_id: "T00000002" } };
+    const m = await startMock({ inline: other });
+    try {
+      const r = await run(["ask", "--pending"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("");
+      expect(r.stderr).toContain("別のワークスペース「Acme」");
+      expect(m.requests.some((q) => q.method === "conversations.history")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
   describe("--deliver", () => {
     function fakeAy(): { bin: string; log: string } {
       const bin = join(tmpHome, "bin");
@@ -183,6 +198,28 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       const again = await pending(slackHas(PRESSED_NO), ["--deliver"], env);
       expect(again.stdout).toContain("届け済み");
       expect(readFileSync(log, "utf8")).toBe(sent);
+    });
+
+    // cross-vendor review 2026-09-27: delivery was tracked per QUESTION, so a
+    // clarification relayed first swallowed the decision that came after it.
+    test("a decision after a delivered clarification is delivered too", async () => {
+      const live = { CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_TERM_AGENT_CLI: "test-agent" };
+      await askLogged(live);
+      const { bin, log } = fakeAy();
+      const env = { PATH: `${bin}:${process.env.PATH}` };
+      const clarify = slackHas({});
+      const hist = { ok: true, messages: [
+        { type: "message", user: SELF, ts: TS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "背景を教えて" },
+      ] };
+      clarify[`conversations.history__channel=${CHAN}&inclusive=true&limit=30&oldest=${TS}`] = { ok: true, messages: [{ ...hist.messages[0], reply_count: 1 }] };
+      clarify[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`] = hist;
+      const first = await pending(clarify, ["--deliver"], env);
+      expect(first.stdout).toContain("A: 背景を教えて");
+      expect(readFileSync(log, "utf8")).toContain("→ 背景を教えて");
+      const second = await pending(slackHas(PRESSED_NO), ["--deliver"], env);
+      expect(second.stdout).toContain("ay send で届けました");
+      expect(readFileSync(log, "utf8")).toContain("→ no");
     });
 
     test("never delivers to a sender that is gone", async () => {

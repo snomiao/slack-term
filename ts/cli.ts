@@ -2512,8 +2512,17 @@ async function cmdAskPending(
   let unanswered = 0;
   let collectedElsewhere = 0;
   const problems: string[] = [];
+  // The log is machine-wide, but a token reads one workspace. Asks recorded
+  // under another workspace are counted and named, not probed with the wrong
+  // token (which would only fail as channel_not_found).
+  const currentTeam = (await selfIdentity(userToken, userCookie))?.team ?? "";
+  const otherTeams = new Map<string, number>();
 
   for (const row of rows) {
+    if (row.team && currentTeam && row.team !== currentTeam) {
+      otherTeams.set(row.team, (otherTeams.get(row.team) ?? 0) + 1);
+      continue;
+    }
     const link = row.permalink || `${row.channel}:${row.ts}`;
     const token = row.as_bot ? botToken : userToken;
     if (!token) {
@@ -2562,10 +2571,12 @@ async function cmdAskPending(
     for (const it of pending) {
       const pid = it.row.agent_pid;
       if (!it.alive || !pid) continue;
-      if (it.row.delivered_at) continue;
+      // Keyed on the ANSWER, not the question: a free-text clarification
+      // delivered first must not swallow the decision that follows it.
+      if (it.row.delivered_at && it.row.delivered_answer === it.answer) continue;
       const res = askDeliver(pid, it);
       delivered.set(it.row.id, res);
-      if (res === "ok") markAskDelivered(it.row.id);
+      if (res === "ok") markAskDelivered(it.row.id, it.answer);
     }
   }
 
@@ -2595,12 +2606,15 @@ async function cmdAskPending(
         console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${it.how}${it.freeText ? " — 決定ではありません" : ""}`);
         const d = delivered.get(it.row.id);
         if (d) console.log(`    deliver: ${d === "ok" ? "ay send で届けました" : stripTerminalControls(d)}`);
-        else if (it.row.delivered_at) console.log(`    deliver: 届け済み (${formatYmdHm(it.row.delivered_at / 1000)})`);
+        else if (it.row.delivered_at && it.row.delivered_answer === it.answer) console.log(`    deliver: 届け済み (${formatYmdHm(it.row.delivered_at / 1000)})`);
         console.log(`    collect: ${askResumeCommand(it.link, !!it.row.as_bot)}`);
       }
     }
   }
   for (const p of problems) console.error(`  (${stripTerminalControls(p)})`);
+  for (const [team, n] of otherTeams) {
+    console.error(`  (${n} 件は別のワークスペース「${stripTerminalControls(team)}」の質問です — slack -w <name> ask --pending で確認)`);
+  }
   console.error(
     `${pending.length} 件が回答済み・未回収, ${unanswered} 件が未回答` +
     (collectedElsewhere ? `, ${collectedElsewhere} 件は別の場所で回収済み (ログを更新)` : "") +

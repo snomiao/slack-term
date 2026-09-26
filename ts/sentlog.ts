@@ -64,6 +64,9 @@ export interface SentRow {
   answer?: string | null;
   answer_exit?: number | null;
   delivered_at?: number | null;
+  /** WHICH answer was delivered — a clarification relayed first must not
+   *  stop the later actual decision from being relayed too. */
+  delivered_answer?: string | null;
 }
 
 export function attributionEnabled(): boolean {
@@ -231,7 +234,8 @@ CREATE TABLE IF NOT EXISTS sent (
   collected_at INTEGER,
   answer TEXT,
   answer_exit INTEGER,
-  delivered_at INTEGER
+  delivered_at INTEGER,
+  delivered_answer TEXT
 );
 CREATE INDEX IF NOT EXISTS sent_msg ON sent(channel, ts);
 CREATE INDEX IF NOT EXISTS sent_at ON sent(sent_at);
@@ -252,6 +256,9 @@ export function openSentLog(): Db | undefined {
   try { chmodSync(path, 0o600); } catch { /* best-effort */ }
   try {
     db.exec(SCHEMA);
+    // Columns added after the table first shipped. ALTER fails harmlessly when
+    // the column is already there.
+    try { db.exec("ALTER TABLE sent ADD COLUMN delivered_answer TEXT"); } catch { /* exists */ }
     return db;
   } catch {
     try { db.close(); } catch { /* ignore */ }
@@ -376,11 +383,11 @@ export function markAskCollected(channel: string, ts: string, answer: string, ex
   }
 }
 
-export function markAskDelivered(id: number): void {
+export function markAskDelivered(id: number, answer: string): void {
   const db = openSentLog();
   if (!db) return;
   try {
-    db.prepare(`UPDATE sent SET delivered_at = ? WHERE id = ?`).run(Date.now(), id);
+    db.prepare(`UPDATE sent SET delivered_at = ?, delivered_answer = ? WHERE id = ?`).run(Date.now(), answer, id);
   } catch {
     // bookkeeping only
   } finally {
