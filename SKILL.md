@@ -162,15 +162,17 @@ without losing clicks. A reaction is durable state anyone can read back later.
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
-  replied, `3` transport/config failure, `4` somebody replied but picked none of the
-  offered choices. Everything human-facing goes to stderr, so
+  replied, `3` transport/config failure, `4` a reply matched several choices (stdout
+  empty), `5` a **free-text reply** that picked none of the offered choices — the reply
+  text is on stdout. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
-- **A reply that chooses nothing is not an answer.** When choices were offered, only a
-  reaction, the choice text, or its number counts. A reply like 「意味が分かりません」 or a
-  question back exits `4` with **stdout empty** — measured 2026-09-04, a clarifying
-  question was returned as `rc=0` and stored as the decision, which is what an automated
-  caller acts on. `2` and `4` need different reactions: one waits, the other answers a
-  person who is standing there.
+- **A reply that chooses nothing is delivered, but is not a decision.** When choices were
+  offered, only a reaction, the choice text, or its number is a decision (`0`). A reply
+  like 「背景を教えて」 or 「3 でなく X にして」 exits `5` at once with the text on stdout
+  — read it and act on it; do not treat it as a chosen option (measured 2026-09-04, a
+  question back returned as `rc=0` was stored as the decision). The question stays open,
+  so a pill pressed later still decides it: re-wait past the delivered reply with
+  `slack ask --waitFor='<permalink>' --after=<reply ts>` (stderr prints this line).
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack

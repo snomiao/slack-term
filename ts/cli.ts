@@ -1709,7 +1709,10 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 //   0  answered   (the answer text is on stdout, and nothing else is)
 //   2  timed out   (nobody replied)
 //   3  transport/config failure
-//   4  replied, but chose none of the offered choices — stdout stays EMPTY
+//   4  replied, but the reply matches SEVERAL choices — stdout stays EMPTY
+//   5  replied in free text, picking none of the offered choices — the reply
+//      text is on stdout. NOT a decision: the question is left open, so a pill
+//      pressed later still settles it (`--waitFor … --after=<reply ts>`).
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
 const ASK_EXIT_TIMEOUT = 2;
@@ -1719,6 +1722,12 @@ const ASK_EXIT_ERROR = 3;
  *  automated caller act on a decision nobody took, and exit 2 ("nobody
  *  answered") would hide that a human is standing there waiting for something. */
 const ASK_EXIT_UNCHOSEN = 4;
+/** A free-text reply that picks none of the choices, DELIVERED: the text is on
+ *  stdout. Exit 4 with stdout empty used to be the answer here, and the
+ *  instruction the human typed never reached the agent — it kept waiting
+ *  (measured 2026-09-27: 8 of 71 asks answered this way, none collected). Still
+ *  not 0, so nothing mistakes it for a decision. */
+const ASK_EXIT_FREETEXT = 5;
 
 const ASK_PHI = 1.618033988749895;
 const ASK_POLL_MIN_MS = 1000;
@@ -1823,6 +1832,9 @@ interface AskWaitCtx {
   /** Only so the resume hint printed on timeout names the right identity — the
    *  ✅ rewrite can be done by the original poster alone. */
   asBot: boolean;
+  /** Text replies at or before this ts are ignored — the free-text reply a
+   *  previous exit 5 already delivered. Reactions still count. */
+  after?: string;
 }
 
 /** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
@@ -1916,6 +1928,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // Strictly after the question. A question posted INTO an existing thread
       // sits among replies that predate it, and those answered something else.
       if (!(Number(m.ts) > Number(ts))) continue;
+      if (ctx.after && !(Number(m.ts) > Number(ctx.after))) continue;
       if (!isAnswerer(m.user)) continue;
       if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
       if (Number(m.ts) >= before) break;
@@ -2065,6 +2078,25 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.log(found.answer);
       process.exit(0);
     }
+    // A free-text reply that picks nothing is delivered NOW, not held until the
+    // deadline: it is usually an instruction or a question back, and the only
+    // one who can act on it is the caller. Left unstamped — a pill pressed
+    // later is still the decision. An AMBIGUOUS reply did try to choose, so it
+    // keeps the refuse-to-guess path below.
+    if (unchosen && !unchosen.ambiguous) {
+      let who = unchosen.who;
+      try {
+        if (who) who = await userName(token, who, cookie);
+      } catch {
+        // the id is still a usable answer to "who"
+      }
+      console.error(`  (${stripTerminalControls(who)} が選択肢外の返信をしました — 決定ではありません。本文を stdout に出します)`);
+      console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
+      console.error(`  ${shown}`);
+      console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot)} --after=${unchosen.ts}`);
+      console.log(unchosen.text);
+      process.exit(ASK_EXIT_FREETEXT);
+    }
     // Said as soon as it is seen, not only at the timeout: the reply is usually
     // a question BACK, and the person who can unblock it is the one watching
     // this command. Once per reply — a poller that repeated itself every tick
@@ -2077,11 +2109,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       } catch {
         // the id is still a usable answer to "who"
       }
-      console.error(
-        unchosen.ambiguous
-          ? `  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`
-          : `  (${stripTerminalControls(who)} が返信しましたが、選択肢のどれでもありません。待機を続けます)`,
-      );
+      // Only the ambiguous case gets here — a plain free-text reply exited above.
+      console.error(`  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`);
       console.error(`    「${stripTerminalControls(unchosen.text)}」`);
     }
     // Checked after the first poll, never before it: `--timeout 0` means one
@@ -2101,11 +2130,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // standing there. stdout stays empty in both: the caller must not be handed
   // something to act on.
   if (unchosen) {
-    console.error(
-      unchosen.ambiguous
-        ? `Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`
-        : `Error: 返信はありましたが、選択肢のどれも選ばれていません (メッセージはそのまま残っています)`,
-    );
+    // Ambiguous only: a plain free-text reply was delivered as exit 5 already.
+    console.error(`Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`);
     console.error(`  返信: 「${stripTerminalControls(unchosen.text)}」`);
     console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
@@ -2362,7 +2388,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
  *  file to go stale, lose, or disagree with Slack, and any machine holding the
  *  permalink can collect — at the cost of the body being a parseable format
  *  (`askBuildText` ⇄ `askParseMessage`). */
-async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string }): Promise<void> {
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string }): Promise<void> {
   const url = parseSlackPermalink(args.link);
   let channelId: string;
   let ts: string;
@@ -2464,6 +2490,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
+  if (args.after) ctx.after = args.after;
   await askWaitForAnswer(token, ctx);
 }
 
@@ -3712,8 +3739,9 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = somebody replied but picked none of the choices (stdout empty — do not act on it)." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
+        .option("after", { type: "string", describe: "With --waitFor: ignore text replies at or before this ts (the reply an exit 5 already delivered). Reactions still count." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
@@ -3752,8 +3780,16 @@ async function main(): Promise<void> {
             waitCookie = ck(argv as W);
           }
           try {
-            const a: { link: string; timeout: number; asBot: boolean; cookie?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
+            const a: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
             if (waitCookie) a.cookie = waitCookie;
+            if (argv.after) {
+              const after = String(argv.after);
+              if (!/^\d{10}\.\d{6}$/.test(after)) {
+                console.error(`Error: --after needs a message ts like 1700000000.000100 (got ${stripTerminalControls(after)})`);
+                process.exit(ASK_EXIT_ERROR);
+              }
+              a.after = after;
+            }
             await cmdAskWaitFor(waitToken, a);
           } catch (e: unknown) {
             console.error(friendlySlackError(e));
