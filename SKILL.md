@@ -184,6 +184,28 @@ This path is not optional convenience — **a pressed pill is invisible to `slac
 which only sees `type: "message"` events and drops `message_changed`. Without `--waitFor`
 an answer can be pressed and nobody ever hears about it.
 
+### sent — what did I post, and which session posted it
+
+Every `send`/`ask`/`poll`/`edit` is logged locally (`~/.config/slack-cli/sent.sqlite`)
+with its sender: agent pid, cwd, git branch, agent CLI and session id. The same
+attribution is attached as Slack message `metadata` (event_type `slack_term_sent`) —
+invisible in the client, readable through the API from any machine.
+
+```bash
+slack sent "deploy" --since 2h               # text substring, newest first
+slack sent --kind ask --session <id-prefix>  # this session's questions
+slack sent --cwd . --json                    # everything posted from this repo, every field
+```
+
+**Answered, never collected.** `slack ask --pending` checks every ask in that log that
+has not been collected, read-only, and lists the ones somebody answered — grouped by
+the asking session, with the agent pid and whether it is still alive (pid alive, started
+before the ask, same CLI). `--deliver` (opt-in) relays each answer to a live asker with
+`ay send`, once. Collecting with `--wait`/`--waitFor` is what takes an ask off the list.
+
+`slack sent` is read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
+metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
+
 ### todo — tasks as reactions
 
 A task is any message carrying the marker reaction 📌 `:pushpin:`. Progress lives in a

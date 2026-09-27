@@ -1,10 +1,11 @@
 #!/usr/bin/env bun
 // Slack CLI entry — mirrors the Rust impl in src/main.rs.
 
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -42,6 +43,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, markAskCollected, markAskDelivered, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, senderAlive, uncollectedAsks, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -75,6 +77,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  type MessageMetadata,
   getPermalink,
   scheduleMessage,
   listScheduledMessages,
@@ -1068,6 +1071,38 @@ function selfLookup(token: string, cookie?: string): () => Promise<Self | null> 
   };
 }
 
+/** Who is sending, captured once per write: the Slack `metadata` to attach to
+ *  the post, and `record` to append it to the local log once the ts is known.
+ *  Both vanish under SLACK_TERM_ATTRIBUTION=off. */
+function sentAttribution(kind: SentKind): {
+  metadata?: MessageMetadata;
+  record: (r: Omit<RecordSent, "kind" | "attribution">) => void;
+} {
+  if (!attributionEnabled()) return { record: () => {} };
+  const attribution = captureAttribution();
+  return {
+    metadata: attributionMetadata(kind, attribution),
+    record: (r) => { recordSent({ ...r, kind, attribution }); },
+  };
+}
+
+/** One `slack sent` row: when/what/where, then who — the sender block is the
+ *  point of the command, so it gets its own line rather than a trailing column. */
+function formatSentRow(r: SentRow): string {
+  const first = stripTerminalControls(r.text.split("\n")[0] ?? "").slice(0, 100);
+  const where = r.permalink || `${r.channel}:${r.ts}`;
+  const who = [
+    r.cli ?? "?",
+    r.session_id ? `session=${r.session_id}` : "",
+    r.agent_pid ? `pid=${r.agent_pid}` : `pid=${r.pid}`,
+    r.git_branch ? `branch=${r.git_branch}` : "",
+    `cwd=${r.cwd}`,
+  ].filter(Boolean).join("  ");
+  return `${formatYmdHm(r.sent_at / 1000)}  ${r.kind.padEnd(4)}  ${stripTerminalControls(r.target ?? r.channel)}  ${where}\n` +
+    `    ${first}\n` +
+    `    ${stripTerminalControls(who)}`;
+}
+
 /** Name the identity a write will be performed AS, for confirm gates:
  *  "@snomiao (U0123ABC) — Acme". Slack shows only the author on the resulting
  *  message, so a wrong profile / stale SLACK_TOKEN / unintended --as-bot is
@@ -1275,8 +1310,10 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     ]);
   }
 
-  const newTs = await editMessage(token, channelId, ts, newText, args.cookie);
+  const attr = sentAttribution("edit");
+  const newTs = await editMessage(token, channelId, ts, newText, args.cookie, undefined, attr.metadata);
   console.log(`✓ Edited (ts: ${newTs})`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, text: newText, asBot: args.asBot });
 }
 
 // --- delete ---
@@ -1657,7 +1694,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       ], recipientTz);
     }
   }
-  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie);
+  const attr = sentAttribution("send");
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie, undefined, attr.metadata);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts, cookie);
@@ -1665,6 +1703,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // fail-soft: getPermalink failure (rate limit, network, etc.) should not
     // mask send success — fall back to ts-only output below.
   }
+  attr.record({ team: (await getSelf())?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   if (permalink) {
     console.log(`✓ Sent: ${permalink}`);
   } else {
@@ -1828,8 +1867,16 @@ interface AskWaitCtx {
 /** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
  *  on timeout. A timeout of 0 means "look exactly once", so a caller can poll
  *  cheaply on its own schedule instead of parking a process on `--wait`. */
-async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
-  const { channelId, ts, question, reactable, threadOnly, audience, broadcast, cookie, timeout, shown } = ctx;
+/** One look at a question's answer state — the polling half of `--wait`,
+ *  shared with `ask --pending`. `readOnly` skips the one write a look can make
+ *  (the invalid-ballot notice), which `--pending` must never do: it inspects
+ *  questions other sessions own. */
+function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
+  poll: () => Promise<AskFound | null>;
+  getUnchosen: () => { text: string; who: string; ts: string; ambiguous: boolean } | undefined;
+  candidates: string[];
+} {
+  const { channelId, ts, reactable, threadOnly, audience, broadcast, cookie } = ctx;
   const askerUserId = ctx.askerUserId;
   const askerBotId = ctx.askerBotId;
 
@@ -1844,7 +1891,6 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
    *  across polls so the timeout can report it, and so the operator is told once
    *  rather than on every tick. */
   let unchosen: { text: string; who: string; ts: string; ambiguous: boolean } | undefined;
-  let unchosenReported = "";
 
   /** Every seed an answerer is on — not just the first. Changing your mind
    *  leaves BOTH reactions in place (Slack only drops one when you actively
@@ -1871,6 +1917,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
    *  the API call when nothing changed, which is what makes this safe to run on
    *  every poll tick rather than once per process. */
   async function noteInvalid(msg: Record<string, Json>, offenders: string[]): Promise<void> {
+    if (readOnly) return;
     const text = typeof msg.text === "string" ? msg.text : "";
     if (!text) return;
     const next = applyInvalidNotice(text, offenders);
@@ -1895,7 +1942,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       return { answer: reactable[index]!, how: `リアクション ${ASK_KEYCAPS[index]!.glyph}`, who: users[0]! };
     }
     const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
-    console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
+    if (!readOnly) console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
     // Whoever is on more than one pill. Named in the question itself so the
     // person who has to fix it is the person who sees it — and rewritten from
     // the current state each pass, so reruns cannot stack up notices and the
@@ -2000,6 +2047,16 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     return null;
   }
 
+  return { poll, getUnchosen: () => unchosen, candidates };
+}
+
+async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
+  const { channelId, ts, question, reactable, cookie, timeout, shown } = ctx;
+  const poller = askPoller(token, ctx);
+  const { poll, candidates } = poller;
+  let unchosen: ReturnType<typeof poller.getUnchosen>;
+  let unchosenReported = "";
+
   /** Stamp the question resolved. Removing our seeds clears the pills that still
    *  invite an answer; the answerer's own reaction cannot be removed by us and
    *  stays put — which is exactly what leaves the chosen number visible. */
@@ -2049,6 +2106,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     let found: AskFound | null = null;
     try {
       found = await poll();
+      unchosen = poller.getUnchosen();
       errors = 0;
     } catch (e: unknown) {
       // A dropped poll is expected occasionally; only give up if it keeps failing.
@@ -2061,6 +2119,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
     if (found) {
       await markResolved(found);
+      markAskCollected(channelId, ts, found.answer, 0);
       // stdout gets the answer and nothing else.
       console.log(found.answer);
       process.exit(0);
@@ -2283,7 +2342,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // `plain`: with blocks attached Slack rewrites the stored text (newlines to
   // spaces, emoji to `:one:`) and `--waitFor` can no longer read the question
   // back out of it — which is the entire recovery path.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("ask");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // The marker goes on FIRST so it sits left of the pills, and as a reaction so
   // `has::question:` lists every question the way `has::pushpin:` lists every
@@ -2318,6 +2378,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Asked: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
 
   if (!args.wait) {
     // Not waiting. stdout is the RESUME COMMAND, not just a link: nothing else
@@ -2386,27 +2447,15 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     ts = m[2]!;
   }
 
-  // Fetch the one message. A question posted into a thread is not in history at
-  // all, so where the permalink says it is a reply, read it from the thread.
-  let msg: Record<string, Json> | undefined;
-  if (threadTs) {
-    const rep = asRecord((await replies(token, channelId, threadTs, 100, args.cookie)) as Json);
-    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
-  } else {
-    const hist = asRecord((await history(token, channelId, 1, ts, undefined, args.cookie, true)) as Json);
-    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
-  }
-  if (!msg) {
+  const loaded = await askLoad(token, { channelId, ts, threadTs }, { timeout: args.timeout, shown: args.link, asBot: args.asBot, cookie: args.cookie });
+  if (loaded.kind === "missing") {
     console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
   }
-
-  const text = typeof msg.text === "string" ? msg.text : "";
-  const parsed = askParseMessage(text);
-  if (parsed.kind === "other") {
+  if (loaded.kind === "other") {
     console.error(
       `Error: これは \`slack ask\` の質問として読み取れません。\n` +
-      `  理由: ${askExplainReject(text)}\n` +
+      `  理由: ${askExplainReject(loaded.text)}\n` +
       `  ${stripTerminalControls(args.link)}\n` +
       // The pills are still readable by hand, so a failure here is not a dead
       // end — say so, because the reported cost was not knowing that.
@@ -2414,13 +2463,217 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     );
     process.exit(ASK_EXIT_ERROR);
   }
-  if (parsed.kind === "resolved") {
+  if (loaded.kind === "resolved") {
     // Answered while nobody was watching — the case that makes fire-and-forget
     // safe. Report it exactly as `--wait` would have.
-    console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
-    console.log(parsed.answer);
+    console.error(`✓ 回答済み: ${stripTerminalControls(loaded.question)}`);
+    markAskCollected(channelId, ts, loaded.answer, 0);
+    console.log(loaded.answer);
     return;
   }
+  if (loaded.kind === "unaddressed") {
+    console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
+    process.exit(ASK_EXIT_ERROR);
+  }
+
+  if (args.timeout > 0) {
+    console.error(`  回答を待っています (最大 ${args.timeout}s)… Ctrl-C で中断`);
+  }
+  await askWaitForAnswer(token, loaded.ctx);
+}
+
+/** One answered-but-uncollected ask, as `--pending` reports it. */
+interface AskPendingItem {
+  row: SentRow;
+  link: string;
+  question: string;
+  answer: string;
+  how: string;
+  /** A free-text reply that picked none of the choices — not a decision. */
+  freeText: boolean;
+  alive: boolean;
+}
+
+/** `slack ask --pending` — questions THIS machine asked that somebody answered
+ *  and no one collected. Read-only against Slack: each open question gets one
+ *  look through the same poller `--wait` uses, with its one write disabled.
+ *
+ *  Why it exists: of 71 asks over 8 days, 13 had a pill pressed that nobody
+ *  ever read back (2026-09-27). The answer was sitting in Slack; the agent that
+ *  asked had moved on or died, and nothing connected the two. */
+async function cmdAskPending(
+  userToken: string,
+  userCookie: string | undefined,
+  botToken: string | undefined,
+  opts: { sinceMs: number; json: boolean; deliver: boolean },
+): Promise<void> {
+  const rows = uncollectedAsks(opts.sinceMs);
+  const pending: AskPendingItem[] = [];
+  let unanswered = 0;
+  let collectedElsewhere = 0;
+  const problems: string[] = [];
+  // The log is machine-wide, but a token reads one workspace. Asks recorded
+  // under another workspace are counted and named, not probed with the wrong
+  // token (which would only fail as channel_not_found).
+  const currentTeam = (await selfIdentity(userToken, userCookie))?.team ?? "";
+  const otherTeams = new Map<string, number>();
+
+  for (const row of rows) {
+    if (row.team && currentTeam && row.team !== currentTeam) {
+      otherTeams.set(row.team, (otherTeams.get(row.team) ?? 0) + 1);
+      continue;
+    }
+    const link = row.permalink || `${row.channel}:${row.ts}`;
+    const token = row.as_bot ? botToken : userToken;
+    if (!token) {
+      problems.push(`${link}: --as-bot で聞いた質問ですが bot token がありません`);
+      continue;
+    }
+    const cookie = row.as_bot ? undefined : userCookie;
+    try {
+      const loaded = await askLoad(token, { channelId: row.channel, ts: row.ts, threadTs: row.thread_ts ?? undefined },
+        { timeout: 0, shown: link, asBot: !!row.as_bot, cookie });
+      if (loaded.kind === "resolved") {
+        // Stamped ✅ — some collector (another machine, another token) got it.
+        markAskCollected(row.channel, row.ts, loaded.answer, 0);
+        collectedElsewhere++;
+        continue;
+      }
+      if (loaded.kind !== "open") {
+        problems.push(`${link}: ${loaded.kind === "missing" ? "メッセージが見つかりません (削除?)" : "質問として読めません"}`);
+        continue;
+      }
+      const poller = askPoller(token, loaded.ctx, true);
+      const found = await poller.poll();
+      const unchosen = poller.getUnchosen();
+      const alive = senderAlive(row);
+      if (found) {
+        pending.push({ row, link, question: loaded.ctx.question, answer: found.answer, how: found.how, freeText: false, alive });
+      } else if (unchosen && !unchosen.ambiguous) {
+        pending.push({ row, link, question: loaded.ctx.question, answer: unchosen.text, how: "返信 (選択肢外)", freeText: true, alive });
+      } else {
+        unanswered++;
+      }
+    } catch (e: unknown) {
+      problems.push(`${link}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // Grouped by the session that asked — the unit that has to be told.
+  const groups = new Map<string, AskPendingItem[]>();
+  for (const it of pending) {
+    const key = it.row.session_id ? `session ${it.row.session_id}` : `pid ${it.row.agent_pid ?? it.row.pid}`;
+    groups.set(key, [...(groups.get(key) ?? []), it]);
+  }
+
+  const delivered = new Map<number, string>();
+  if (opts.deliver) {
+    for (const it of pending) {
+      const pid = it.row.agent_pid;
+      if (!it.alive || !pid) continue;
+      // Keyed on the ANSWER, not the question: a free-text clarification
+      // delivered first must not swallow the decision that follows it.
+      if (it.row.delivered_at && it.row.delivered_answer === it.answer) continue;
+      const res = askDeliver(pid, it);
+      delivered.set(it.row.id, res);
+      if (res === "ok") markAskDelivered(it.row.id, it.answer);
+    }
+  }
+
+  if (opts.json) {
+    for (const it of pending) {
+      const r = it.row;
+      console.log(JSON.stringify({
+        id: r.id, link: it.link, channel: r.channel, ts: r.ts, asked_at: r.sent_at,
+        question: it.question, answer: it.answer, how: it.how, free_text: it.freeText,
+        sender: { session_id: r.session_id ?? null, cli: r.cli ?? null, agent_pid: r.agent_pid ?? null, alive: it.alive, cwd: r.cwd, git_branch: r.git_branch ?? null, host: r.host ?? null },
+        delivered_at: r.delivered_at ?? null,
+        ...(delivered.has(r.id) ? { deliver: delivered.get(r.id) } : {}),
+        collect: askResumeCommand(it.link, !!r.as_bot),
+      }));
+    }
+  } else {
+    for (const [key, items] of groups) {
+      const r = items[0]!.row;
+      const pid = r.agent_pid ?? r.pid;
+      console.log(
+        `${key}  ${r.cli ?? "?"}  pid ${pid} ${items[0]!.alive ? "(alive)" : "(gone)"}` +
+        `${r.git_branch ? `  branch=${stripTerminalControls(r.git_branch)}` : ""}  cwd=${stripTerminalControls(r.cwd)}`,
+      );
+      for (const it of items) {
+        console.log(`  ${it.link}  (${formatYmdHm(it.row.sent_at / 1000)})`);
+        console.log(`    Q: ${stripTerminalControls(askFlatten(it.question))}`);
+        console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${it.how}${it.freeText ? " — 決定ではありません" : ""}`);
+        const d = delivered.get(it.row.id);
+        if (d) console.log(`    deliver: ${d === "ok" ? "ay send で届けました" : stripTerminalControls(d)}`);
+        else if (it.row.delivered_at && it.row.delivered_answer === it.answer) console.log(`    deliver: 届け済み (${formatYmdHm(it.row.delivered_at / 1000)})`);
+        console.log(`    collect: ${askResumeCommand(it.link, !!it.row.as_bot)}`);
+      }
+    }
+  }
+  for (const p of problems) console.error(`  (${stripTerminalControls(p)})`);
+  for (const [team, n] of otherTeams) {
+    console.error(`  (${n} 件は別のワークスペース「${stripTerminalControls(team)}」の質問です — slack -w <name> ask --pending で確認)`);
+  }
+  console.error(
+    `${pending.length} 件が回答済み・未回収, ${unanswered} 件が未回答` +
+    (collectedElsewhere ? `, ${collectedElsewhere} 件は別の場所で回収済み (ログを更新)` : "") +
+    ` — ${rows.length} 件の未回収の質問を確認 (log: ${sentDbPath()})`,
+  );
+}
+
+/** Relay an answer to the live agent that asked, via `ay send`. Opt-in
+ *  (`--deliver`) because it writes into another agent's input. `--force` is
+ *  passed because `ay` otherwise asks the caller to confirm the pid is the
+ *  right agent — `senderAlive` has just done that (pid alive, started before
+ *  the ask, process name matches the recorded CLI). Returns "ok" or why not. */
+function askDeliver(pid: number, it: AskPendingItem): string {
+  const msg =
+    `[slack ask] ${it.freeText ? "自由記述の返信 (決定ではありません)" : "回答がありました"}: ${askFlatten(it.question)}\n` +
+    `→ ${it.answer}\n` +
+    `回収して ✅ を付ける: ${askResumeCommand(it.link, !!it.row.as_bot)}`;
+  try {
+    const r = spawnSync("ay", ["send", "--force", String(pid), msg], { encoding: "utf8", timeout: 30_000 });
+    if (r.error) return `ay を実行できません: ${r.error.message}`;
+    if (r.status !== 0) return `ay send が失敗 (exit ${r.status}): ${(r.stderr || r.stdout || "").trim().split("\n")[0] ?? ""}`;
+    return "ok";
+  } catch (e: unknown) {
+    return `ay を実行できません: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+type AskLoaded =
+  | { kind: "missing" }
+  | { kind: "other"; text: string }
+  | { kind: "resolved"; question: string; answer: string }
+  | { kind: "unaddressed" }
+  | { kind: "open"; ctx: AskWaitCtx };
+
+/** Read a posted question back and rebuild everything the poller needs from
+ *  the message alone. Shared by `--waitFor` (which then waits) and `--pending`
+ *  (which looks once, read-only). */
+async function askLoad(
+  token: string,
+  loc: { channelId: string; ts: string; threadTs?: string | undefined },
+  opts: { timeout: number; shown: string; asBot: boolean; cookie?: string | undefined },
+): Promise<AskLoaded> {
+  const { channelId, ts, threadTs } = loc;
+  // Fetch the one message. A question posted into a thread is not in history at
+  // all, so where the permalink says it is a reply, read it from the thread.
+  let msg: Record<string, Json> | undefined;
+  if (threadTs) {
+    const rep = asRecord((await replies(token, channelId, threadTs, 100, opts.cookie)) as Json);
+    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
+  } else {
+    const hist = asRecord((await history(token, channelId, 1, ts, undefined, opts.cookie, true)) as Json);
+    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
+  }
+  if (!msg) return { kind: "missing" };
+
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const parsed = askParseMessage(text);
+  if (parsed.kind === "other") return { kind: "other", text };
+  if (parsed.kind === "resolved") return { kind: "resolved", question: parsed.question, answer: parsed.answer };
 
   // Who may answer, recovered from the tags the readers can see. They are
   // already `<@U…>`-encoded in the stored text, so no directory lookup is
@@ -2436,17 +2689,11 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   }
   if (!audience.size && !broadcast) {
     // A 1:1 DM needs no tag — the other party is the only person it could be.
-    const counterpart = await imCounterpart(token, channelId, args.cookie);
+    const counterpart = await imCounterpart(token, channelId, opts.cookie);
     if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
   }
-  if (!audience.size && !broadcast) {
-    console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
-    process.exit(ASK_EXIT_ERROR);
-  }
+  if (!audience.size && !broadcast) return { kind: "unaddressed" };
 
-  if (args.timeout > 0) {
-    console.error(`  回答を待っています (最大 ${args.timeout}s)… Ctrl-C で中断`);
-  }
   const ctx: AskWaitCtx = {
     channelId,
     ts,
@@ -2458,13 +2705,13 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     broadcast,
     askerUserId,
     askerBotId,
-    timeout: args.timeout,
-    shown: args.link,
-    asBot: args.asBot,
+    timeout: opts.timeout,
+    shown: opts.shown,
+    asBot: opts.asBot,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
-  if (args.cookie) ctx.cookie = args.cookie;
-  await askWaitForAnswer(token, ctx);
+  if (opts.cookie) ctx.cookie = opts.cookie;
+  return { kind: "open", ctx };
 }
 
 // --- poll ---
@@ -2606,7 +2853,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
 
   // `plain`: no blocks, or Slack rewrites the stored text and the ballot
   // stops parsing on the way back.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("poll");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // Marker first, for the same reason as `ask`: it is what makes
   // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
@@ -2634,6 +2882,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Posted: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   console.log(pollResultsCommand(shown));
   console.error(`  締め切る:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
 }
@@ -3284,7 +3533,8 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent") return;
+      // `sent` reads only the local log — no token, no network.
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -3715,10 +3965,37 @@ async function main(): Promise<void> {
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = somebody replied but picked none of the choices (stdout empty — do not act on it)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
+        .option("pending", { type: "boolean", default: false, describe: "List questions THIS machine asked that were answered but never collected, grouped by the asking session, with whether that agent is still alive. Read-only." })
+        .option("since", { type: "string", default: "7d", describe: "With --pending: how far back to look (30m, 2h, 7d, or an ISO date)" })
+        .option("json", { type: "boolean", default: false, describe: "With --pending: one JSON object per answered question" })
+        .option("deliver", { type: "boolean", default: false, describe: "With --pending: relay each answer to its asking agent via `ay send`, if that agent is still alive. Opt-in; each answer is delivered once." })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Ask via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient" }),
       async (argv) => {
+        if (argv.pending) {
+          if (argv.target || argv.question || argv.waitFor) {
+            console.error("Error: --pending reads the local log — do not also pass a target/question or --waitFor.");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          const sinceMs = parseSince(String(argv.since));
+          if (sinceMs === undefined) {
+            console.error(`Error: --since needs 30m / 2h / 7d / 1w or an ISO date (got ${stripTerminalControls(String(argv.since))})`);
+            process.exit(ASK_EXIT_ERROR);
+          }
+          try {
+            await cmdAskPending(tok(argv as W), ck(argv as W), resolveBotToken() || undefined,
+              { sinceMs, json: !!argv.json, deliver: !!argv.deliver });
+          } catch (e: unknown) {
+            console.error(friendlySlackError(e));
+            process.exit(ASK_EXIT_ERROR);
+          }
+          return;
+        }
+        if (argv.deliver) {
+          console.error("Error: --deliver only works with --pending.");
+          process.exit(ASK_EXIT_ERROR);
+        }
         const waitFor = argv.waitFor ? String(argv.waitFor) : "";
         const timeout = Number(argv.timeout);
         // 0 is a real value only for --waitFor ("look once"). For --wait it would
@@ -3949,6 +4226,56 @@ async function main(): Promise<void> {
           console.error(friendlySlackError(e));
           process.exit(POLL_EXIT_ERROR);
         }
+      },
+    )
+    .command(
+      "sent [query]",
+      "Search what THIS machine posted/edited (send, ask, poll, edit) and who sent it — read-only, local log",
+      (y) => y
+        .positional("query", { type: "string", describe: "Substring of the message text (case-insensitive)" })
+        .option("channel", { type: "string", describe: "Channel/DM id (C…/D…) or the target as typed (#eng, @bob)" })
+        .option("since", { type: "string", describe: "Only newer than this: 30m, 2h, 7d, 1w, or an ISO date" })
+        .option("session", { type: "string", describe: "Agent session id (prefix match)" })
+        .option("cwd", { type: "string", describe: "Working directory the sender ran in (prefix match)" })
+        .option("kind", { type: "string", choices: ["send", "ask", "poll", "edit"], describe: "Only this kind of write" })
+        .option("json", { type: "boolean", default: false, describe: "One JSON object per line (every recorded field)" })
+        .option("count", { alias: "n", type: "number", default: 50, describe: "Max rows (newest first)" }),
+      (argv) => {
+        let sinceMs: number | undefined;
+        if (argv.since !== undefined) {
+          sinceMs = parseSince(String(argv.since));
+          if (sinceMs === undefined) {
+            console.error(`Error: --since needs 30m / 2h / 7d / 1w or an ISO date (got ${stripTerminalControls(String(argv.since))})`);
+            process.exit(1);
+          }
+        }
+        const q: Parameters<typeof querySent>[0] = { limit: Number(argv.count) || 50 };
+        if (argv.query) q.text = String(argv.query);
+        if (argv.channel) q.channel = String(argv.channel);
+        if (sinceMs !== undefined) q.sinceMs = sinceMs;
+        if (argv.session) q.session = String(argv.session);
+        if (argv.cwd) {
+          // Resolved like the recorded cwd was (process.cwd() is a realpath), so
+          // `--cwd .` works and a symlinked path (macOS /var → /private/var)
+          // still matches. A path that no longer exists is used as typed.
+          const raw = resolve(String(argv.cwd));
+          try { q.cwd = realpathSync(raw); } catch { q.cwd = raw; }
+        }
+        if (argv.kind) q.kind = argv.kind as SentKind;
+        const rows = querySent(q);
+        if (!rows) {
+          console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
+          process.exit(1);
+        }
+        if (argv.json) {
+          for (const r of rows) console.log(JSON.stringify(r));
+          return;
+        }
+        if (!rows.length) {
+          console.error(`No sent messages match (log: ${sentDbPath()}).`);
+          return;
+        }
+        for (const r of rows) console.log(formatSentRow(r));
       },
     )
     .command(
