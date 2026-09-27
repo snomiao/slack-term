@@ -709,7 +709,12 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
   // 「没懂，能给我讲前因后果吗」— a question BACK — and this exited 0 with that
   // stored as the decision. A lane harvesting rc=0 unparks the work and proceeds
   // with nothing behind it, and the recorded answer reads as though he chose.
-  test("a reply that picks none of the choices is NOT an answer", async () => {
+  //
+  // 2026-09-27: exiting 4 with stdout EMPTY had the opposite failure — the
+  // instruction the human typed never reached the agent, which kept waiting.
+  // So the reply is now DELIVERED, under its own exit code (5): still never 0,
+  // so nothing mistakes it for a decision, but the text is on stdout.
+  test("a reply that picks none of the choices is delivered as free text (exit 5), not as a decision", async () => {
     const inline: InlineFixtures = {
       ...AUTH,
       [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
@@ -721,16 +726,105 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     };
     const m = await startMock({ inline });
     try {
-      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
-      // NOT 0 (a decision nobody took) and NOT 2 (nobody replied) — the third state.
-      expect(r.exitCode).toBe(4);
-      // stdout stays empty: the caller must not be handed something to act on.
-      expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("選択肢のどれも選ばれていません");
-      // The reply itself has to reach the operator — it is usually a question back.
-      expect(r.stderr).toContain("没懂");
-      // And the question is left standing, not stamped answered.
+      // A long timeout: the reply must end the wait at once, not at the deadline.
+      const started = Date.now();
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "3600"], m.baseUrl);
+      expect(Date.now() - started).toBeLessThan(30_000);
+      // NOT 0 (a decision nobody took) and NOT 2 (nobody replied).
+      expect(r.exitCode).toBe(5);
+      // The reply itself IS the output — it is usually an instruction or a question back.
+      expect(r.stdout.trim()).toBe("没懂，能给我讲前因后果吗 用中文");
+      expect(r.stderr).toContain("選択肢外");
+      // Resuming past it is spelled out, so re-waiting does not re-deliver it.
+      expect(r.stderr).toContain("--after=1700000100.000200");
+      // And the question is left standing: a pill pressed later still decides it.
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--after skips a free-text reply that was already delivered", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "背景を教えて" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--after=1700000100.000200", "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // cross-vendor review 2026-09-27: an earlier AMBIGUOUS reply used to hide a
+  // later free-text one, sending it down the exit-4 path with stdout empty.
+  test("a free-text reply after an ambiguous one is still delivered (exit 5)", async () => {
+    const dup = askBuildText(`<@${BOB}> どっち?`, "", ["A", "A"], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: dup },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "A" },
+        { type: "message", user: BOB, ts: "1700000200.000300", text: "説明してください" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(5);
+      expect(r.stdout.trim()).toBe("説明してください");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a resumed --after wait keeps --after in the next resume hint", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "背景を教えて" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--after=1700000100.000200", "--timeout", "1"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      // Following the hint must not re-deliver the reply already acted on.
+      expect(r.stderr).toContain(`--waitFor='${DM}:${QTS}' --after=1700000100.000200`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a reply matching SEVERAL choices is still refused (exit 4, stdout empty)", async () => {
+    const dup = askBuildText(`<@${BOB}> どっち?`, "", ["A", "A"], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [
+        { type: "message", user: SELF, ts: QTS, text: dup },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "A" },
+      ]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(4);
+      expect(r.stdout.trim()).toBe("");
     } finally {
       await m.stop();
     }

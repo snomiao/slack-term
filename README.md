@@ -126,7 +126,9 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
-# exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure.
+# exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
+# 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
+# the reply text is on stdout, it is not a decision, and the question stays open.
 #
 # The question must say WHO may answer — only their reaction/reply is taken as the
 # answer, so a bystander can't decide it for them. `ask` refuses to post otherwise.
@@ -144,8 +146,9 @@ RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待っ�
 #   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'
 # Run it whenever you like: it re-reads the question from Slack, so nothing is
 # stored locally and any machine holding the link can collect. Same stdout/exit
-# contract as --wait, plus --timeout 0 = check once (exit 2 while still open, 4 if
-# somebody replied without choosing any of the offered options),
+# contract as --wait, plus --timeout 0 = check once (exit 2 while still open, 5 with
+# the reply on stdout if somebody wrote free text instead of choosing; re-wait past
+# it with --after=<reply ts>),
 # which is what a periodic monitor should use instead of parking on --wait.
 eval "$RESUME --timeout 0" && echo answered
 # A pressed pill is invisible to `slack tail` (it only sees `type: "message"`
