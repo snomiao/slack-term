@@ -2,11 +2,11 @@
 // Reads raw .ldb/.log files with regex — works even while Slack is running (no exclusive lock).
 // Also extracts the xoxd session cookie from the Slack Cookies SQLite database (macOS only).
 
-import { readdirSync, readFileSync, existsSync, copyFileSync, unlinkSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, copyFileSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { pbkdf2Sync, createDecipheriv } from "node:crypto";
-import { execSync } from "node:child_process";
+import { pbkdf2Sync, createDecipheriv, createHash, timingSafeEqual } from "node:crypto";
+import { execSync, execFileSync } from "node:child_process";
 
 export type SlackAppSession = {
   token: string;   // xoxc-...
@@ -16,23 +16,27 @@ export type SlackAppSession = {
   url?: string;
 };
 
-function leveldbPath(): string {
-  const home = homedir();
+function leveldbPaths(): string[] {
+  const home = process.env.HOME ?? homedir();
   if (process.platform === "darwin") {
-    return join(home, "Library", "Application Support", "Slack", "Local Storage", "leveldb");
+    return [join(home, "Library", "Application Support", "Slack", "Local Storage", "leveldb")];
   }
   if (process.platform === "linux") {
-    return join(home, ".config", "Slack", "Local Storage", "leveldb");
+    return [
+      join(home, ".config", "Slack", "Local Storage", "leveldb"),
+      join(home, "snap", "slack", "current", ".config", "Slack", "Local Storage", "leveldb"),
+      join(home, ".var", "app", "com.slack.Slack", "config", "Slack", "Local Storage", "leveldb"),
+    ];
   }
   if (process.platform === "win32") {
     const appData = process.env.APPDATA ?? join(home, "AppData", "Roaming");
-    return join(appData, "Slack", "Local Storage", "leveldb");
+    return [join(appData, "Slack", "Local Storage", "leveldb")];
   }
   throw new Error(`Unsupported platform: ${process.platform}`);
 }
 
 function cookiesDbPath(): string {
-  const home = homedir();
+  const home = process.env.HOME ?? homedir();
   if (process.platform === "darwin") {
     return join(home, "Library", "Application Support", "Slack", "Cookies");
   }
@@ -99,11 +103,11 @@ export function extractXoxd(): string | undefined {
 //     Scan for "token":"xoxc-..." to get complete, clean tokens + workspace URL.
 //  2. .ldb files (sorted tables): values are length-prefixed with binary framing
 //     bytes that can split the token mid-segment. Use gap-bridging as fallback.
-export async function extractSessions(): Promise<SlackAppSession[]> {
-  const dbPath = leveldbPath();
-  if (!existsSync(dbPath)) {
+export async function extractSessions(leveldbOverride?: string): Promise<SlackAppSession[]> {
+  const dbPath = leveldbOverride ?? leveldbPaths().find(existsSync);
+  if (!dbPath) {
     throw new Error(
-      `Slack desktop app LevelDB not found at:\n  ${dbPath}\nIs Slack installed and opened at least once?`,
+      `Slack desktop app LevelDB not found at:\n  ${leveldbPaths().join("\n  ")}\nIs Slack installed and opened at least once?`,
     );
   }
 
@@ -234,7 +238,7 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
   }
 
   // Attach xoxd cookie to all sessions (shared — one Slack desktop app, one cookie jar)
-  const xoxd = extractXoxd();
+  const xoxd = leveldbOverride ? undefined : extractXoxd();
   const result = [...sessions.values()];
   if (xoxd) {
     for (const s of result) s.cookie = xoxd;
@@ -243,26 +247,34 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
 }
 
 /**
- * Try both AES-128-CBC variants used across Chromium versions to decrypt a v10 cookie.
+ * Try both AES-128-CBC layouts for a versioned Chromium cookie.
  * Returns the decrypted string if it starts with "xoxd-", otherwise undefined.
  *
  * Variant A (older Chrome):      IV = 16 spaces, ciphertext = enc[3:]
  * Variant B (newer Chrome 127+): IV = enc[19:35], ciphertext = enc[35:]
  */
-function decryptV10Cookie(enc: Buffer, aesKey: Buffer): string | undefined {
+function decryptV10Cookie(enc: Buffer, aesKey: Buffer, hostKey: string, allowEmbedded = false): string | undefined {
   const tryDecrypt = (iv: Buffer, ciphertext: Buffer): string | undefined => {
     try {
       const decipher = createDecipheriv("aes-128-cbc", aesKey, iv);
       decipher.setAutoPadding(true);
-      const result = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
-      return result.startsWith("xoxd-") ? result : undefined;
+      const result = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+      if (result.subarray(0, 5).toString() === "xoxd-") return result.toString("utf8");
+      if (result.length >= 37) {
+        const hostHash = createHash("sha256").update(hostKey).digest();
+        if (timingSafeEqual(result.subarray(0, 32), hostHash)) {
+          const value = result.subarray(32).toString("utf8");
+          if (value.startsWith("xoxd-")) return value;
+        }
+      }
+      return undefined;
     } catch {
       return undefined;
     }
   };
 
   return tryDecrypt(Buffer.alloc(16, 32), enc.slice(3))
-    ?? (enc.length >= 35 ? tryDecrypt(enc.slice(19, 35), enc.slice(35)) : undefined);
+    ?? (allowEmbedded && enc.length >= 35 ? tryDecrypt(enc.slice(19, 35), enc.slice(35)) : undefined);
 }
 
 export type ChromeCookieCandidate = {
@@ -309,80 +321,142 @@ function chromeProfileName(userDataDir: string, profileDir: string): string {
   }
 }
 
-/**
- * Discover all Chrome browser profiles that have a Slack xoxd cookie (macOS only).
- *
- * Requires the Chrome Safe Storage key from the system keychain. When called from an
- * interactive terminal, macOS will show a dialog asking for the login password.
- * Throws on v20 (app-bound encryption). Returns [] if keychain is inaccessible.
- */
+/** Discover Slack cookies in Chrome profiles on macOS and Linux. */
 export type ChromeDiscoveryResult = {
   candidates: ChromeCookieCandidate[];
-  totalProfiles: number; // how many Chrome profile dirs were scanned
+  totalProfiles: number;
 };
 
-export function discoverChromeCookies(): ChromeDiscoveryResult {
-  if (process.platform !== "darwin") return { candidates: [], totalProfiles: 0 };
+function chromeUserDataDir(): string {
+  const home = process.env.HOME ?? homedir();
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Google", "Chrome");
+  if (process.platform === "linux") return join(process.env.XDG_CONFIG_HOME ?? join(home, ".config"), "google-chrome");
+  return "";
+}
 
-  const userDataDir = join(homedir(), "Library", "Application Support", "Google", "Chrome");
-  if (!existsSync(userDataDir)) return { candidates: [], totalProfiles: 0 };
-
-  let keychainPw: string;
+function linuxChromePassword(): string | undefined {
   try {
-    keychainPw = execSync(
-      `security find-generic-password -a Chrome -s "Chrome Safe Storage" -w`,
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
-    ).trimEnd();
+    const password = execFileSync("secret-tool", ["lookup", "application", "chrome"], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    }).trimEnd();
+    return password || undefined;
   } catch {
+    return undefined;
+  }
+}
+
+export function discoverChromeCookies(): ChromeDiscoveryResult {
+  if (process.platform !== "darwin" && process.platform !== "linux") {
     return { candidates: [], totalProfiles: 0 };
   }
-  if (!keychainPw) return { candidates: [], totalProfiles: 0 };
+  const userDataDir = chromeUserDataDir();
+  if (!existsSync(userDataDir)) return { candidates: [], totalProfiles: 0 };
 
-  const aesKey = pbkdf2Sync(keychainPw, "saltysalt", 1003, 16, "sha1");
+  let macKey: Buffer | undefined;
+  if (process.platform === "darwin") {
+    let keychainPw: string;
+    try {
+      keychainPw = execSync(
+        `security find-generic-password -a Chrome -s "Chrome Safe Storage" -w`,
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trimEnd();
+    } catch {
+      return { candidates: [], totalProfiles: 0 };
+    }
+    if (!keychainPw) return { candidates: [], totalProfiles: 0 };
+    macKey = pbkdf2Sync(keychainPw, "saltysalt", 1003, 16, "sha1");
+  }
 
   const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
   const candidates: ChromeCookieCandidate[] = [];
+  let linuxV11Key: Buffer | undefined;
+  let missingLinuxKey = false;
 
   for (const profileDir of profileDirs) {
-    const dbPath = join(userDataDir, profileDir, "Cookies");
-    if (!existsSync(dbPath)) continue;
+    const dbPath = [join(userDataDir, profileDir, "Network", "Cookies"), join(userDataDir, profileDir, "Cookies")]
+      .find(existsSync);
+    if (!dbPath) continue;
 
-    const tmp = join(tmpdir(), `slack-chrome-cookies-${Date.now()}-${profileDir}.db`);
+    const tmpDir = mkdtempSync(join(tmpdir(), "slack-chrome-cookies-"));
+    const tmp = join(tmpDir, "Cookies");
     try {
       copyFileSync(dbPath, tmp);
+      if (existsSync(`${dbPath}-wal`)) copyFileSync(`${dbPath}-wal`, `${tmp}-wal`);
       const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
       const db = new Database(tmp, { readonly: true });
-      const row = db
-        .prepare("SELECT encrypted_value FROM cookies WHERE name='d' AND host_key LIKE '%slack%'")
-        .get() as { encrypted_value: Uint8Array } | null;
-      db.close();
-      if (!row) continue;
-
-      const enc = Buffer.from(row.encrypted_value);
-      const prefix = enc.slice(0, 3).toString();
-      if (prefix === "v10") {
-        // Try both AES-128-CBC variants used by different Chromium versions:
-        //   1. Standard (older Chrome):  IV = 16 spaces, ciphertext = enc[3:]
-        //   2. Embedded (newer Chrome/Electron): IV = enc[19:35], ciphertext = enc[35:]
-        const cookie = decryptV10Cookie(enc, aesKey);
-        if (!cookie) continue; // neither format produced a valid xoxd- value
-        candidates.push({ profileDir, profileName: chromeProfileName(userDataDir, profileDir), cookie });
-      } else if (prefix === "v20") {
-        throw new Error(
-          `Chrome cookie uses v20 (app-bound AES-256-GCM) which is not supported yet. ` +
-          `Prefix found: ${enc.slice(0, 4).toString("hex")}`,
-        );
-      } else {
-        throw new Error(`Unknown cookie encryption prefix: ${enc.slice(0, 4).toString("hex")}`);
+      let row: { encrypted_value: Uint8Array; value: string; host_key: string } | null;
+      try {
+        row = db.prepare(
+          "SELECT encrypted_value, value, host_key FROM cookies WHERE name='d' AND (host_key='slack.com' OR host_key LIKE '%.slack.com') LIMIT 1",
+        ).get() as typeof row;
+      } finally {
+        db.close();
       }
+      if (!row) continue;
+      const enc = Buffer.from(row.encrypted_value);
+      const prefix = enc.subarray(0, 3).toString();
+      let cookie: string | undefined;
+      if (prefix === "v20") {
+        throw new Error("Chrome cookie uses unsupported v20 app-bound encryption.");
+      }
+      if (process.platform === "linux") {
+        if (!enc.length && row.value?.startsWith("xoxd-")) cookie = row.value;
+        else if (prefix === "v10") {
+          cookie = decryptV10Cookie(enc, pbkdf2Sync("peanuts", "saltysalt", 1, 16, "sha1"), row.host_key);
+        } else if (prefix === "v11") {
+          if (!linuxV11Key) {
+            const password = linuxChromePassword();
+            if (password) linuxV11Key = pbkdf2Sync(password, "saltysalt", 1, 16, "sha1");
+          }
+          if (linuxV11Key) cookie = decryptV10Cookie(enc, linuxV11Key, row.host_key);
+          else missingLinuxKey = true;
+        }
+      } else if (prefix === "v10" && macKey) {
+        cookie = decryptV10Cookie(enc, macKey, row.host_key, true);
+      } else if (prefix !== "v10") {
+        throw new Error("Unknown cookie encryption prefix.");
+      }
+      if (cookie) candidates.push({ profileDir, profileName: chromeProfileName(userDataDir, profileDir), cookie });
     } catch (e: unknown) {
-      if (e instanceof Error && (e.message.includes("app-bound") || e.message.includes("Unknown cookie"))) throw e;
-      // Otherwise skip this profile
+      if (e instanceof Error && (e.message.includes("unsupported v20") || e.message.includes("Unknown cookie"))) throw e;
+      // Skip unreadable profiles without exposing cookie or key material.
     } finally {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
+      rmSync(tmpDir, { recursive: true, force: true });
     }
   }
+  if (missingLinuxKey && candidates.length === 0) {
+    throw new Error("Chrome v11 cookie key is unavailable. Install secret-tool and unlock the GNOME keyring, or use slack auth firefox.");
+  }
   return { candidates, totalProfiles: profileDirs.length };
+}
+
+/** Read xoxc tokens from Chrome's Slack local storage and pair cookies from the same profile. */
+export async function extractChromeSessions(): Promise<SlackAppSession[]> {
+  if (process.platform !== "linux") throw new Error("Chrome session import is currently supported on Linux only.");
+  const userDataDir = chromeUserDataDir();
+  if (!existsSync(userDataDir)) throw new Error("Chrome profile directory was not found.");
+  const cookies = new Map(discoverChromeCookies().candidates.map((c) => [c.profileDir, c.cookie]));
+  const sessions = new Map<string, SlackAppSession>();
+  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
+  for (const profileDir of profileDirs) {
+    const leveldb = join(userDataDir, profileDir, "Local Storage", "leveldb");
+    if (!existsSync(leveldb)) continue;
+    let found: SlackAppSession[];
+    try {
+      found = await extractSessions(leveldb);
+    } catch {
+      continue;
+    }
+    for (const session of found) {
+      if (sessions.has(session.teamId)) {
+        throw new Error("More than one Chrome profile has a token for the same workspace. Select one browser profile first.");
+      }
+      const cookie = cookies.get(profileDir);
+      if (cookie) session.cookie = cookie;
+      sessions.set(session.teamId, session);
+    }
+  }
+  return [...sessions.values()];
 }
 
 export type FirefoxCookieCandidate = {
@@ -391,19 +465,24 @@ export type FirefoxCookieCandidate = {
   cookie: string;      // plaintext xoxd-... (Firefox stores cookies unencrypted)
 };
 
-function firefoxProfilesDir(): string {
-  const home = homedir();
-  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Firefox", "Profiles");
-  if (process.platform === "linux") return join(home, ".mozilla", "firefox");
+function firefoxProfilesDirs(): string[] {
+  const home = process.env.HOME ?? homedir();
+  if (process.platform === "darwin") return [join(home, "Library", "Application Support", "Firefox", "Profiles")];
+  if (process.platform === "linux") return [
+    join(home, ".mozilla", "firefox"),
+    join(home, "snap", "firefox", "common", ".mozilla", "firefox"),
+    join(home, ".var", "app", "org.mozilla.firefox", ".mozilla", "firefox"),
+  ];
   if (process.platform === "win32") {
-    return join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles");
+    return [join(process.env.APPDATA ?? join(home, "AppData", "Roaming"), "Mozilla", "Firefox", "Profiles")];
   }
-  return "";
+  return [];
 }
 
 /** Read Firefox profiles.ini to map profile dir names to display names. */
 function firefoxProfileNames(profilesDir: string): Record<string, string> {
-  const iniPath = join(dirname(profilesDir), "profiles.ini");
+  const localIni = join(profilesDir, "profiles.ini");
+  const iniPath = existsSync(localIni) ? localIni : join(dirname(profilesDir), "profiles.ini");
   const map: Record<string, string> = {};
   if (!existsSync(iniPath)) return map;
   try {
@@ -431,39 +510,38 @@ function firefoxProfileNames(profilesDir: string): Record<string, string> {
  * Returns [] if Firefox is not installed or has no Slack session.
  */
 export function discoverFirefoxCookies(): FirefoxCookieCandidate[] {
-  const profilesDir = firefoxProfilesDir();
-  if (!profilesDir || !existsSync(profilesDir)) return [];
-
-  const nameMap = firefoxProfileNames(profilesDir);
   const candidates: FirefoxCookieCandidate[] = [];
-
-  let profileDirs: string[];
-  try {
-    profileDirs = readdirSync(profilesDir);
-  } catch {
-    return [];
-  }
-
-  for (const profileDir of profileDirs) {
-    const dbPath = join(profilesDir, profileDir, "cookies.sqlite");
-    if (!existsSync(dbPath)) continue;
-
-    const tmp = join(tmpdir(), `slack-firefox-cookies-${Date.now()}-${profileDir}.db`);
+  for (const profilesDir of firefoxProfilesDirs().filter(existsSync)) {
+    const nameMap = firefoxProfileNames(profilesDir);
+    let profileDirs: string[];
     try {
-      copyFileSync(dbPath, tmp);
-      const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
-      const db = new Database(tmp, { readonly: true });
-      const row = db
-        .prepare("SELECT value FROM moz_cookies WHERE name='d' AND host LIKE '%slack%' LIMIT 1")
-        .get() as { value: string } | null;
-      db.close();
-      if (!row?.value || !row.value.startsWith("xoxd-")) continue;
-      const profileName = nameMap[profileDir] ?? profileDir;
-      candidates.push({ profileDir, profileName, cookie: row.value });
+      profileDirs = readdirSync(profilesDir);
     } catch {
-      // skip this profile
-    } finally {
-      try { unlinkSync(tmp); } catch { /* ignore */ }
+      continue;
+    }
+
+    for (const profileDir of profileDirs) {
+      const dbPath = join(profilesDir, profileDir, "cookies.sqlite");
+      if (!existsSync(dbPath)) continue;
+
+      const tmpDir = mkdtempSync(join(tmpdir(), "slack-firefox-cookies-"));
+      const tmp = join(tmpDir, "cookies.sqlite");
+      try {
+        copyFileSync(dbPath, tmp);
+        const { default: Database } = require("bun:sqlite") as typeof import("bun:sqlite");
+        const db = new Database(tmp, { readonly: true });
+        const row = db
+          .prepare("SELECT value FROM moz_cookies WHERE name='d' AND (host='slack.com' OR host LIKE '%.slack.com') LIMIT 1")
+          .get() as { value: string } | null;
+        db.close();
+        if (!row?.value || !row.value.startsWith("xoxd-")) continue;
+        const profileName = nameMap[profileDir] ?? profileDir;
+        candidates.push({ profileDir, profileName, cookie: row.value });
+      } catch {
+        // skip this profile
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     }
   }
   return candidates;
