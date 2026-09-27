@@ -685,6 +685,26 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     }
   });
 
+  test("a collected question can be re-read: the answer comes back from Slack's &gt;-escaped body", async () => {
+    // What `chat.update` stores and `conversations.history` returns: the quote
+    // marker arrives as `&gt; `. Re-reading a collected ask used to exit 3.
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "B & C", how: "リアクション 2️⃣", who: BOB }, "Bob")
+      .replace(/^> (.*)$/gm, (_l, a: string) => `&gt; ${a.replace(/&/g, "&amp;")}`);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      ...waitForFixture(DM, [{ type: "message", user: SELF, ts: QTS, text: resolved }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.stderr).not.toContain("引用された回答本文が見つかりません");
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B & C");
+    } finally {
+      await m.stop();
+    }
+  });
+
   // THE LIVE CASE, 2026-09-04. Three options were offered; the answerer replied
   // 「没懂，能给我讲前因后果吗」— a question BACK — and this exited 0 with that
   // stored as the decision. A lane harvesting rc=0 unparks the work and proceeds

@@ -179,6 +179,12 @@ export function askBuildResolvedText(question: string, found: AskFound, who: str
   return `${ASK_RESOLVED_PREFIX}*${question}*\n_${found.how}で回答済み${who ? ` (${who})` : ""}_\n\n${quoted}`;
 }
 
+/** Undo Slack's storage escaping. Only these three are ever escaped, and `&amp;`
+ *  goes LAST so an answer that literally contains `&lt;` is not decoded twice. */
+function askDecodeEntities(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 export type AskParsed =
   | { kind: "open"; question: string; reactable: string[]; overflow: string[]; threadOnly: boolean }
   | { kind: "resolved"; question: string; answer: string }
@@ -222,10 +228,15 @@ export function askParseMessage(text: string): AskParsed {
   // would re-poll a question that already has its answer.
   if (text.startsWith(ASK_RESOLVED_PREFIX)) {
     const head = lines[0]!.slice(ASK_RESOLVED_PREFIX.length);
-    const question = head.replace(/^\*/, "").replace(/\*$/, "");
+    const question = askDecodeEntities(head.replace(/^\*/, "").replace(/\*$/, ""));
+    // `&gt; `, not only `> `: Slack HTML-escapes `&`, `<` and `>` in the text it
+    // hands back, so the quote we wrote as `> ` is STORED as `&gt; `. Matching
+    // only the raw form made every collected question unreadable — re-running
+    // `--waitFor` on one exited 3 (measured 2026-09-27: 40 of 71 asks).
     const answer = lines
-      .filter((l) => l.startsWith("> "))
-      .map((l) => l.slice(2))
+      .map((l) => (l.startsWith("> ") ? l.slice(2) : l.startsWith("&gt; ") ? l.slice(5) : null))
+      .filter((l): l is string => l !== null)
+      .map(askDecodeEntities)
       .join("\n");
     // A ✅-stamped body with no quoted answer is not a settled question we can
     // report; treat it as unknown rather than answer with an empty string.
