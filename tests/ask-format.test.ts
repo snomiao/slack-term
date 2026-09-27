@@ -57,6 +57,32 @@ describe("ask resolved body round-trips", () => {
   });
 });
 
+describe("ask resolved body as Slack STORES it", () => {
+  // Slack HTML-escapes `&`, `<` and `>` in the text it hands back, so the
+  // quote marker `> ` we wrote comes back as `&gt; `. Every collected question
+  // read back as "✅ but no quoted answer" (exit 3) — measured 2026-09-27: 40
+  // of 71 asks in 8 days could not be re-read once collected.
+  const stored = (s: string) =>
+    s.split("\n").map((l) => l.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")).join("\n");
+
+  test("the &gt;-escaped quote is read as the answer", () => {
+    const text = stored(askBuildResolvedText("q", { answer: "新建生产副本（推荐）", how: "リアクション :one:" }, "Bob"));
+    expect(text).toContain("&gt; 新建生产副本");
+    expect(askParseMessage(text)).toEqual({ kind: "resolved", question: "q", answer: "新建生产副本（推荐）" });
+  });
+
+  test("entities inside the answer are decoded back to what was chosen", () => {
+    const answer = "A & B <x>\n2 行目";
+    const text = stored(askBuildResolvedText("q", { answer, how: "返信", who: "U1" }, ""));
+    expect(askParseMessage(text)).toEqual({ kind: "resolved", question: "q", answer });
+  });
+
+  test("a mention in the question survives (Slack leaves <@U…> markup unescaped)", () => {
+    const text = askBuildResolvedText("<@U00000BOB> どっち?", { answer: "B", how: "返信" }, "").replace(/^> /gm, "&gt; ");
+    expect(askParseMessage(text)).toEqual({ kind: "resolved", question: "<@U00000BOB> どっち?", answer: "B" });
+  });
+});
+
 describe("ask rejects what it cannot read", () => {
   test("an unrelated message is not an ask", () => {
     expect(askParseMessage("*太字の普通の発言*\nよろしく").kind).toBe("other");

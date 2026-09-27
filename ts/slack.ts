@@ -47,7 +47,7 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
     if (err === "invalid_auth" && token.startsWith("xoxc-") && !cookie) {
       throw new Error(
         `Desktop app token (xoxc-) needs its session cookie to be accepted by the public Slack API.\n` +
-        `Attach it:  slack auth chrome   (macOS)   or   slack auth firefox\n` +
+        `Attach it:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS/Linux)\n` +
         `Or replace the token with an xoxp- user token:\n` +
         `  slack auth login`,
       );
@@ -104,7 +104,7 @@ async function callSession(token: string, method: string, init: RequestInit, coo
     if ((err === "invalid_auth" || err === "not_authed") && !cookie) {
       throw new Error(
         `drafts.list also requires the xoxd session cookie.\n` +
-        `Attach it with:  slack auth chrome   (macOS)   or   slack auth firefox`,
+        `Attach it with:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS/Linux)`,
       );
     }
     throw new Error(`Slack error on ${method}: ${err}`);
@@ -343,6 +343,10 @@ export async function send(
   // `:one:` — so a message whose body has to be read back verbatim (`ask`,
   // `poll`) must not carry them. Verified against a real workspace 2026-08-20.
   plain?: boolean,
+  /** Message metadata (`event_type`/`event_payload`) — invisible to readers.
+   *  Dropped and retried once if Slack rejects it: attribution is bookkeeping,
+   *  and must never be the reason a message was not sent. */
+  metadata?: MessageMetadata,
 ): Promise<string> {
   const body: Record<string, Json> = plain
     ? { channel, text }
@@ -351,8 +355,29 @@ export async function send(
   // "Also send to channel": broadcast a threaded reply back to the channel.
   // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
   if (replyBroadcast && threadTs !== undefined) body.reply_broadcast = true;
-  const resp = (await post(token, "chat.postMessage", body, cookie)) as { ts?: string };
+  const resp = (await postWithMetadata(token, "chat.postMessage", body, metadata, cookie)) as { ts?: string };
   return resp.ts ?? "";
+}
+
+export type MessageMetadata = { event_type: string; event_payload: Record<string, string | number> };
+
+/** Slack error codes that mean "the metadata itself was refused". Only these
+ *  trigger the retry without it — any other failure is the send's own and must
+ *  surface, not be retried into a duplicate post. */
+function isMetadataError(e: unknown): boolean {
+  return e instanceof Error && /: (invalid_metadata\w*|metadata_\w+)$/.test(e.message);
+}
+
+async function postWithMetadata(
+  token: string, method: string, body: Record<string, Json>, metadata: MessageMetadata | undefined, cookie?: string,
+): Promise<Json> {
+  if (!metadata) return post(token, method, body, cookie);
+  try {
+    return await post(token, method, { ...body, metadata: metadata as unknown as Json }, cookie);
+  } catch (e: unknown) {
+    if (!isMetadataError(e)) throw e;
+    return post(token, method, body, cookie);
+  }
 }
 
 export async function scheduleMessage(
@@ -417,11 +442,12 @@ export async function editMessage(
   cookie?: string,
   /** As in `send`: no blocks, so the stored text survives verbatim. */
   plain?: boolean,
+  metadata?: MessageMetadata,
 ): Promise<string> {
-  const resp = (await post(token, "chat.update", plain
+  const resp = (await postWithMetadata(token, "chat.update", plain
     ? { channel, ts, text }
     : { channel, ts, text, blocks: [{ type: "markdown", text }] },
-  cookie)) as { ts?: string };
+  metadata, cookie)) as { ts?: string };
   return resp.ts ?? ts;
 }
 

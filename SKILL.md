@@ -162,15 +162,17 @@ without losing clicks. A reaction is durable state anyone can read back later.
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
-  replied, `3` transport/config failure, `4` somebody replied but picked none of the
-  offered choices. Everything human-facing goes to stderr, so
+  replied, `3` transport/config failure, `4` a reply matched several choices (stdout
+  empty), `5` a **free-text reply** that picked none of the offered choices — the reply
+  text is on stdout. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
-- **A reply that chooses nothing is not an answer.** When choices were offered, only a
-  reaction, the choice text, or its number counts. A reply like 「意味が分かりません」 or a
-  question back exits `4` with **stdout empty** — measured 2026-09-04, a clarifying
-  question was returned as `rc=0` and stored as the decision, which is what an automated
-  caller acts on. `2` and `4` need different reactions: one waits, the other answers a
-  person who is standing there.
+- **A reply that chooses nothing is delivered, but is not a decision.** When choices were
+  offered, only a reaction, the choice text, or its number is a decision (`0`). A reply
+  like 「背景を教えて」 or 「3 でなく X にして」 exits `5` at once with the text on stdout
+  — read it and act on it; do not treat it as a chosen option (measured 2026-09-04, a
+  question back returned as `rc=0` was stored as the decision). The question stays open,
+  so a pill pressed later still decides it: re-wait past the delivered reply with
+  `slack ask --waitFor='<permalink>' --after=<reply ts>` (stderr prints this line).
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
@@ -183,6 +185,22 @@ parks the process, and a parked lane still looks *active* in `ay ls`.
 This path is not optional convenience — **a pressed pill is invisible to `slack tail`**,
 which only sees `type: "message"` events and drops `message_changed`. Without `--waitFor`
 an answer can be pressed and nobody ever hears about it.
+
+### sent — what did I post, and which session posted it
+
+Every `send`/`ask`/`poll`/`edit` is logged locally (`~/.config/slack-cli/sent.sqlite`)
+with its sender: agent pid, cwd, git branch, agent CLI and session id. The same
+attribution is attached as Slack message `metadata` (event_type `slack_term_sent`) —
+invisible in the client, readable through the API from any machine.
+
+```bash
+slack sent "deploy" --since 2h               # text substring, newest first
+slack sent --kind ask --session <id-prefix>  # this session's questions
+slack sent --cwd . --json                    # everything posted from this repo, every field
+```
+
+Read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
+metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
 
 ### todo — tasks as reactions
 
@@ -304,7 +322,7 @@ slack news --limit 1
 - **`missing_scope`** — add the scope from the error, then click **Reinstall to Workspace** (scope changes require reinstall).
 - **`token_revoked`** — app uninstalled; reinstall from the app page.
 - **Token starts with `xoxb-`** — that's a Bot Token. Add scopes under **User Token Scopes** instead, reinstall, and copy the **User OAuth Token**.
-- **`xoxc-` desktop session token** — accepted by the public Slack API (send/edit/delete/react/upload/channel create+invite included) as long as its `xoxd` session cookie is attached (`slack auth chrome`/`slack auth firefox`, or `SLACK_COOKIE=...`). Without the cookie it still fails with a clear "needs its session cookie" error.
+- **`xoxc-` desktop session token** — accepted by the public Slack API (send/edit/delete/react/upload/channel create+invite included) as long as its `xoxd` session cookie is attached (`slack auth firefox` on Ubuntu, `slack auth chrome` on macOS/Linux, or `SLACK_COOKIE=...`). Without the cookie it still fails with a clear "needs its session cookie" error.
 - **`conversations.invite` reports success but the member never shows up** — the invited user is likely a single-channel guest (`is_ultra_restricted`); Slack silently no-ops the invite since that account type can only ever belong to the one channel it was created in. `channel create --invite` now warns about this up front.
 - **Send is rejected with "use #channel or @user"** — the CLI enforces human-readable targets. Use `#channel-name` or `@display-name`, not raw IDs.
 - **Confirm code mismatch on any gated write** — the content, target or acting identity changed between preview and confirm (a different profile/`SLACK_TOKEN`, or `--as-bot` added or dropped). Re-run without `--code` for a fresh preview, and re-check the `From:` line and the `→` destination line (THREAD REPLY vs NEW top-level message).

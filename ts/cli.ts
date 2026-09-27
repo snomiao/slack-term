@@ -2,16 +2,16 @@
 // Slack CLI entry — mirrors the Rust impl in src/main.rs.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
 import { guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
-import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp } from "./auth.ts";
+import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail } from "./tail.ts";
 import { agentCommands } from "./agent.ts";
 
@@ -42,6 +42,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -75,6 +76,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  type MessageMetadata,
   getPermalink,
   scheduleMessage,
   listScheduledMessages,
@@ -463,8 +465,8 @@ async function cmdNews(token: string, limit: number): Promise<void> {
 }
 
 // --- channels ---
-async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean, format = "text"): Promise<void> {
-  const resp = (await listConversations(token)) as Record<string, Json>;
+async function cmdChannels(token: string, limit: number, filter?: string, all?: boolean, format = "text", cookie?: string): Promise<void> {
+  const resp = (await listConversations(token, cookie)) as Record<string, Json>;
   const channels = asArray(resp.channels)
     .map(asRecord)
     .filter((c) => all || c.is_member === true)
@@ -1068,6 +1070,38 @@ function selfLookup(token: string, cookie?: string): () => Promise<Self | null> 
   };
 }
 
+/** Who is sending, captured once per write: the Slack `metadata` to attach to
+ *  the post, and `record` to append it to the local log once the ts is known.
+ *  Both vanish under SLACK_TERM_ATTRIBUTION=off. */
+function sentAttribution(kind: SentKind): {
+  metadata?: MessageMetadata;
+  record: (r: Omit<RecordSent, "kind" | "attribution">) => void;
+} {
+  if (!attributionEnabled()) return { record: () => {} };
+  const attribution = captureAttribution();
+  return {
+    metadata: attributionMetadata(kind, attribution),
+    record: (r) => { recordSent({ ...r, kind, attribution }); },
+  };
+}
+
+/** One `slack sent` row: when/what/where, then who — the sender block is the
+ *  point of the command, so it gets its own line rather than a trailing column. */
+function formatSentRow(r: SentRow): string {
+  const first = stripTerminalControls(r.text.split("\n")[0] ?? "").slice(0, 100);
+  const where = r.permalink || `${r.channel}:${r.ts}`;
+  const who = [
+    r.cli ?? "?",
+    r.session_id ? `session=${r.session_id}` : "",
+    r.agent_pid ? `pid=${r.agent_pid}` : `pid=${r.pid}`,
+    r.git_branch ? `branch=${r.git_branch}` : "",
+    `cwd=${r.cwd}`,
+  ].filter(Boolean).join("  ");
+  return `${formatYmdHm(r.sent_at / 1000)}  ${r.kind.padEnd(4)}  ${stripTerminalControls(r.target ?? r.channel)}  ${where}\n` +
+    `    ${first}\n` +
+    `    ${stripTerminalControls(who)}`;
+}
+
 /** Name the identity a write will be performed AS, for confirm gates:
  *  "@snomiao (U0123ABC) — Acme". Slack shows only the author on the resulting
  *  message, so a wrong profile / stale SLACK_TOKEN / unintended --as-bot is
@@ -1275,8 +1309,10 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     ]);
   }
 
-  const newTs = await editMessage(token, channelId, ts, newText, args.cookie);
+  const attr = sentAttribution("edit");
+  const newTs = await editMessage(token, channelId, ts, newText, args.cookie, undefined, attr.metadata);
   console.log(`✓ Edited (ts: ${newTs})`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, text: newText, asBot: args.asBot });
 }
 
 // --- delete ---
@@ -1657,7 +1693,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       ], recipientTz);
     }
   }
-  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie);
+  const attr = sentAttribution("send");
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie, undefined, attr.metadata);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts, cookie);
@@ -1665,6 +1702,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // fail-soft: getPermalink failure (rate limit, network, etc.) should not
     // mask send success — fall back to ts-only output below.
   }
+  attr.record({ team: (await getSelf())?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   if (permalink) {
     console.log(`✓ Sent: ${permalink}`);
   } else {
@@ -1709,7 +1747,10 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 //   0  answered   (the answer text is on stdout, and nothing else is)
 //   2  timed out   (nobody replied)
 //   3  transport/config failure
-//   4  replied, but chose none of the offered choices — stdout stays EMPTY
+//   4  replied, but the reply matches SEVERAL choices — stdout stays EMPTY
+//   5  replied in free text, picking none of the offered choices — the reply
+//      text is on stdout. NOT a decision: the question is left open, so a pill
+//      pressed later still settles it (`--waitFor … --after=<reply ts>`).
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
 const ASK_EXIT_TIMEOUT = 2;
@@ -1719,6 +1760,12 @@ const ASK_EXIT_ERROR = 3;
  *  automated caller act on a decision nobody took, and exit 2 ("nobody
  *  answered") would hide that a human is standing there waiting for something. */
 const ASK_EXIT_UNCHOSEN = 4;
+/** A free-text reply that picks none of the choices, DELIVERED: the text is on
+ *  stdout. Exit 4 with stdout empty used to be the answer here, and the
+ *  instruction the human typed never reached the agent — it kept waiting
+ *  (measured 2026-09-27: 8 of 71 asks answered this way, none collected). Still
+ *  not 0, so nothing mistakes it for a decision. */
+const ASK_EXIT_FREETEXT = 5;
 
 const ASK_PHI = 1.618033988749895;
 const ASK_POLL_MIN_MS = 1000;
@@ -1823,6 +1870,9 @@ interface AskWaitCtx {
   /** Only so the resume hint printed on timeout names the right identity — the
    *  ✅ rewrite can be done by the original poster alone. */
   asBot: boolean;
+  /** Text replies at or before this ts are ignored — the free-text reply a
+   *  previous exit 5 already delivered. Reactions still count. */
+  after?: string;
 }
 
 /** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
@@ -1916,6 +1966,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // Strictly after the question. A question posted INTO an existing thread
       // sits among replies that predate it, and those answered something else.
       if (!(Number(m.ts) > Number(ts))) continue;
+      if (ctx.after && !(Number(m.ts) > Number(ctx.after))) continue;
       if (!isAnswerer(m.user)) continue;
       if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
       if (Number(m.ts) >= before) break;
@@ -1934,8 +1985,14 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // Replied, but picked nothing. Recorded rather than returned: a later
       // reply may still choose, and the first one is what the operator needs to
       // see — it is usually a question back.
-      if (!unchosen || Number(m.ts) < Number(unchosen.ts)) {
-        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous: match.kind === "ambiguous" };
+      // A plain free-text reply outranks an ambiguous one, whatever the order:
+      // the free text is delivered (exit 5), and an earlier ambiguous attempt
+      // must not hide it behind the refuse-to-guess path. Within a class, the
+      // earliest wins.
+      const ambiguous = match.kind === "ambiguous";
+      if (!unchosen || (unchosen.ambiguous && !ambiguous) ||
+          (unchosen.ambiguous === ambiguous && Number(m.ts) < Number(unchosen.ts))) {
+        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous };
       }
     }
     return null;
@@ -2065,6 +2122,25 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.log(found.answer);
       process.exit(0);
     }
+    // A free-text reply that picks nothing is delivered NOW, not held until the
+    // deadline: it is usually an instruction or a question back, and the only
+    // one who can act on it is the caller. Left unstamped — a pill pressed
+    // later is still the decision. An AMBIGUOUS reply did try to choose, so it
+    // keeps the refuse-to-guess path below.
+    if (unchosen && !unchosen.ambiguous) {
+      let who = unchosen.who;
+      try {
+        if (who) who = await userName(token, who, cookie);
+      } catch {
+        // the id is still a usable answer to "who"
+      }
+      console.error(`  (${stripTerminalControls(who)} が選択肢外の返信をしました — 決定ではありません。本文を stdout に出します)`);
+      console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
+      console.error(`  ${shown}`);
+      console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
+      console.log(unchosen.text);
+      process.exit(ASK_EXIT_FREETEXT);
+    }
     // Said as soon as it is seen, not only at the timeout: the reply is usually
     // a question BACK, and the person who can unblock it is the one watching
     // this command. Once per reply — a poller that repeated itself every tick
@@ -2077,11 +2153,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       } catch {
         // the id is still a usable answer to "who"
       }
-      console.error(
-        unchosen.ambiguous
-          ? `  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`
-          : `  (${stripTerminalControls(who)} が返信しましたが、選択肢のどれでもありません。待機を続けます)`,
-      );
+      // Only the ambiguous case gets here — a plain free-text reply exited above.
+      console.error(`  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`);
       console.error(`    「${stripTerminalControls(unchosen.text)}」`);
     }
     // Checked after the first poll, never before it: `--timeout 0` means one
@@ -2101,15 +2174,12 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // standing there. stdout stays empty in both: the caller must not be handed
   // something to act on.
   if (unchosen) {
-    console.error(
-      unchosen.ambiguous
-        ? `Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`
-        : `Error: 返信はありましたが、選択肢のどれも選ばれていません (メッセージはそのまま残っています)`,
-    );
+    // Ambiguous only: a plain free-text reply was delivered as exit 5 already.
+    console.error(`Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`);
     console.error(`  返信: 「${stripTerminalControls(unchosen.text)}」`);
     console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
-    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
+    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
     process.exit(ASK_EXIT_UNCHOSEN);
   }
   if (timeout === 0) {
@@ -2117,7 +2187,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   } else {
     console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
     console.error(`  ${shown}`);
-    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot)}`);
+    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
   }
   process.exit(ASK_EXIT_TIMEOUT);
 }
@@ -2125,8 +2195,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
 /** The `slack ask --waitFor=…` line handed to a caller that did not block.
  *  Printed as a runnable command rather than a bare permalink: the collect step
  *  is the half everyone forgets, and a link does not tell you how to collect. */
-function askResumeCommand(shown: string, asBot: boolean): string {
-  return `slack ask --waitFor='${shown}'${asBot ? " --as-bot" : ""}`;
+/** `after` is carried into EVERY resume hint once set: dropping it would have
+ *  the next `--waitFor` re-deliver a free-text reply already acted on. */
+function askResumeCommand(shown: string, asBot: boolean, after?: string): string {
+  return `slack ask --waitFor='${shown}'${asBot ? " --as-bot" : ""}${after ? ` --after=${after}` : ""}`;
 }
 
 async function cmdAsk(token: string, args: AskArgs): Promise<void> {
@@ -2283,7 +2355,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // `plain`: with blocks attached Slack rewrites the stored text (newlines to
   // spaces, emoji to `:one:`) and `--waitFor` can no longer read the question
   // back out of it — which is the entire recovery path.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("ask");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // The marker goes on FIRST so it sits left of the pills, and as a reaction so
   // `has::question:` lists every question the way `has::pushpin:` lists every
@@ -2318,6 +2391,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Asked: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
 
   if (!args.wait) {
     // Not waiting. stdout is the RESUME COMMAND, not just a link: nothing else
@@ -2362,7 +2436,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
  *  file to go stale, lose, or disagree with Slack, and any machine holding the
  *  permalink can collect — at the cost of the body being a parseable format
  *  (`askBuildText` ⇄ `askParseMessage`). */
-async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string }): Promise<void> {
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string }): Promise<void> {
   const url = parseSlackPermalink(args.link);
   let channelId: string;
   let ts: string;
@@ -2464,6 +2538,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
+  if (args.after) ctx.after = args.after;
   await askWaitForAnswer(token, ctx);
 }
 
@@ -2606,7 +2681,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
 
   // `plain`: no blocks, or Slack rewrites the stored text and the ballot
   // stops parsing on the way back.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("poll");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // Marker first, for the same reason as `ask`: it is what makes
   // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
@@ -2634,6 +2710,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Posted: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   console.log(pollResultsCommand(shown));
   console.error(`  締め切る:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
 }
@@ -3284,7 +3361,8 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent") return;
+      // `sent` reads only the local log — no token, no network.
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -3342,7 +3420,7 @@ async function main(): Promise<void> {
             .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text" })
             .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
           async (argv) => {
-            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.json ? "jsonl" : argv.format);
+            await cmdChannels(tok(argv as W), argv.limit, argv.filter, argv.all, argv.json ? "jsonl" : argv.format, ck(argv as W));
           },
         )
         .command(
@@ -3712,8 +3790,9 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = somebody replied but picked none of the choices (stdout empty — do not act on it)." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
+        .option("after", { type: "string", describe: "With --waitFor: ignore text replies at or before this ts (the reply an exit 5 already delivered). Reactions still count." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
@@ -3752,8 +3831,16 @@ async function main(): Promise<void> {
             waitCookie = ck(argv as W);
           }
           try {
-            const a: { link: string; timeout: number; asBot: boolean; cookie?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
+            const a: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
             if (waitCookie) a.cookie = waitCookie;
+            if (argv.after) {
+              const after = String(argv.after);
+              if (!/^\d{10}\.\d{6}$/.test(after)) {
+                console.error(`Error: --after needs a message ts like 1700000000.000100 (got ${stripTerminalControls(after)})`);
+                process.exit(ASK_EXIT_ERROR);
+              }
+              a.after = after;
+            }
             await cmdAskWaitFor(waitToken, a);
           } catch (e: unknown) {
             console.error(friendlySlackError(e));
@@ -3949,6 +4036,56 @@ async function main(): Promise<void> {
           console.error(friendlySlackError(e));
           process.exit(POLL_EXIT_ERROR);
         }
+      },
+    )
+    .command(
+      "sent [query]",
+      "Search what THIS machine posted/edited (send, ask, poll, edit) and who sent it — read-only, local log",
+      (y) => y
+        .positional("query", { type: "string", describe: "Substring of the message text (case-insensitive)" })
+        .option("channel", { type: "string", describe: "Channel/DM id (C…/D…) or the target as typed (#eng, @bob)" })
+        .option("since", { type: "string", describe: "Only newer than this: 30m, 2h, 7d, 1w, or an ISO date" })
+        .option("session", { type: "string", describe: "Agent session id (prefix match)" })
+        .option("cwd", { type: "string", describe: "Working directory the sender ran in (prefix match)" })
+        .option("kind", { type: "string", choices: ["send", "ask", "poll", "edit"], describe: "Only this kind of write" })
+        .option("json", { type: "boolean", default: false, describe: "One JSON object per line (every recorded field)" })
+        .option("count", { alias: "n", type: "number", default: 50, describe: "Max rows (newest first)" }),
+      (argv) => {
+        let sinceMs: number | undefined;
+        if (argv.since !== undefined) {
+          sinceMs = parseSince(String(argv.since));
+          if (sinceMs === undefined) {
+            console.error(`Error: --since needs 30m / 2h / 7d / 1w or an ISO date (got ${stripTerminalControls(String(argv.since))})`);
+            process.exit(1);
+          }
+        }
+        const q: Parameters<typeof querySent>[0] = { limit: Number(argv.count) || 50 };
+        if (argv.query) q.text = String(argv.query);
+        if (argv.channel) q.channel = String(argv.channel);
+        if (sinceMs !== undefined) q.sinceMs = sinceMs;
+        if (argv.session) q.session = String(argv.session);
+        if (argv.cwd) {
+          // Resolved like the recorded cwd was (process.cwd() is a realpath), so
+          // `--cwd .` works and a symlinked path (macOS /var → /private/var)
+          // still matches. A path that no longer exists is used as typed.
+          const raw = resolve(String(argv.cwd));
+          try { q.cwd = realpathSync(raw); } catch { q.cwd = raw; }
+        }
+        if (argv.kind) q.kind = argv.kind as SentKind;
+        const rows = querySent(q);
+        if (!rows) {
+          console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
+          process.exit(1);
+        }
+        if (argv.json) {
+          for (const r of rows) console.log(JSON.stringify(r));
+          return;
+        }
+        if (!rows.length) {
+          console.error(`No sent messages match (log: ${sentDbPath()}).`);
+          return;
+        }
+        for (const r of rows) console.log(formatSentRow(r));
       },
     )
     .command(
@@ -4548,18 +4685,50 @@ async function main(): Promise<void> {
             )
             .option("token", { type: "string", describe: "Token to save directly (non-interactive)" })
             .option("name", { type: "string", describe: "Workspace name (used with --token)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" })
+            .option("from-desktop", { type: "boolean", default: false, describe: "Import the Slack Desktop token without scanning a browser" })
+            .option("from-chrome", { type: "boolean", default: false, describe: "Import the desktop token and Chrome cookie" })
+            .option("from-firefox", { type: "boolean", default: false, describe: "Import the desktop token and Firefox cookie" })
+            .option("from-all", { type: "boolean", default: false, describe: "Import the desktop token and scan Chrome and Firefox" })
             .command("$0", false as unknown as string, () => {}, async (argv) => {
               await cmdAuthLogin({
                 ...(argv.token !== undefined ? { token: argv.token as string } : {}),
                 ...(argv.name !== undefined ? { name: argv.name as string } : {}),
+                yes: argv.yes as boolean,
+                fromDesktop: argv.fromDesktop as boolean,
+                fromChrome: argv.fromChrome as boolean,
+                fromFirefox: argv.fromFirefox as boolean,
+                fromAll: argv.fromAll as boolean,
               });
             }),
           async (argv) => {
             await cmdAuthLogin({
               ...(argv.token !== undefined ? { token: argv.token as string } : {}),
               ...(argv.name !== undefined ? { name: argv.name as string } : {}),
+              yes: argv.yes as boolean,
+              fromDesktop: argv.fromDesktop as boolean,
+              fromChrome: argv.fromChrome as boolean,
+              fromFirefox: argv.fromFirefox as boolean,
+              fromAll: argv.fromAll as boolean,
             });
           },
+        )
+        .command(
+          "tokens",
+          "Print the selected credentials as dotenv assignments",
+          (y2) => y2.option("workspace", { type: "string", alias: "w", describe: "Workspace name (default: active)" }),
+          (argv) => cmdAuthTokens({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) }),
+        )
+        .command(
+          "save",
+          "Save the active profile token and cookie to an env file",
+          (y2) => y2
+            .option("envfile", { type: "string", demandOption: true, describe: "Destination env file (e.g. ./.env.local)" })
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name (default: active)" }),
+          (argv) => cmdAuthSave({
+            envfile: argv.envfile!,
+            ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}),
+          }),
         )
         .command(["ls", "status"], "Show auth status", () => {}, () => {
           const profiles = listProfiles();
@@ -4590,14 +4759,16 @@ async function main(): Promise<void> {
         )
         .command(
           ["cookie", "chrome"],
-          "Attach a Chrome xoxd cookie to a workspace (macOS + Windows). To import workspaces, use: slack auth login chrome",
+          "Attach a Chrome xoxd cookie to a workspace (macOS/Linux/Windows). To import workspaces, use: slack auth login chrome",
           (y2) => y2
             .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" })
-            .option("profile", { type: "string", alias: "p", describe: "Chrome profile email or dir (Windows, when several have a session)" }),
+            .option("profile", { type: "string", alias: "p", describe: "Chrome profile email or dir (Windows, when several have a session)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" }),
           async (argv) => {
             await cmdAuthChrome({
               ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}),
               ...(argv.profile !== undefined ? { profile: argv.profile } : {}),
+              yes: argv.yes as boolean,
             });
           },
         )
@@ -4605,9 +4776,10 @@ async function main(): Promise<void> {
           "firefox",
           "Attach Firefox browser xoxd cookie to a workspace (all platforms)",
           (y2) => y2
-            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" }),
+            .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" })
+            .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" }),
           async (argv) => {
-            await cmdAuthFirefox({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}) });
+            await cmdAuthFirefox({ ...(argv.workspace !== undefined ? { workspace: argv.workspace } : {}), yes: argv.yes });
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
@@ -4645,10 +4817,20 @@ async function main(): Promise<void> {
     )
     .command("login", false as unknown as string, (y2) => y2
       .option("token", { type: "string" })
-      .option("name", { type: "string" }), async (argv) => {
+      .option("name", { type: "string" })
+      .option("yes", { type: "boolean", default: false })
+      .option("from-desktop", { type: "boolean", default: false })
+      .option("from-chrome", { type: "boolean", default: false })
+      .option("from-firefox", { type: "boolean", default: false })
+      .option("from-all", { type: "boolean", default: false }), async (argv) => {
       await cmdAuthLogin({
         ...(argv.token !== undefined ? { token: argv.token } : {}),
         ...(argv.name !== undefined ? { name: argv.name } : {}),
+        yes: argv.yes,
+        fromDesktop: argv.fromDesktop,
+        fromChrome: argv.fromChrome,
+        fromFirefox: argv.fromFirefox,
+        fromAll: argv.fromAll,
       });
     })
     .demandCommand(1, "Specify a command. Run with --help for usage.")

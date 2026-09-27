@@ -126,7 +126,9 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
-# exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure.
+# exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
+# 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
+# the reply text is on stdout, it is not a decision, and the question stays open.
 #
 # The question must say WHO may answer — only their reaction/reply is taken as the
 # answer, so a bystander can't decide it for them. `ask` refuses to post otherwise.
@@ -144,13 +146,25 @@ RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待っ�
 #   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'
 # Run it whenever you like: it re-reads the question from Slack, so nothing is
 # stored locally and any machine holding the link can collect. Same stdout/exit
-# contract as --wait, plus --timeout 0 = check once (exit 2 while still open, 4 if
-# somebody replied without choosing any of the offered options),
+# contract as --wait, plus --timeout 0 = check once (exit 2 while still open, 5 with
+# the reply on stdout if somebody wrote free text instead of choosing; re-wait past
+# it with --after=<reply ts>),
 # which is what a periodic monitor should use instead of parking on --wait.
 eval "$RESUME --timeout 0" && echo answered
 # A pressed pill is invisible to `slack tail` (it only sees `type: "message"`
 # events and drops `message_changed`), so this is the only way to hear about an
 # answer to a question you did not block on.
+
+# Who sent what: every send/ask/poll/edit is logged locally with its sender —
+# pid, cwd, git branch, agent CLI and session id — and the same attribution rides
+# along as invisible Slack message metadata (event_type `slack_term_sent`).
+slack sent                                     # newest first, sender on its own line
+slack sent "deploy" --since 2h --kind ask      # substring of the text
+slack sent --session 4f1c --cwd ~/ws/app --json
+# Log: ~/.config/slack-cli/sent.sqlite (SLACK_TERM_SENT_DB overrides).
+# Opt out of both with SLACK_TERM_ATTRIBUTION=off. Agent CLIs other than Claude
+# Code are found by process name; set SLACK_TERM_AGENT_SESSION / _CLI / _PID to
+# name the session explicitly.
 
 # Task tracking on top of reactions — :pushpin: marks a message as a task,
 # a second reaction carries its progress (see "todo" below)
@@ -320,6 +334,24 @@ export SLACK_MCP_XOXP_TOKEN=xoxp-...
 Or place it in `~/.config/slack-cli/.env` or a local `.env` file.
 
 See [`SKILL.md`](SKILL.md) for a full token-acquisition walkthrough.
+
+### Ubuntu desktop session
+
+Sign in to Slack in Chrome or Slack Desktop. `--from-chrome` reads a browser `xoxc-` token and cookie from the same Chrome profile; desktop import reads `xoxc-` tokens from native, Snap, or Flatpak data directories. Browser profiles contain sensitive cookies, so the CLI asks `Read local browser profiles and Slack session cookies? [y/N]` before scanning. Enter `y` to allow a scan; the default is no.
+
+```sh
+slack auth login --from-desktop                 # desktop token only
+slack auth login --from-chrome                  # Chrome token + Chrome cookie
+slack auth login --from-firefox                 # desktop token + Firefox cookie
+slack auth login --from-all                     # desktop and browser sources
+slack auth login --from-chrome --yes            # bypass the browser-read prompt
+slack auth tokens                              # print active credentials in .env format
+slack auth save --envfile=./.env.local          # export active token + cookie
+```
+
+`--from-all` attaches a cookie only when exactly one browser session is found. If several are found, the desktop token is saved without a cookie; use `slack auth chrome -w <name>` or `slack auth firefox -w <name>` to select the matching profile. These commands also ask before reading browser profiles, and accept `--yes` for scripts. Select the saved workspace with `slack auth use -g <name>`. `auth tokens` prints the active `SLACK_TOKEN`, optional `SLACK_COOKIE`, and optional `SLACK_BOT_TOKEN` to stdout; treat its output as secret. `auth save` requires a cookie, writes `SLACK_TOKEN` and `SLACK_COOKIE`, and makes the env file owner-readable only on Unix. `--workspace <name>` selects a specific profile.
+
+Chrome supports Linux `v10` cookies and `v11` cookies when `secret-tool` can read the unlocked GNOME keyring. Other Linux keyring backends are not yet supported. Firefox discovery covers native, Snap, and Flatpak profiles. If browser session access is unavailable, use `slack auth token` to add a user token from a Slack app. Treat desktop tokens and browser cookies as credentials; keep profile files and local env files private.
 
 ## Development
 
