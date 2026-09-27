@@ -30,11 +30,19 @@ export type Profile = {
   teamId: string;
   url: string;
   user: string;
-  cookie?: string; // xoxd session cookie for internal APIs (drafts, etc.)
+  cookie?: string;   // xoxd session cookie for internal APIs (drafts, etc.)
+  identity?: string; // owning user identity (e.g. account email) — groups workspaces and shares one cookie
+};
+
+/** Per-identity auth shared across all that identity's workspaces. */
+export type UserAuth = {
+  cookie?: string; // xoxd session cookie (workspace-agnostic — one per browser/user)
+  source?: string; // where it came from, e.g. "chrome:Profile 3"
 };
 
 type ProfileStore = {
   profiles: Record<string, Profile>;
+  users?: Record<string, UserAuth>; // identity -> shared auth; cookie stored here once
 };
 
 function home(): string {
@@ -162,24 +170,64 @@ export function listProfiles(): { name: string; profile: Profile; current: boole
   const local = readLockfile(localLockfilePath());
   const global_ = readLockfile(globalLockfilePath());
   const current = local ?? global_;
-  return Object.entries(store.profiles).map(([name, profile]) => ({
-    name,
-    profile,
-    current: name === current,
-  }));
+  return Object.entries(store.profiles).map(([name, profile]) => {
+    // Surface the effective cookie (own, else the identity's shared one) so
+    // callers reading profile.cookie keep working after cookie hoisting.
+    const cookie = cookieFor(store, name);
+    return {
+      name,
+      profile: { ...profile, ...(cookie ? { cookie } : {}) },
+      current: name === current,
+    };
+  });
 }
 
 export function addProfile(name: string, profile: Profile): void {
   const store = load();
-  store.profiles[name] = profile;
+  // When the profile belongs to an identity, store its cookie once at the
+  // identity level (workspace-agnostic) rather than duplicating it per workspace.
+  if (profile.identity && profile.cookie) {
+    store.users ??= {};
+    const prev = store.users[profile.identity] ?? {};
+    store.users[profile.identity] = { ...prev, cookie: profile.cookie };
+    const { cookie: _drop, ...rest } = profile;
+    store.profiles[name] = rest;
+  } else {
+    store.profiles[name] = profile;
+  }
   save(store);
 }
 
 export function setCookie(name: string, cookie: string): void {
   const store = load();
-  if (!(name in store.profiles)) throw new Error(`Profile not found: ${name}`);
-  store.profiles[name]!.cookie = cookie;
+  const profile = store.profiles[name];
+  if (!profile) throw new Error(`Profile not found: ${name}`);
+  // Route through the identity's shared cookie when the workspace has one.
+  if (profile.identity) {
+    store.users ??= {};
+    store.users[profile.identity] = { ...(store.users[profile.identity] ?? {}), cookie };
+  } else {
+    profile.cookie = cookie;
+  }
   save(store);
+}
+
+/** Store (or refresh) the shared xoxd cookie for an identity — every workspace under it picks it up. */
+export function setUserCookie(identity: string, cookie: string, source?: string): void {
+  const store = load();
+  store.users ??= {};
+  store.users[identity] = { ...(store.users[identity] ?? {}), cookie, ...(source ? { source } : {}) };
+  save(store);
+}
+
+/** Resolve the effective xoxd cookie for a workspace: its own, else its identity's shared one. */
+function cookieFor(store: ProfileStore, name: string | undefined): string | undefined {
+  if (!name) return undefined;
+  const profile = store.profiles[name];
+  if (!profile) return undefined;
+  if (profile.cookie) return profile.cookie;
+  if (profile.identity) return store.users?.[profile.identity]?.cookie;
+  return undefined;
 }
 
 export function removeProfile(name: string): void {
@@ -274,11 +322,11 @@ export function resolveToken(workspaceFlag?: string): string {
   throw new Error(
     "No Slack token found.\n" +
     "  Run one of:\n" +
-    "    slack auth login    — interactive wizard (desktop session, token, or new app)\n" +
-    "    slack auth token    — print the active token, or save one with --token\n" +
-    "    slack auth chrome   — import the xoxd cookie from Chrome (macOS/Linux)\n" +
-    "    slack auth firefox  — import the xoxd cookie from Firefox (all platforms)\n" +
-    "    slack auth app      — guided Slack app creation\n" +
+    "    slack auth login          — interactive wizard (desktop / browser / token / new app)\n" +
+    "    slack auth login chrome   — import workspaces from Chrome (all platforms)\n" +
+    "    slack auth cookie         — attach the xoxd cookie from Chrome (macOS/Windows)\n" +
+    "    slack auth firefox        — attach the xoxd cookie from Firefox (all platforms)\n" +
+    "    slack auth token --token xoxp-...   — paste an existing token\n" +
     "  Or set SLACK_TOKEN=xoxp-... in .slack-term/.env.local",
   );
 }
@@ -300,7 +348,7 @@ export function resolveCookie(workspaceFlag?: string): string | undefined {
   const profiles = store.profiles;
 
   // --workspace flag: skip env-file walk, go straight to profiles.json
-  if (workspaceFlag) return profiles[workspaceFlag]?.cookie;
+  if (workspaceFlag) return cookieFor(store, workspaceFlag);
 
   // process.env: SLACK_COOKIE (official extension), legacy SLACK_MCP_XOXD_COOKIE
   if (process.env.SLACK_COOKIE) return process.env.SLACK_COOKIE;
@@ -318,13 +366,13 @@ export function resolveCookie(workspaceFlag?: string): string | undefined {
 
   // profiles.json via SLACK_WORKSPACE env var or lockfiles
   const selected = process.env.SLACK_WORKSPACE;
-  if (selected) return profiles[selected]?.cookie;
+  if (selected) return cookieFor(store, selected);
 
   const localName = readLockfile(localLockfilePath());
-  if (localName) return profiles[localName]?.cookie;
+  if (localName) return cookieFor(store, localName);
 
   const globalName = readLockfile(globalLockfilePath());
-  if (globalName) return profiles[globalName]?.cookie;
+  if (globalName) return cookieFor(store, globalName);
 
   return undefined;
 }

@@ -14,6 +14,7 @@ import { startMock, type MockHandle } from "./mock.ts";
 mockModule("../ts/slack-app.ts", () => ({
   extractSessions: vi.fn().mockResolvedValue([]),
   extractChromeSessions: vi.fn().mockResolvedValue([]),
+  discoverChromeSessions: vi.fn().mockReturnValue([]),
   discoverChromeCookies: vi.fn().mockReturnValue({ candidates: [], totalProfiles: 0 }),
   discoverFirefoxCookies: vi.fn().mockReturnValue([]),
 }));
@@ -33,9 +34,9 @@ mockModule("node:readline/promises", () => ({
 // Imported AFTER the mocks above, and dynamically: the registration is not
 // hoisted, so a static import here would bind the real modules.
 // Filesystem isolation comes from process.env.HOME = tmpHome (profiles.ts uses process.env.HOME).
-const { cmdAuthLogin, cmdAuthChrome, cmdAuthSave, cmdAuthTokens, importFromDesktop } = await import("../ts/auth.ts");
+const { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthSave, cmdAuthTokens, importFromDesktop } = await import("../ts/auth.ts");
 const { listProfiles, addProfile, useProfile } = await import("../ts/profiles.ts");
-const { extractSessions, extractChromeSessions, discoverFirefoxCookies, discoverChromeCookies } = await import("../ts/slack-app.ts");
+const { extractSessions, extractChromeSessions, discoverChromeSessions, discoverFirefoxCookies, discoverChromeCookies } = await import("../ts/slack-app.ts");
 
 // A direct cast rather than vi.mocked: the shape is all these tests need, and
 // it reads the same under either runner.
@@ -44,6 +45,9 @@ type MockFn<T extends (...args: never[]) => unknown> = T & {
   mockReturnValueOnce: (v: ReturnType<T>) => void;
 };
 const mockExtractSessions = extractSessions as unknown as MockFn<typeof extractSessions>;
+const mockDiscoverChromeSessions = discoverChromeSessions as unknown as (typeof discoverChromeSessions) & {
+  mockReturnValueOnce: (v: ReturnType<typeof discoverChromeSessions>) => void;
+};
 const mockExtractChromeSessions = extractChromeSessions as unknown as MockFn<typeof extractChromeSessions>;
 const mockDiscoverFirefox = discoverFirefoxCookies as unknown as MockFn<typeof discoverFirefoxCookies>;
 const mockDiscoverChrome = discoverChromeCookies as unknown as MockFn<typeof discoverChromeCookies>;
@@ -206,9 +210,9 @@ describe("auth.ts", () => {
 
   // --- TTY interactive paths ---
 
-  test("cmdAuthLogin TTY choice 2 (existing app, user token) saves profile", async () => {
+  test("cmdAuthLogin TTY choice 3 (existing app, user token) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["2", "1", "xoxp-fake", "", "4"]; // "4" = save to profiles.json
+    rlState.answers = ["3", "1", "xoxp-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxp-fake");
@@ -217,9 +221,9 @@ describe("auth.ts", () => {
     }
   });
 
-  test("cmdAuthLogin TTY choice 2 (existing app, bot token) saves profile", async () => {
+  test("cmdAuthLogin TTY choice 3 (existing app, bot token) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["2", "2", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
+    rlState.answers = ["3", "2", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxb-fake");
@@ -228,9 +232,9 @@ describe("auth.ts", () => {
     }
   });
 
-  test("cmdAuthLogin TTY choice 3 (new user app) saves profile", async () => {
+  test("cmdAuthLogin TTY choice 4 (new user app) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["3", "xoxp-fake", "my-workspace", "4"]; // "4" = save to profiles.json
+    rlState.answers = ["4", "xoxp-fake", "my-workspace", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       const profile = listProfiles()[0];
@@ -241,9 +245,9 @@ describe("auth.ts", () => {
     }
   });
 
-  test("cmdAuthLogin TTY choice 4 (new bot app) saves profile", async () => {
+  test("cmdAuthLogin TTY choice 5 (new bot app) saves profile", async () => {
     setTTY(true);
-    rlState.answers = ["4", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
+    rlState.answers = ["5", "xoxb-fake", "", "4"]; // "4" = save to profiles.json
     try {
       await cmdAuthLogin({});
       expect(listProfiles()[0]?.profile.token).toBe("xoxb-fake");
@@ -283,6 +287,53 @@ describe("auth.ts", () => {
     }
   });
 
+  test("cmdAuthLogin TTY choice 2 (chrome import) creates workspaces grouped by identity", async () => {
+    mockDiscoverChromeSessions.mockReturnValueOnce([
+      {
+        profileDir: "Profile 3",
+        email: "alice@example.com",
+        label: "alice (alice@example.com)",
+        sessions: [
+          { token: "xoxc-acme", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" },
+          { token: "xoxc-widgets", teamId: "T00000002", teamName: "Widgets", url: "https://widgets.slack.com/" },
+        ],
+      },
+    ]);
+    setTTY(true);
+    rlState.answers = ["2"]; // single chrome profile → no extra prompt
+    try {
+      await cmdAuthLogin({});
+      const names = listProfiles().map((p) => p.name).sort();
+      expect(names).toEqual(["acme", "widgets"]);
+      for (const p of listProfiles()) expect(p.profile.identity).toBe("alice@example.com");
+    } finally {
+      setTTY(undefined);
+    }
+  });
+
+  test("cmdAuthLoginChrome --profile filters by email and saves that account's workspaces", async () => {
+    mockDiscoverChromeSessions.mockReturnValueOnce([
+      { profileDir: "Profile 1", email: "bob@example.com", label: "bob", sessions: [{ token: "xoxc-bob", teamId: "T00000009", teamName: "BobTeam", url: "https://bobteam.slack.com/" }] },
+      { profileDir: "Profile 3", email: "alice@example.com", label: "alice", sessions: [{ token: "xoxc-acme", teamId: "T00000001", teamName: "Acme", url: "https://acme.slack.com/" }] },
+    ]);
+    await cmdAuthLoginChrome({ profile: "alice@example.com" });
+    const list = listProfiles();
+    expect(list.map((p) => p.name)).toEqual(["acme"]);
+    expect(list[0]?.profile.identity).toBe("alice@example.com");
+  });
+
+  test("cmdAuthLoginChrome exits when no Chrome session found", async () => {
+    mockDiscoverChromeSessions.mockReturnValueOnce([]);
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    try {
+      await expect(cmdAuthLoginChrome({})).rejects.toThrow("process.exit");
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
   test("cmdAuthLogin TTY invalid choice calls process.exit", async () => {
     setTTY(true);
     rlState.answers = ["9"];
@@ -297,23 +348,9 @@ describe("auth.ts", () => {
     }
   });
 
-  test("cmdAuthLogin TTY choice 2 empty token calls process.exit", async () => {
-    setTTY(true);
-    rlState.answers = ["2", "1", ""];
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("process.exit");
-    }) as () => never);
-    try {
-      await expect(cmdAuthLogin({})).rejects.toThrow("process.exit");
-    } finally {
-      setTTY(undefined);
-      exitSpy.mockRestore();
-    }
-  });
-
   test("cmdAuthLogin TTY choice 3 empty token calls process.exit", async () => {
     setTTY(true);
-    rlState.answers = ["3", ""];
+    rlState.answers = ["3", "1", ""];
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit");
     }) as () => never);
@@ -325,9 +362,9 @@ describe("auth.ts", () => {
     }
   });
 
-  test("cmdAuthLogin TTY choice 2 wrong token prefix calls process.exit", async () => {
+  test("cmdAuthLogin TTY choice 4 empty token calls process.exit", async () => {
     setTTY(true);
-    rlState.answers = ["2", "1", "wrong-prefix-token", ""];
+    rlState.answers = ["4", ""];
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit");
     }) as () => never);
@@ -341,7 +378,21 @@ describe("auth.ts", () => {
 
   test("cmdAuthLogin TTY choice 3 wrong token prefix calls process.exit", async () => {
     setTTY(true);
-    rlState.answers = ["3", "xoxb-wrong-for-user", ""];
+    rlState.answers = ["3", "1", "wrong-prefix-token", ""];
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("process.exit");
+    }) as () => never);
+    try {
+      await expect(cmdAuthLogin({})).rejects.toThrow("process.exit");
+    } finally {
+      setTTY(undefined);
+      exitSpy.mockRestore();
+    }
+  });
+
+  test("cmdAuthLogin TTY choice 4 wrong token prefix calls process.exit", async () => {
+    setTTY(true);
+    rlState.answers = ["4", "xoxb-wrong-for-user", ""];
     const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {
       throw new Error("process.exit");
     }) as () => never);

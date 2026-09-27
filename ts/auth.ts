@@ -2,9 +2,10 @@
 import { createInterface, type Interface } from "node:readline/promises";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { addProfile, listProfiles, setCookie, saveToEnvFile, resolveToken, resolveCookie, resolveBotToken } from "./profiles.ts";
+import { addProfile, listProfiles, setCookie, setUserCookie, saveToEnvFile, resolveToken, resolveCookie, resolveBotToken, type Profile } from "./profiles.ts";
 import { authTest } from "./slack.ts";
-import { extractSessions, extractChromeSessions, discoverChromeCookies, discoverFirefoxCookies } from "./slack-app.ts";
+import { extractSessions, extractChromeSessions, discoverChromeCookies, discoverChromeSessions, discoverFirefoxCookies, type ChromeSessionProfile } from "./slack-app.ts";
+import { extractSlackXoxdWindows } from "./chromeCookieWin.ts";
 
 const USER_SCOPES = [
   "search:read",
@@ -264,9 +265,61 @@ async function loginNewApp(rl: Interface, mode: "user" | "bot"): Promise<void> {
  * When run interactively, macOS will show a system dialog asking for the login password
  * to grant access to the "Chrome Safe Storage" keychain item — click Allow.
  */
-export async function cmdAuthChrome(opts: { workspace?: string; yes?: boolean } = {}): Promise<void> {
-  if (process.platform !== "darwin" && process.platform !== "linux") {
-    console.error("Chrome cookie extraction is supported on macOS and Linux.");
+/**
+ * Extract the Slack xoxd cookie from Chrome on Windows (app-bound "v20" scheme) for the
+ * selected workspace. Picks the Chrome profile that holds the workspace's session (else by
+ * --profile / prompt), then runs the elevated extraction (a UAC prompt appears).
+ */
+async function pickChromeCookieWindows(selected: { name: string; profile: Profile }, profileOpt?: string): Promise<string> {
+  const found = discoverChromeSessions();
+  if (found.length === 0) {
+    console.error("No Slack session found in Chrome. Sign in to Slack in Chrome (app.slack.com) and retry.");
+    process.exit(1);
+  }
+  // The workspace's xoxc token embeds its numeric team id — match the Chrome profile that has it.
+  const numericTeamId = selected.profile.token.split("-")[1];
+  let chosen = found.find((p) => p.sessions.some((s) => s.teamId === numericTeamId));
+  if (!chosen && profileOpt) {
+    chosen = found.find((p) => p.email === profileOpt || p.profileDir === profileOpt || p.profileDir === `Profile ${profileOpt}`);
+    if (!chosen) {
+      console.error(`Chrome profile "${profileOpt}" has no Slack session. Available: ${found.map((p) => p.email ?? p.profileDir).join(", ")}`);
+      process.exit(1);
+    }
+  }
+  if (!chosen) {
+    if (found.length === 1) {
+      chosen = found[0]!;
+    } else if (process.stdin.isTTY) {
+      console.log("Multiple Chrome profiles have a Slack session:");
+      found.forEach((p, i) => console.log(`  ${i + 1}) ${p.email ?? p.label}  [${p.profileDir}]`));
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const choice = (await rl.question(`Choice [1-${found.length}]: `)).trim();
+      rl.close();
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= found.length) { console.error("Invalid choice."); process.exit(1); }
+      chosen = found[idx]!;
+    } else {
+      console.error(`Multiple Chrome profiles have a Slack session — choose one with --profile:`);
+      found.forEach((p) => console.error(`  slack auth cookie -w ${selected.name} --profile "${p.email ?? p.profileDir}"`));
+      process.exit(1);
+    }
+  }
+
+  console.log(`Using Chrome profile: ${chosen.email ?? chosen.label}  [${chosen.profileDir}]`);
+  console.log("Chrome's cookie is app-bound encrypted; a Windows elevation (UAC) prompt will appear — approve it.");
+  try {
+    return await extractSlackXoxdWindows(chosen.profileDir);
+  } catch (e: unknown) {
+    console.error(`\nCould not extract the cookie automatically: ${e instanceof Error ? e.message : String(e)}`);
+    console.error("Fallback (manual): Chrome > DevTools (F12) > Application > Cookies > https://app.slack.com > copy the `d` value,");
+    console.error("then set it via an env file:  SLACK_COOKIE=xoxd-...  (in .slack-term/.env.local)");
+    process.exit(1);
+  }
+}
+
+export async function cmdAuthChrome(opts: { workspace?: string; profile?: string; yes?: boolean } = {}): Promise<void> {
+  if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
+    console.error("Chrome cookie extraction is supported on macOS, Linux, and Windows.");
     process.exit(1);
   }
 
@@ -330,66 +383,165 @@ export async function cmdAuthChrome(opts: { workspace?: string; yes?: boolean } 
     process.exit(1);
   }
 
-  if (!opts.yes && !process.stdin.isTTY) {
-    console.error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
-    process.exit(1);
-  }
-  const confirmRl = opts.yes ? undefined : createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    if (!await allowBrowserProfileRead(confirmRl, opts.yes ?? false)) {
-      console.log("Browser profile scan cancelled.");
-      return;
-    }
-  } finally {
-    confirmRl?.close();
-  }
-  console.log("Scanning Chrome profiles for Slack session...");
-  if (process.platform === "darwin") console.log("macOS may show a dialog asking for your login password — click Allow.");
-
-  let candidates: import("./slack-app.ts").ChromeCookieCandidate[];
-  let totalProfiles: number;
-  try {
-    ({ candidates, totalProfiles } = discoverChromeCookies());
-  } catch (e: unknown) {
-    console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
-    process.exit(1);
-  }
-
-  if (candidates.length === 0) {
-    console.error(`No Slack session found in Chrome (scanned ${totalProfiles} profile${totalProfiles !== 1 ? "s" : ""}). Possible reasons:`);
-    if (process.platform === "darwin") console.error("  - You denied the keychain dialog (try running again and click Allow)");
-    console.error("  - Chrome is not installed or has no Slack session");
-    console.error("  - You're not logged in to Slack in Chrome");
-    process.exit(1);
-  }
-
   let cookie: string;
-  // Always prompt when multiple Chrome profiles exist, so users can confirm the right one.
-  if (candidates.length === 1 && totalProfiles <= 1) {
-    cookie = candidates[0]!.cookie;
-    console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
+  if (process.platform === "win32") {
+    // Windows: app-bound (v20) extraction, elevated (UAC) — its own consent/flow.
+    cookie = await pickChromeCookieWindows(selected, opts.profile);
   } else {
-    const label = candidates.length === 1
-      ? `Found 1 Slack session across ${totalProfiles} Chrome profiles:`
-      : `Found ${candidates.length} Slack sessions across ${totalProfiles} Chrome profiles:`;
-    console.log(label);
-    candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
-    console.log("");
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const defaultChoice = candidates.length === 1 ? " [Enter=1]" : "";
-    const choice = (await rl.question(`Choice [1-${candidates.length}]${defaultChoice}: `)).trim();
-    rl.close();
-    const idx = choice === "" && candidates.length === 1 ? 0 : parseInt(choice, 10) - 1;
-    if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
-      console.error("Invalid choice.");
+    // Reading the browser's cookie store needs explicit consent (macOS keychain / Linux keyring).
+    if (!opts.yes && !process.stdin.isTTY) {
+      console.error("Reading browser profiles requires confirmation. Re-run interactively or pass --yes.");
       process.exit(1);
     }
-    cookie = candidates[idx]!.cookie;
+    const confirmRl = opts.yes ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      if (!await allowBrowserProfileRead(confirmRl, opts.yes ?? false)) {
+        console.log("Browser profile scan cancelled.");
+        return;
+      }
+    } finally {
+      confirmRl?.close();
+    }
+    console.log("Scanning Chrome profiles for Slack session...");
+    if (process.platform === "darwin") console.log("macOS may show a dialog asking for your login password — click Allow.");
+
+    let candidates: import("./slack-app.ts").ChromeCookieCandidate[];
+    let totalProfiles: number;
+    try {
+      ({ candidates, totalProfiles } = discoverChromeCookies());
+    } catch (e: unknown) {
+      console.error(`Failed: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(1);
+    }
+
+    if (candidates.length === 0) {
+      console.error(`No Slack session found in Chrome (scanned ${totalProfiles} profile${totalProfiles !== 1 ? "s" : ""}). Possible reasons:`);
+      console.error("  - You denied the keychain dialog (try running again and click Allow)");
+      console.error("  - Chrome is not installed or has no Slack session");
+      console.error("  - You're not logged in to Slack in Chrome");
+      process.exit(1);
+    }
+
+    // Always prompt when multiple Chrome profiles exist, so users can confirm the right one.
+    if (candidates.length === 1 && totalProfiles <= 1) {
+      cookie = candidates[0]!.cookie;
+      console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
+    } else {
+      const label = candidates.length === 1
+        ? `Found 1 Slack session across ${totalProfiles} Chrome profiles:`
+        : `Found ${candidates.length} Slack sessions across ${totalProfiles} Chrome profiles:`;
+      console.log(label);
+      candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
+      console.log("");
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const defaultChoice = candidates.length === 1 ? " [Enter=1]" : "";
+      const choice = (await rl.question(`Choice [1-${candidates.length}]${defaultChoice}: `)).trim();
+      rl.close();
+      const idx = choice === "" && candidates.length === 1 ? 0 : parseInt(choice, 10) - 1;
+      if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
+        console.error("Invalid choice.");
+        process.exit(1);
+      }
+      cookie = candidates[idx]!.cookie;
+    }
   }
 
   setCookie(profileName, cookie);
   console.log(`Saved xoxd cookie to workspace "${profileName}".`);
   console.log(`RTM WebSocket mode is now available: slack tail @you`);
+}
+
+/**
+ * Log in from Chrome: read xoxc workspace tokens from a Chrome profile's (plaintext)
+ * LocalStorage and create a workspace profile for each, grouped under the profile's
+ * account email as the identity. Works on all platforms for the token.
+ *
+ * The xoxd cookie (needed for RTM/drafts/search fallback) is captured on macOS via
+ * the keychain; on other platforms it must be attached separately (e.g. a live CDP
+ * read via rech, or a manual paste with `slack auth cookie`).
+ */
+export async function cmdAuthLoginChrome(opts: { profile?: string } = {}): Promise<void> {
+  console.error("Scanning Chrome profiles for Slack sessions...");
+  const found = discoverChromeSessions();
+  if (found.length === 0) {
+    console.error("No Slack session found in Chrome.");
+    console.error("  Open Slack in Chrome (https://app.slack.com) and sign in, then retry.");
+    process.exit(1);
+  }
+
+  // Pick a Chrome profile.
+  let chosen: ChromeSessionProfile;
+  if (opts.profile) {
+    const key = opts.profile;
+    const match = found.find(
+      (p) => p.email === key || p.profileDir === key || p.profileDir === `Profile ${key}`,
+    );
+    if (!match) {
+      console.error(`Chrome profile "${key}" has no Slack session. Available:`);
+      found.forEach((p) => console.error(`  - ${p.email ?? p.label}  [${p.profileDir}]  (${p.sessions.length} workspace${p.sessions.length !== 1 ? "s" : ""})`));
+      process.exit(1);
+    }
+    chosen = match;
+  } else if (found.length === 1) {
+    chosen = found[0]!;
+  } else if (process.stdin.isTTY) {
+    console.log("Found Slack sessions in multiple Chrome profiles:");
+    found.forEach((p, i) => console.log(`  ${i + 1}) ${p.email ?? p.label}  [${p.profileDir}]  (${p.sessions.length} workspace${p.sessions.length !== 1 ? "s" : ""})`));
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const choice = (await rl.question(`Choice [1-${found.length}]: `)).trim();
+    rl.close();
+    const idx = parseInt(choice, 10) - 1;
+    if (isNaN(idx) || idx < 0 || idx >= found.length) {
+      console.error("Invalid choice.");
+      process.exit(1);
+    }
+    chosen = found[idx]!;
+  } else {
+    console.error(`Multiple Chrome profiles have a Slack session — choose one with --profile:`);
+    found.forEach((p) => console.error(`  slack auth login chrome --profile "${p.email ?? p.profileDir}"`));
+    process.exit(1);
+  }
+
+  const identity = chosen.email ?? chosen.label ?? chosen.profileDir;
+
+  // Capture the shared xoxd cookie where possible (macOS keychain at rest).
+  let cookie: string | undefined;
+  if (process.platform === "darwin") {
+    try {
+      const { candidates } = discoverChromeCookies();
+      cookie = candidates.find((c) => c.profileDir === chosen.profileDir)?.cookie ?? candidates[0]?.cookie;
+    } catch {
+      // keychain denied or v20 — fall through to guidance below
+    }
+  }
+  if (cookie) setUserCookie(identity, cookie, `chrome:${chosen.profileDir}`);
+
+  for (const s of chosen.sessions) {
+    const teamLabel = s.teamName ?? s.teamId;
+    const name = slugify(teamLabel);
+    addProfile(name, {
+      token: s.token,
+      team: teamLabel,
+      teamId: s.teamId,
+      url: s.url ?? "",
+      user: "",
+      identity,
+    });
+    console.log(`Added workspace "${name}": ${teamLabel}  (identity: ${identity})`);
+  }
+
+  console.log("");
+  if (cookie) {
+    console.log(`Captured xoxd cookie for ${identity} — shared across its ${chosen.sessions.length} workspace(s).`);
+    console.log(`RTM WebSocket mode is now available: slack tail @you`);
+  } else {
+    console.log("Note: no xoxd cookie captured (LocalStorage yields the token only; the cookie is");
+    console.log("encrypted at rest on this platform). Some features (RTM, drafts, search fallback) need it.");
+    console.log("  Attach it from your live browser — e.g. a CDP read via rech — or paste it:");
+    console.log(`    slack auth cookie --workspace ${slugify(chosen.sessions[0]!.teamName ?? chosen.sessions[0]!.teamId)}`);
+  }
+  console.log("");
+  console.log("Select a workspace:  slack auth use <name>   (see: slack auth ls)");
 }
 
 /**
@@ -656,31 +808,39 @@ export async function cmdAuthLogin(opts: {
   console.log("     Reads the xoxc- token directly from the installed app.");
   console.log("     Token: all platforms  |  xoxd cookie: macOS, or Chrome/Firefox on Linux");
   console.log("");
-  console.log("  2) Connect existing Slack app  [recommended if you have one]");
+  console.log("  2) Chrome browser - import workspaces");
+  console.log("     Reads xoxc- tokens from Chrome, grouped by account.");
+  console.log("     Token: all platforms  |  xoxd cookie: macOS only");
+  console.log("");
+  console.log("  3) Connect existing Slack app  [recommended if you have one]");
   console.log("     Paste a token from an app you already created.");
   console.log("");
-  console.log("  3) Create new Slack app - user token (xoxp-)");
+  console.log("  4) Create new Slack app - user token (xoxp-)");
   console.log("     Guided setup with manifest. Full access including search.");
   console.log("");
-  console.log("  4) Create new Slack app - bot token (xoxb-)");
+  console.log("  5) Create new Slack app - bot token (xoxb-)");
   console.log("     Bot is invited to channels. Search and news unavailable.");
   console.log("");
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    const choice = await ask(rl, "Choice [1/2/3/4]: ");
+    const choice = await ask(rl, "Choice [1/2/3/4/5]: ");
     console.log("");
 
     if (choice === "1") {
       await importFromDesktop(rl, opts.yes ?? false);
     } else if (choice === "2") {
-      await loginExisting(rl);
+      rl.close();
+      await cmdAuthLoginChrome();
+      return;
     } else if (choice === "3") {
-      await loginNewApp(rl, "user");
+      await loginExisting(rl);
     } else if (choice === "4") {
+      await loginNewApp(rl, "user");
+    } else if (choice === "5") {
       await loginNewApp(rl, "bot");
     } else {
-      console.error(`Invalid choice: "${choice}". Enter 1, 2, 3, or 4.`);
+      console.error(`Invalid choice: "${choice}". Enter 1, 2, 3, 4, or 5.`);
       process.exit(1);
     }
   } finally {
