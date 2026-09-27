@@ -7,6 +7,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { pbkdf2Sync, createDecipheriv } from "node:crypto";
 import { execSync } from "node:child_process";
+import { ldbDecompressedBytes } from "./leveldb.ts";
 
 export type SlackAppSession = {
   token: string;   // xoxc-...
@@ -91,88 +92,61 @@ export function extractXoxd(): string | undefined {
   }
 }
 
-// Scan raw LevelDB files for xoxc- tokens without opening the DB exclusively.
-// Works while Slack is running.
-//
-// Strategy:
-//  1. .log files (write-ahead log): values are stored as readable JSON strings.
-//     Scan for "token":"xoxc-..." to get complete, clean tokens + workspace URL.
-//  2. .ldb files (sorted tables): values are length-prefixed with binary framing
-//     bytes that can split the token mid-segment. Use gap-bridging as fallback.
-export async function extractSessions(): Promise<SlackAppSession[]> {
-  const dbPath = leveldbPath();
-  if (!existsSync(dbPath)) {
-    throw new Error(
-      `Slack desktop app LevelDB not found at:\n  ${dbPath}\nIs Slack installed and opened at least once?`,
-    );
-  }
+// Scan a LevelDB directory for xoxc- tokens without opening the DB exclusively
+// (works while the owning app is running). Reads the raw .log/.ldb files, then
+// pulls "token":"xoxc-…" plus nearby workspace url/name out of the values. .ldb
+// data blocks are Snappy-compressed, so they are decompressed first.
+function scanLevelDbSessions(dbPath: string): SlackAppSession[] {
+  if (!existsSync(dbPath)) return [];
 
   const files = readdirSync(dbPath).filter((f) => f.endsWith(".ldb") || f.endsWith(".log"));
-  if (files.length === 0) throw new Error(`No LevelDB data files found in ${dbPath}`);
+  if (files.length === 0) return [];
+
+  // Readable text per file: .ldb data blocks are Snappy-compressed (a copy-op can
+  // split "token":"xoxc-…" apart), so decompress them; .log (write-ahead log) values
+  // are already plaintext JSON. Memoized — both passes below reuse it.
+  const textCache = new Map<string, string>();
+  const fileText = (file: string): string => {
+    const cached = textCache.get(file);
+    if (cached !== undefined) return cached;
+    let text = "";
+    try {
+      const raw = readFileSync(join(dbPath, file));
+      text = file.endsWith(".ldb")
+        ? (ldbDecompressedBytes(raw).toString("latin1") || raw.toString("latin1"))
+        : raw.toString("latin1");
+    } catch {
+      text = "";
+    }
+    textCache.set(file, text);
+    return text;
+  };
 
   const sessions = new Map<string, SlackAppSession>();
 
   for (const file of files) {
-    let content: string;
-    try {
-      content = readFileSync(join(dbPath, file), "latin1");
-    } catch {
-      continue;
-    }
+    const content = fileText(file);
+    // Values are verbatim JSON (after decompression) — extract token + URL + name in one pass.
+    for (const m of content.matchAll(/"token":"(xoxc-[^"]+)"/g)) {
+      const token = m[1]!;
+      const teamId = token.split("-")[1] ?? "";
+      if (!teamId || token.length < 40) continue;
 
-    if (file.endsWith(".log")) {
-      // .log files store JSON values verbatim — extract complete token + URL + name in one pass.
-      for (const m of content.matchAll(/"token":"(xoxc-[^"]+)"/g)) {
-        const token = m[1]!;
-        const teamId = token.split("-")[1] ?? "";
-        if (!teamId || token.length < 40) continue;
+      // Look for workspace metadata near this token (within ±2KB)
+      const start = Math.max(0, m.index! - 2000);
+      const end = Math.min(content.length, m.index! + 2000);
+      const ctx = content.slice(start, end);
+      const urlMatch = ctx.match(/"url":"(https:\/\/[a-z0-9-]+\.slack\.com\/)"/);
+      const nameMatch = ctx.match(/"(?:team_name|name)":"([^"]{2,60})"/);
 
-        // Look for workspace metadata near this token (within ±2KB)
-        const start = Math.max(0, m.index! - 2000);
-        const end = Math.min(content.length, m.index! + 2000);
-        const ctx = content.slice(start, end);
-        const urlMatch = ctx.match(/"url":"(https:\/\/[a-z0-9-]+\.slack\.com\/)"/);
-        const nameMatch = ctx.match(/"(?:team_name|name)":"([^"]{2,60})"/);
-
-        const existing = sessions.get(teamId);
-        if (!existing || token.length > existing.token.length) {
-          const entry: SlackAppSession = { token, teamId };
-          const url = urlMatch?.[1] ?? existing?.url;
-          const teamName = nameMatch?.[1] ?? existing?.teamName;
-          if (url) entry.url = url;
-          if (teamName) entry.teamName = teamName;
-          sessions.set(teamId, entry);
-        }
-      }
-    } else {
-      // .ldb files: binary framing bytes split the token mid-segment.
-      // Match the first 3 numeric segments, then bridge over binary bytes to find the rest.
-      for (const m of content.matchAll(/xoxc-(\d+)-(\d+)-(\d+)/g)) {
-        const teamId = m[1]!;
-        // Skip if already found in a .log file (prefer clean .log data)
-        if (sessions.has(teamId)) continue;
-
-        let i = m.index! + m[0].length;
-        const limit = Math.min(i + 10, content.length);
-        while (i < limit && (content.charCodeAt(i) < 0x30 || content.charCodeAt(i) > 0x39)) i++;
-
-        let seg3tail = "";
-        while (i < content.length && content.charCodeAt(i) >= 0x30 && content.charCodeAt(i) <= 0x39) {
-          seg3tail += content[i++];
-        }
-        if (content[i] !== "-") continue;
-        i++;
-        let hex = "";
-        while (i < content.length) {
-          const code = content.charCodeAt(i);
-          if ((code >= 0x30 && code <= 0x39) || (code >= 0x61 && code <= 0x66)) {
-            hex += content[i++];
-          } else break;
-        }
-        if (hex.length < 20) continue;
-
-        const token = `${m[0]}${seg3tail}-${hex}`;
-        sessions.set(teamId, { token, teamId });
+      const existing = sessions.get(teamId);
+      if (!existing || token.length > existing.token.length) {
+        const entry: SlackAppSession = { token, teamId };
+        const url = urlMatch?.[1] ?? existing?.url;
+        const teamName = nameMatch?.[1] ?? existing?.teamName;
+        if (url) entry.url = url;
+        if (teamName) entry.teamName = teamName;
+        sessions.set(teamId, entry);
       }
     }
   }
@@ -180,17 +154,7 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
   // Second pass: for sessions still missing a name, search all file content
   // (printable-transformed) for team_name/name near the numeric team ID, then
   // fall back to a title-cased URL slug.
-  const allFiles = readdirSync(dbPath).filter((f) => f.endsWith(".ldb") || f.endsWith(".log"));
-  const allContent = allFiles
-    .map((f) => {
-      try {
-        // Replace non-printable bytes with spaces to expose readable text in binary ldb frames.
-        return readFileSync(join(dbPath, f), "latin1").replace(/[^\x20-\x7e]/g, " ");
-      } catch {
-        return "";
-      }
-    })
-    .join(" ");
+  const allContent = files.map((f) => fileText(f).replace(/[^\x20-\x7e]/g, " ")).join(" ");
 
   for (const session of sessions.values()) {
     if (session.teamName) continue;
@@ -233,13 +197,82 @@ export async function extractSessions(): Promise<SlackAppSession[]> {
     }
   }
 
+  return [...sessions.values()];
+}
+
+/**
+ * Import sessions from the Slack desktop app. The xoxc token is read on all
+ * platforms; the shared xoxd cookie is attached on macOS only (extractXoxd).
+ */
+export async function extractSessions(): Promise<SlackAppSession[]> {
+  const dbPath = leveldbPath();
+  if (!existsSync(dbPath)) {
+    throw new Error(
+      `Slack desktop app LevelDB not found at:\n  ${dbPath}\nIs Slack installed and opened at least once?`,
+    );
+  }
+  const result = scanLevelDbSessions(dbPath);
   // Attach xoxd cookie to all sessions (shared — one Slack desktop app, one cookie jar)
   const xoxd = extractXoxd();
-  const result = [...sessions.values()];
   if (xoxd) {
     for (const s of result) s.cookie = xoxd;
   }
   return result;
+}
+
+/** Chrome user-data directory (all platforms), or "" if unknown. */
+function chromeUserDataDir(): string {
+  const home = homedir();
+  if (process.platform === "darwin") return join(home, "Library", "Application Support", "Google", "Chrome");
+  if (process.platform === "linux") return join(home, ".config", "google-chrome");
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA ?? join(home, "AppData", "Local");
+    return join(localAppData, "Google", "Chrome", "User Data");
+  }
+  return "";
+}
+
+/** Account email for a Chrome profile from Local State → info_cache (never the gaia real name). */
+function chromeProfileEmail(userDataDir: string, profileDir: string): string | undefined {
+  try {
+    const localState = JSON.parse(
+      readFileSync(join(userDataDir, "Local State"), "utf8"),
+    ) as { profile?: { info_cache?: Record<string, { user_name?: string }> } };
+    const email = localState.profile?.info_cache?.[profileDir]?.user_name;
+    return email || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export type ChromeSessionProfile = {
+  profileDir: string;         // "Default", "Profile 3", …
+  email?: string;             // account email from Local State, if known
+  label: string;              // display name (nickname + email)
+  sessions: SlackAppSession[]; // xoxc tokens found in this profile's LocalStorage (no cookie)
+};
+
+/**
+ * Discover Slack web sessions in Chrome by scanning each profile's LocalStorage
+ * LevelDB for xoxc- tokens. LocalStorage is plaintext, so this works on all
+ * platforms and needs no keychain/DPAPI access — it yields tokens only. The
+ * xoxd cookie is fetched separately (macOS at-rest via discoverChromeCookies,
+ * or a live CDP read on other platforms).
+ */
+export function discoverChromeSessions(): ChromeSessionProfile[] {
+  const userDataDir = chromeUserDataDir();
+  if (!userDataDir || !existsSync(userDataDir)) return [];
+
+  const profileDirs = ["Default", ...readdirSync(userDataDir).filter((d) => d.startsWith("Profile "))];
+  const out: ChromeSessionProfile[] = [];
+  for (const profileDir of profileDirs) {
+    const dbPath = join(userDataDir, profileDir, "Local Storage", "leveldb");
+    const sessions = scanLevelDbSessions(dbPath);
+    if (sessions.length === 0) continue;
+    const email = chromeProfileEmail(userDataDir, profileDir);
+    out.push({ profileDir, ...(email ? { email } : {}), label: chromeProfileName(userDataDir, profileDir), sessions });
+  }
+  return out;
 }
 
 /**
