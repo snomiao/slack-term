@@ -2,9 +2,9 @@
 // Slack CLI entry — mirrors the Rust impl in src/main.rs.
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -42,6 +42,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -75,6 +76,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  type MessageMetadata,
   getPermalink,
   scheduleMessage,
   listScheduledMessages,
@@ -1068,6 +1070,38 @@ function selfLookup(token: string, cookie?: string): () => Promise<Self | null> 
   };
 }
 
+/** Who is sending, captured once per write: the Slack `metadata` to attach to
+ *  the post, and `record` to append it to the local log once the ts is known.
+ *  Both vanish under SLACK_TERM_ATTRIBUTION=off. */
+function sentAttribution(kind: SentKind): {
+  metadata?: MessageMetadata;
+  record: (r: Omit<RecordSent, "kind" | "attribution">) => void;
+} {
+  if (!attributionEnabled()) return { record: () => {} };
+  const attribution = captureAttribution();
+  return {
+    metadata: attributionMetadata(kind, attribution),
+    record: (r) => { recordSent({ ...r, kind, attribution }); },
+  };
+}
+
+/** One `slack sent` row: when/what/where, then who — the sender block is the
+ *  point of the command, so it gets its own line rather than a trailing column. */
+function formatSentRow(r: SentRow): string {
+  const first = stripTerminalControls(r.text.split("\n")[0] ?? "").slice(0, 100);
+  const where = r.permalink || `${r.channel}:${r.ts}`;
+  const who = [
+    r.cli ?? "?",
+    r.session_id ? `session=${r.session_id}` : "",
+    r.agent_pid ? `pid=${r.agent_pid}` : `pid=${r.pid}`,
+    r.git_branch ? `branch=${r.git_branch}` : "",
+    `cwd=${r.cwd}`,
+  ].filter(Boolean).join("  ");
+  return `${formatYmdHm(r.sent_at / 1000)}  ${r.kind.padEnd(4)}  ${stripTerminalControls(r.target ?? r.channel)}  ${where}\n` +
+    `    ${first}\n` +
+    `    ${stripTerminalControls(who)}`;
+}
+
 /** Name the identity a write will be performed AS, for confirm gates:
  *  "@snomiao (U0123ABC) — Acme". Slack shows only the author on the resulting
  *  message, so a wrong profile / stale SLACK_TOKEN / unintended --as-bot is
@@ -1275,8 +1309,10 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     ]);
   }
 
-  const newTs = await editMessage(token, channelId, ts, newText, args.cookie);
+  const attr = sentAttribution("edit");
+  const newTs = await editMessage(token, channelId, ts, newText, args.cookie, undefined, attr.metadata);
   console.log(`✓ Edited (ts: ${newTs})`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, text: newText, asBot: args.asBot });
 }
 
 // --- delete ---
@@ -1657,7 +1693,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
       ], recipientTz);
     }
   }
-  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie);
+  const attr = sentAttribution("send");
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie, undefined, attr.metadata);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts, cookie);
@@ -1665,6 +1702,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // fail-soft: getPermalink failure (rate limit, network, etc.) should not
     // mask send success — fall back to ts-only output below.
   }
+  attr.record({ team: (await getSelf())?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   if (permalink) {
     console.log(`✓ Sent: ${permalink}`);
   } else {
@@ -2317,7 +2355,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // `plain`: with blocks attached Slack rewrites the stored text (newlines to
   // spaces, emoji to `:one:`) and `--waitFor` can no longer read the question
   // back out of it — which is the entire recovery path.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("ask");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // The marker goes on FIRST so it sits left of the pills, and as a reaction so
   // `has::question:` lists every question the way `has::pushpin:` lists every
@@ -2352,6 +2391,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Asked: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
 
   if (!args.wait) {
     // Not waiting. stdout is the RESUME COMMAND, not just a link: nothing else
@@ -2641,7 +2681,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
 
   // `plain`: no blocks, or Slack rewrites the stored text and the ballot
   // stops parsing on the way back.
-  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true);
+  const attr = sentAttribution("poll");
+  const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // Marker first, for the same reason as `ask`: it is what makes
   // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
@@ -2669,6 +2710,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   }
   const shown = permalink || `${channelId}:${ts}`;
   console.error(`✓ Posted: ${shown}`);
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   console.log(pollResultsCommand(shown));
   console.error(`  締め切る:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
 }
@@ -3319,7 +3361,8 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent") return;
+      // `sent` reads only the local log — no token, no network.
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent") return;
       try {
         resolveToken((argv as W).workspace);
       } catch (e) {
@@ -3993,6 +4036,56 @@ async function main(): Promise<void> {
           console.error(friendlySlackError(e));
           process.exit(POLL_EXIT_ERROR);
         }
+      },
+    )
+    .command(
+      "sent [query]",
+      "Search what THIS machine posted/edited (send, ask, poll, edit) and who sent it — read-only, local log",
+      (y) => y
+        .positional("query", { type: "string", describe: "Substring of the message text (case-insensitive)" })
+        .option("channel", { type: "string", describe: "Channel/DM id (C…/D…) or the target as typed (#eng, @bob)" })
+        .option("since", { type: "string", describe: "Only newer than this: 30m, 2h, 7d, 1w, or an ISO date" })
+        .option("session", { type: "string", describe: "Agent session id (prefix match)" })
+        .option("cwd", { type: "string", describe: "Working directory the sender ran in (prefix match)" })
+        .option("kind", { type: "string", choices: ["send", "ask", "poll", "edit"], describe: "Only this kind of write" })
+        .option("json", { type: "boolean", default: false, describe: "One JSON object per line (every recorded field)" })
+        .option("count", { alias: "n", type: "number", default: 50, describe: "Max rows (newest first)" }),
+      (argv) => {
+        let sinceMs: number | undefined;
+        if (argv.since !== undefined) {
+          sinceMs = parseSince(String(argv.since));
+          if (sinceMs === undefined) {
+            console.error(`Error: --since needs 30m / 2h / 7d / 1w or an ISO date (got ${stripTerminalControls(String(argv.since))})`);
+            process.exit(1);
+          }
+        }
+        const q: Parameters<typeof querySent>[0] = { limit: Number(argv.count) || 50 };
+        if (argv.query) q.text = String(argv.query);
+        if (argv.channel) q.channel = String(argv.channel);
+        if (sinceMs !== undefined) q.sinceMs = sinceMs;
+        if (argv.session) q.session = String(argv.session);
+        if (argv.cwd) {
+          // Resolved like the recorded cwd was (process.cwd() is a realpath), so
+          // `--cwd .` works and a symlinked path (macOS /var → /private/var)
+          // still matches. A path that no longer exists is used as typed.
+          const raw = resolve(String(argv.cwd));
+          try { q.cwd = realpathSync(raw); } catch { q.cwd = raw; }
+        }
+        if (argv.kind) q.kind = argv.kind as SentKind;
+        const rows = querySent(q);
+        if (!rows) {
+          console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
+          process.exit(1);
+        }
+        if (argv.json) {
+          for (const r of rows) console.log(JSON.stringify(r));
+          return;
+        }
+        if (!rows.length) {
+          console.error(`No sent messages match (log: ${sentDbPath()}).`);
+          return;
+        }
+        for (const r of rows) console.log(formatSentRow(r));
       },
     )
     .command(

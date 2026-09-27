@@ -155,6 +155,17 @@ eval "$RESUME --timeout 0" && echo answered
 # events and drops `message_changed`), so this is the only way to hear about an
 # answer to a question you did not block on.
 
+# Who sent what: every send/ask/poll/edit is logged locally with its sender —
+# pid, cwd, git branch, agent CLI and session id — and the same attribution rides
+# along as invisible Slack message metadata (event_type `slack_term_sent`).
+slack sent                                     # newest first, sender on its own line
+slack sent "deploy" --since 2h --kind ask      # substring of the text
+slack sent --session 4f1c --cwd ~/ws/app --json
+# Log: ~/.config/slack-cli/sent.sqlite (SLACK_TERM_SENT_DB overrides).
+# Opt out of both with SLACK_TERM_ATTRIBUTION=off. Agent CLIs other than Claude
+# Code are found by process name; set SLACK_TERM_AGENT_SESSION / _CLI / _PID to
+# name the session explicitly.
+
 # Task tracking on top of reactions — :pushpin: marks a message as a task,
 # a second reaction carries its progress (see "todo" below)
 slack todo ls                                  # my open tasks
