@@ -12,6 +12,7 @@ import {
   resolveBotToken,
   saveToEnvFile,
   setCookie,
+  setUserCookie,
   resolveCookie,
 } from "../ts/profiles.ts";
 
@@ -365,5 +366,60 @@ describe("profiles", () => {
       expect(out).toContain("SLACK_TOKEN=new");
       expect(out).not.toContain("old");
     });
+  });
+});
+
+describe("profiles: identity-grouped shared cookie", () => {
+  const profilesJson = () =>
+    JSON.parse(readFileSync(join(tmpHome, ".config", "slack-cli", "profiles.json"), "utf8"));
+  const acme: Profile = {
+    token: "xoxc-fake-acme", team: "Acme", teamId: "T00000001",
+    url: "https://acme.slack.com/", user: "alice",
+    identity: "alice@example.com", cookie: "xoxd-shared",
+  };
+  const widgets: Profile = {
+    token: "xoxc-fake-widgets", team: "Widgets", teamId: "T00000002",
+    url: "https://widgets.slack.com/", user: "alice", identity: "alice@example.com",
+  };
+
+  test("addProfile hoists an identity's cookie into the shared users table", () => {
+    addProfile("acme", acme);
+    const raw = profilesJson();
+    expect(raw.profiles.acme.cookie).toBeUndefined();          // not duplicated onto the workspace
+    expect(raw.users["alice@example.com"].cookie).toBe("xoxd-shared");
+    expect(listProfiles()[0]?.profile.cookie).toBe("xoxd-shared"); // surfaced as the effective cookie
+    expect(resolveCookie("acme")).toBe("xoxd-shared");
+  });
+
+  test("a second workspace under the same identity shares the one cookie", () => {
+    addProfile("acme", acme);
+    addProfile("widgets", widgets);                            // no own cookie
+    expect(resolveCookie("widgets")).toBe("xoxd-shared");
+  });
+
+  test("setUserCookie refreshes the cookie for every workspace under the identity", () => {
+    addProfile("acme", acme);
+    addProfile("widgets", widgets);
+    setUserCookie("alice@example.com", "xoxd-rotated", "chrome:Profile 1");
+    expect(resolveCookie("acme")).toBe("xoxd-rotated");
+    expect(resolveCookie("widgets")).toBe("xoxd-rotated");
+    expect(profilesJson().users["alice@example.com"].source).toBe("chrome:Profile 1");
+  });
+
+  test("setCookie on an identity workspace routes to the shared users table", () => {
+    addProfile("widgets", widgets);                            // identity, no own cookie yet
+    setCookie("widgets", "xoxd-viaSetCookie");
+    const raw = profilesJson();
+    expect(raw.users["alice@example.com"].cookie).toBe("xoxd-viaSetCookie");
+    expect(raw.profiles.widgets.cookie).toBeUndefined();
+    expect(resolveCookie("widgets")).toBe("xoxd-viaSetCookie");
+  });
+
+  test("a workspace with its own cookie and no identity still resolves it (back-compat)", () => {
+    addProfile("solo", {
+      token: "xoxc-solo", team: "Solo", teamId: "T00000003",
+      url: "https://solo.slack.com/", user: "bob", cookie: "xoxd-own",
+    });
+    expect(resolveCookie("solo")).toBe("xoxd-own");
   });
 });
