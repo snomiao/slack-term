@@ -268,10 +268,16 @@ export function resolveToken(workspaceFlag?: string): string {
   // Bot tokens in shell env or .env files must not shadow workspace profiles.
   const legacyEnvToken = process.env.SLACK_BOT_TOKEN ?? process.env.SLACK_MCP_XOXP_TOKEN;
   if (legacyEnvToken && names.length === 0) return legacyEnvToken;
-  if (legacyEnvToken && names.length > 0) {
+  // A bot token (xoxb-) belongs in SLACK_BOT_TOKEN: it is how `slack ask` / --as-bot send, and
+  // ~/.config/slack-cli/.env is its documented home. It never stands in for the user token, so it is
+  // no conflict; warn only about a *user* token parked in the legacy variables.
+  const legacyUserToken = [process.env.SLACK_BOT_TOKEN, process.env.SLACK_MCP_XOXP_TOKEN].find(
+    (t) => t && !t.startsWith("xoxb-"),
+  );
+  if (legacyUserToken && names.length > 0) {
     // Warn only when the token differs from what's in .env.local (same value = not a real conflict)
     const envFileToken = walkDirEnv(process.cwd(), ["SLACK_BOT_TOKEN", "SLACK_MCP_XOXP_TOKEN"]);
-    if (legacyEnvToken !== envFileToken) {
+    if (legacyUserToken !== envFileToken) {
       if (!(globalThis as Record<string, unknown>).__slackEnvWarnShown) {
         (globalThis as Record<string, unknown>).__slackEnvWarnShown = true;
         console.error(
