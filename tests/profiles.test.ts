@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from "./harness.ts";
+import { describe, test, expect, beforeEach, afterEach, vi } from "./harness.ts";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, statSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -222,6 +222,46 @@ describe("profiles", () => {
     addProfile("acme", { ...fakeProfile, cookie: "xoxd-local" });
     useProfile("acme");
     expect(resolveCookie()).toBe("xoxd-local");
+  });
+
+  test("a bot token (xoxb-) in SLACK_BOT_TOKEN does not warn when profiles exist", () => {
+    addProfile("acme", fakeProfile);
+    useProfile("acme");
+    process.env.SLACK_BOT_TOKEN = "xoxb-bot-token";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveToken()).toBe("xoxp-fake-001");
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a user token in SLACK_MCP_XOXP_TOKEN still warns when profiles exist", () => {
+    addProfile("acme", fakeProfile);
+    useProfile("acme");
+    process.env.SLACK_MCP_XOXP_TOKEN = "xoxp-legacy";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(resolveToken()).toBe("xoxp-fake-001");
+      expect(spy.mock.calls.map((c) => String(c[0])).join("\n")).toContain("workspace profiles exist");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("a bot token does not hide a legacy user token set alongside it", () => {
+    addProfile("acme", fakeProfile);
+    useProfile("acme");
+    process.env.SLACK_BOT_TOKEN = "xoxb-bot-token";
+    process.env.SLACK_MCP_XOXP_TOKEN = "xoxp-legacy";
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      resolveToken();
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("resolveCookie returns cookie from global-lockfile profile", () => {
