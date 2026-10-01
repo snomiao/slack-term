@@ -22,6 +22,20 @@ export const ASK_MAX_REACTION_CHOICES = ASK_KEYCAPS.length;
 
 export type AskFound = { answer: string; how: string; who?: string };
 
+/** Recover the answerers from the exact Slack text, both before posting and
+ *  when collecting later. A DM destination is not a tag in that text. */
+export function askAudience(text: string, askerUserId: string): { audience: Set<string>; broadcastKinds: Set<string> } {
+  const audience = new Set<string>();
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) {
+    if (m[1] !== askerUserId) audience.add(m[1]!);
+  }
+  const broadcastKinds = new Set<string>();
+  for (const m of text.matchAll(/<!(here|channel|everyone)(\^[^>]*)?(\|[^>]*)?>/g)) {
+    broadcastKinds.add(m[1]!);
+  }
+  return { audience, broadcastKinds };
+}
+
 /** The marker that says "this message is an `ask`". A shortcode, so it is the
  *  SAME token in every language — that is the whole point of it.
  *

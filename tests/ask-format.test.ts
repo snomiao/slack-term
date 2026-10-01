@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
+import { askAudience, askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -432,5 +432,25 @@ describe("askMatchChoice", () => {
 
   test("an empty or whitespace reply is not a choice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
+  });
+});
+
+// Sending and recovery must derive the same audience from the posted bytes.
+describe("ask audience in encoded text", () => {
+  test("plain names, a destination and self tags grant no answerer", () => {
+    const result = askAudience("@alice @here D00000001 <@U00000001>", "U00000001");
+    expect([...result.audience]).toEqual([]);
+    expect([...result.broadcastKinds]).toEqual([]);
+  });
+
+  test("deduplicates actual non-self tags anywhere in the final body", () => {
+    const text = askBuildText("<@U00000001> q", "<@U00000002>", ["<@W00000003>", "<@U00000002>"], [], true);
+    expect([...askAudience(text, "U00000001").audience]).toEqual(["U00000002", "W00000003"]);
+  });
+
+  test("recognizes explicit broadcast forms without inventing individual tags", () => {
+    const result = askAudience("<!here> <!channel|channel> <!everyone^123|everyone> <!here>", "");
+    expect([...result.audience]).toEqual([]);
+    expect([...result.broadcastKinds]).toEqual(["here", "channel", "everyone"]);
   });
 });
