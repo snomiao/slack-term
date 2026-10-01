@@ -348,21 +348,7 @@ describe("ask bot credentials and refusal boundaries (CLI)", { timeout: 60_000 }
     }
   });
 
-  test("recovery does not grant an untagged DM counterpart an implicit answer", async () => {
-    const m = await startMock({ inline: {
-      ...AUTH,
-      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB } },
-      [`conversations.history__channel=${DM}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: askBuildText("may I proceed?", "", [], [], false) }] },
-    } });
-    try {
-      const result = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
-      expect(result.exitCode).toBe(3);
-      expect(result.stderr).toContain("有効な回答者を判定できません");
-      expect(m.requests.some((q) => q.method === "chat.postMessage" || q.method === "chat.update")).toBe(false);
-    } finally {
-      await m.stop();
-    }
-  });
+
 });
 
 describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
@@ -864,6 +850,36 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       await m.stop();
     }
   });
+
+  for (const channel of [DM, CHAN]) {
+    test(`legacy untagged recovery ${channel === DM ? "counts the DM counterpart pill" : "refuses the same channel message"}`, async () => {
+      const messages = [{
+        type: "message", user: SELF, ts: QTS,
+        text: askBuildText("@bob may I proceed?", "", ["A", "B"], [], false),
+        reactions: [{ name: "two", users: [SELF, BOB], count: 2 }],
+      }];
+      const m = await startMock({ inline: {
+        ...AUTH,
+        [`conversations.info__channel=${channel}`]: { ok: true, channel: { id: channel, is_im: channel === DM, user: BOB } },
+        ...waitForFixture(channel, messages),
+      } });
+      try {
+        const result = await run(["ask", "--waitFor", `${channel}:${QTS}`, "--timeout", "0"], m.baseUrl);
+        if (channel === DM) {
+          expect(result.exitCode).toBe(0);
+          expect(result.stdout.trim()).toBe("B");
+          expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+        } else {
+          expect(result.exitCode).toBe(3);
+          expect(result.stderr).toContain("有効な回答者を判定できません");
+          expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+        }
+        expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+      } finally {
+        await m.stop();
+      }
+    });
+  }
 
   test("collects a pill pressed while nobody was waiting", async () => {
     const inline: InlineFixtures = {

@@ -1824,7 +1824,8 @@ function askEncodeBroadcasts(s: string): { text: string; kinds: Set<string> } {
   return { text, kinds };
 }
 
-/** The other party in a 1:1 DM, for destination metadata and self-DM warnings.
+/** The other party in a 1:1 DM, for destination metadata, self-DM warnings
+ *  and recovery of legacy untagged asks.
  *  A failed lookup never grants an implicit right to answer. */
 async function imCounterpart(token: string, channelId: string, cookie?: string): Promise<string | undefined> {
   if (!channelId.startsWith("D")) return undefined;
@@ -2502,6 +2503,12 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   const askerBotId = typeof msg.bot_id === "string" ? msg.bot_id : "";
   const { audience, broadcastKinds } = askAudience(text, askerUserId);
   const broadcast = broadcastKinds.size > 0;
+  // Legacy untagged 1:1-DM asks promised the counterpart could answer.
+  // Recover those in-flight asks only; new sends still require explicit tags.
+  if (!audience.size && !broadcast) {
+    const counterpart = await imCounterpart(token, channelId, args.cookie);
+    if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
+  }
   if (!audience.size && !broadcast) {
     console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
