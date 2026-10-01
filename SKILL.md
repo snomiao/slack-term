@@ -88,8 +88,8 @@ slack react "<permalink>" eyes --remove   # take it back
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (same confirm gate)
 # The question MUST @tag whoever may answer — only their reaction/reply counts.
 slack ask "#eng" "@alice この PR 出してよい?" "出す" "待つ"
-ANS=$(slack ask "@bob" "出してよい?" "はい" "待って" --code=<code> --wait)  # blocks
-RESUME=$(slack ask "@bob" "出してよい?" "はい" "待って" --code=<code>)      # does not
+ANS=$(slack ask "@bob" "@bob 出してよい?" "はい" "待って" --code=<code> --wait)  # blocks
+RESUME=$(slack ask "@bob" "@bob 出してよい?" "はい" "待って" --code=<code>)      # does not
 #   RESUME -> slack ask --waitFor='<permalink>'    # collect the answer later
 eval "$RESUME --timeout 0"                        # check once: 0 answered / 2 still open
 
@@ -155,8 +155,9 @@ without losing clicks. A reaction is durable state anyone can read back later.
 
 - **The question must @tag whoever may answer** (`@alice`, or `@here`/`@channel` for the
   whole channel). Only their reaction/reply is taken as the answer; an unaddressed
-  question is refused (exit 3) rather than let the first bystander decide it. In a 1:1 DM
-  the other party counts automatically.
+  question is refused (exit 3) rather than let the first bystander decide it. DMs also
+  require an explicit tag in the question or `--body`; unresolved tags refuse the ask.
+  With `--as-bot`, names resolve using the bot token, not the user token.
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
