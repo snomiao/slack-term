@@ -380,7 +380,7 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
   });
 
   test("a tag that matches nobody grants nobody — still refused, and says why", async () => {
-    const m = await startMock({ inline: { ...AUTH } });
+    const m = await startMock({ inline: { ...AUTH, "conversations.members": { ok: true, members: [] } } });
     try {
       const r = await run(["ask", "#chan", "@nobody やっていい?", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(3);
