@@ -145,6 +145,10 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
 # seeds are removed, leaving the chosen pill visible.
 #
+# Thread notes (audience replies that are not the answer, even after ✅) go to
+# stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
+#   slack ask --waitFor='<permalink>' --timeout 0 --json --after=<cursor>
+#
 # WITHOUT --wait, stdout is the command that collects the answer later:
 RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
 #   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'

@@ -182,6 +182,16 @@ without losing clicks. A reaction is durable state anyone can read back later.
   so a pill pressed later still decides it: re-wait past the delivered reply with
   `slack ask --waitFor='<permalink>' --after=<reply ts>` (stderr prints this line).
 
+**Thread notes ride along with the answer.** A reply from the audience that is not the
+answer (「あと cswap ls も見て」 next to a pressed pill) is a *note*. Notes are read even when
+a pill answered, and again on every `--waitFor` of a ✅ question, so a note written after
+the answer still reaches you. Plain mode: stdout is still the answer alone, and the notes go
+to stderr. `--json`: stdout is one object
+`{status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink}`, with the same
+exit codes. Pass `cursor` back as `--after` on your next `--waitFor --timeout 0` and you
+never get the same note twice. Only the question's audience counts; the asker, bots and
+bystanders are never notes.
+
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
 and recovers everything it needs by parsing the message, so nothing is stored locally and

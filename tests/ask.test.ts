@@ -1042,3 +1042,127 @@ describe("ask URL boundaries", () => {
     });
   }
 });
+
+// THE LIVE CASE, 2026-10-02: a pill was pressed and collected, ✅ was written,
+// the watcher exited — and the same person's thread note 40 s later was never
+// delivered by anything. A note is a reply from the audience that is NOT the
+// answer. It rides along with the answer, never replaces it: plain stdout is
+// still the answer alone, and --json carries the notes plus a cursor that, fed
+// back as --after, never delivers the same note twice.
+describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 }, () => {
+  const Q = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], true);
+  const T = (n: number) => `1700000000.000${n}`; // all after QTS (…000100)
+  const note = (ts: string, text: string, user = BOB, extra: Record<string, unknown> = {}) =>
+    ({ type: "message", user, ts, thread_ts: QTS, text, ...extra });
+
+  function fx(question: Record<string, unknown>, thread: unknown[]): InlineFixtures {
+    const messages = [question];
+    return {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages },
+      ...pollFixture(CHAN, messages),
+      [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+      [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+    };
+  }
+  const json = (stdout: string) => JSON.parse(stdout.trim()) as { status: string; answer: string | null; notes: { ts: string; user: string; text: string }[]; cursor: string };
+
+  test("a pill + a thread note already there: both delivered, the pill is still the answer", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.status).toBe("answered");
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => [n.ts, n.user, n.text])).toEqual([[T(200), BOB, "cswap ls も見て"]]);
+      expect(o.cursor).toBe(T(200));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("plain mode keeps stdout = the answer alone; the note goes to stderr", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("A\n");
+      expect(r.stderr).toContain("cswap ls も見て");
+      expect(r.stderr).toContain(`--after=${T(200)}`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a pill + a note written AFTER ✅ is delivered on the next --waitFor (the 2026-10-02 case)", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    // ✅ was written at …150. The …120 note was seen by the run that wrote it.
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(120), "前の追記"), note(T(300), "也看一眼 cswap ls")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["也看一眼 cswap ls"]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a free-text answer + another reply: the answer is not repeated as a note", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 2 };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2"), note(T(300), "あと README も")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("B");
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("replies from outside the audience — a bystander, the asker, a bot — are not notes", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 4, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [
+      note(T(200), "横から失礼", ALICE),
+      note(T(300), "了解、見ます", SELF),
+      note(T(400), "bot echo", BOB, { bot_id: "B00000001" }),
+      note(T(500), "joined", BOB, { subtype: "channel_join" }),
+    ]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(json(r.stdout).notes).toEqual([]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the cursor never delivers a note twice", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "one"), note(T(300), "two")]) });
+    try {
+      const first = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(first.notes.map((n) => n.text)).toEqual(["one", "two"]);
+      // Feed the cursor back: nothing new, nothing repeated — and the cursor holds.
+      const again = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${first.cursor}`], m.baseUrl)).stdout);
+      expect(again.notes).toEqual([]);
+      expect(again.cursor).toBe(first.cursor);
+      // A cursor between the two delivers only the newer one.
+      const mid = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${T(200)}`], m.baseUrl)).stdout);
+      expect(mid.notes.map((n) => n.text)).toEqual(["two"]);
+    } finally {
+      await m.stop();
+    }
+  });
+});

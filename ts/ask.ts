@@ -20,7 +20,9 @@ export const ASK_KEYCAPS = [
 ] as const;
 export const ASK_MAX_REACTION_CHOICES = ASK_KEYCAPS.length;
 
-export type AskFound = { answer: string; how: string; who?: string };
+/** `ts` is set when the answer is a REPLY — so that reply is not delivered again
+ *  as a thread note alongside the answer it already is. */
+export type AskFound = { answer: string; how: string; who?: string; ts?: string };
 
 /** The marker that says "this message is an `ask`". A shortcode, so it is the
  *  SAME token in every language — that is the whole point of it.

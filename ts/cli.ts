@@ -1792,6 +1792,8 @@ interface AskArgs {
   userId?: string;
   asBot?: boolean;
   wait?: boolean;
+  /** `--json` with `--wait`: one JSON object on stdout (answer, notes, cursor). */
+  json?: boolean;
   timeout?: number;
   cookie?: string;
   // Token used to resolve the @tags that decide who may answer (needs
@@ -1881,10 +1883,137 @@ interface AskWaitCtx {
   /** Only so the resume hint printed on timeout names the right identity — the
    *  ✅ rewrite can be done by the original poster alone. */
   asBot: boolean;
-  /** Text replies at or before this ts are ignored — the free-text reply a
-   *  previous exit 5 already delivered. Reactions still count. */
+  /** The CURSOR: everything at or before this ts was already delivered to the
+   *  caller. Text replies there are not answers again (the free-text reply an
+   *  exit 5 delivered), and not thread notes again. Reactions still count. */
   after?: string;
+  /** `--json`: stdout is one JSON object (answer + notes + cursor) instead of
+   *  the bare answer. Exit codes are the same either way. */
+  json: boolean;
 }
+
+/** A reply from the question's audience that is NOT the answer — an extra
+ *  instruction ("also look at X"), a caveat, a question back after a pill.
+ *
+ *  Reported from real use 2026-10-02: a pill was pressed and collected, ✅ was
+ *  written, and the watcher exited; 40 s later the same person added a note in
+ *  the thread, and nothing ever delivered it. A pill was the whole answer as far
+ *  as `ask` was concerned, so the thread was never read — and once ✅ was
+ *  written, `--waitFor` only ever returned the stored answer. */
+interface AskNote { ts: string; user: string; text: string; permalink: string }
+
+/** Who and where notes are read from — the same audience rule as answers. */
+interface AskNoteScope {
+  channelId: string;
+  ts: string;
+  threadParentTs?: string;
+  threadOnly: boolean;
+  /** The question's own `reply_count`. Its thread is only fetched when this
+   *  says there is one: a call per collection on every question is a cost paid
+   *  for nothing on the many that never get a thread. */
+  replyCount: number;
+  isAnswerer: (user: unknown) => user is string;
+  askerUserId: string;
+  askerBotId: string;
+  cookie?: string;
+}
+
+/** The audience's replies after `after` (or after the question), oldest first.
+ *  `skip` drops the reply that IS the answer.
+ *
+ *  Fail-soft: a note is extra information, never the answer, so a failed fetch
+ *  is reported on stderr and must not cost the caller the answer it already
+ *  has. Thread replies come from the thread; in a 1:1 DM, plain replies count
+ *  too — bounded by our NEXT question there, exactly as answers are, so a note
+ *  meant for a newer question is not delivered with an older one. */
+async function askCollectNotes(token: string, sc: AskNoteScope, after: string | undefined, skip: (m: Record<string, Json>) => boolean): Promise<AskNote[]> {
+  const pool = new Map<string, Record<string, Json>>();
+  if (sc.threadParentTs || sc.replyCount > 0) {
+    try {
+      const rep = asRecord((await replies(token, sc.channelId, sc.threadParentTs ?? sc.ts, 100, sc.cookie)) as Json);
+      for (const m of asArray(rep.messages).map(asRecord)) pool.set(String(m.ts), m);
+    } catch (e: unknown) {
+      console.error(`  (スレッドの追記を読めませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+  if (!sc.threadOnly && !sc.threadParentTs) {
+    try {
+      const hist = asRecord((await history(token, sc.channelId, 30, sc.ts, undefined, sc.cookie, true)) as Json);
+      const msgs = asArray(hist.messages).map(asRecord);
+      const bound = msgs
+        .filter((m) => Number(m.ts) > Number(sc.ts) && (
+          (sc.askerBotId && m.bot_id === sc.askerBotId) || (sc.askerUserId && m.user === sc.askerUserId)))
+        .reduce((min, m) => Math.min(min, Number(m.ts)), Infinity);
+      for (const m of msgs) if (Number(m.ts) < bound && !pool.has(String(m.ts))) pool.set(String(m.ts), m);
+    } catch (e: unknown) {
+      console.error(`  (DM の追記を読めませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+  const picked = [...pool.values()]
+    .filter((m) => Number(m.ts) > Number(sc.ts))
+    .filter((m) => !after || Number(m.ts) > Number(after))
+    // The asker is excluded by isAnswerer; any bot post (ours or another
+    // integration's) is excluded here, so nothing echoes back as a "note".
+    .filter((m) => sc.isAnswerer(m.user) && !m.bot_id)
+    .filter((m) => typeof m.subtype !== "string" || ASK_ANSWERABLE_SUBTYPES.has(m.subtype))
+    .filter((m) => typeof m.text === "string" && m.text.trim() !== "")
+    .filter((m) => !skip(m))
+    .sort((a, b) => Number(a.ts) - Number(b.ts));
+  const out: AskNote[] = [];
+  for (const m of picked) {
+    let permalink = "";
+    try {
+      permalink = await getPermalink(token, sc.channelId, String(m.ts), sc.cookie);
+    } catch {
+      // fail-soft: the ts still names it
+    }
+    out.push({ ts: String(m.ts), user: String(m.user), text: (m.text as string).trim(), permalink });
+  }
+  return out;
+}
+
+/** The next cursor: the newest thing this result delivered, never older than
+ *  the cursor it was given. A caller that passes it back as `--after` gets
+ *  nothing twice. */
+function askNextCursor(...tss: (string | undefined)[]): string {
+  return tss.filter((t): t is string => !!t).reduce((a, b) => (!a || Number(b) > Number(a) ? b : a), "");
+}
+
+/** Deliver an answer (or the lack of one). Plain mode keeps the contract —
+ *  stdout is the answer alone — and puts the notes and the next-cursor hint on
+ *  stderr. `--json` puts all of it in one object on stdout. */
+async function askEmit(
+  token: string,
+  o: { json: boolean; shown: string; asBot: boolean; cookie?: string | undefined },
+  r: { status: "answered" | "freetext" | "ambiguous" | "timeout"; answer: string | null; how?: string; who?: string; notes: AskNote[]; cursor: string },
+): Promise<void> {
+  if (o.json) {
+    console.log(JSON.stringify({
+      status: r.status, answer: r.answer, how: r.how ?? null, who: r.who ?? null,
+      notes: r.notes, cursor: r.cursor, permalink: o.shown,
+    }));
+    return;
+  }
+  if (r.notes.length) {
+    console.error(`  スレッドの追記 ${r.notes.length} 件 (回答とは別):`);
+    for (const n of r.notes) {
+      let who = n.user;
+      try {
+        who = await userName(token, n.user, o.cookie);
+      } catch {
+        // the id still says who
+      }
+      for (const [i, line] of n.text.split("\n").entries()) {
+        console.error(`    ${i ? " ".repeat(stripTerminalControls(who).length + 2) : `${stripTerminalControls(who)}: `}${stripTerminalControls(line)}`);
+      }
+    }
+  }
+  if (r.status === "answered") {
+    console.error(`  この後の追記を拾う:  ${askResumeCommand(o.shown, o.asBot, r.cursor)}`);
+  }
+  if (r.answer !== null) console.log(r.answer);
+}
+
 
 /** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
  *  on timeout. A timeout of 0 means "look exactly once", so a caller can poll
@@ -1901,6 +2030,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // deliberately opens it to everyone — that is what the asker asked for.
   const isAnswerer = (user: unknown): user is string =>
     typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
+
+  /** The question's `reply_count` as last seen — whether its thread is worth a
+   *  fetch when collecting notes. */
+  let replyCount = 0;
 
   /** The earliest reply from an answerer that picked none of the choices. Kept
    *  across polls so the timeout can report it, and so the operator is told once
@@ -2001,13 +2134,13 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (!t) continue;
       // A question asked WITHOUT choices is answered by whatever comes back —
       // there is nothing to match against, and every reply is the answer.
-      if (!candidates.length) return { answer: t, how: copy.howReply, who: m.user };
+      if (!candidates.length) return { answer: t, how: copy.howReply, who: m.user, ts: String(m.ts) };
       const match = askMatchChoice(t, candidates);
       if (match.kind === "chosen") {
         // Answer with the CHOICE, not with the reply that selected it: "2" and
         // "2. 中止" have to reach the caller as the same decision a pill would
         // have produced, or the same answer arrives in three spellings.
-        return { answer: candidates[match.index - 1]!, how: copy.howReplyN(match.index), who: m.user };
+        return { answer: candidates[match.index - 1]!, how: copy.howReplyN(match.index), who: m.user, ts: String(m.ts) };
       }
       // Replied, but picked nothing. Recorded rather than returned: a later
       // reply may still choose, and the first one is what the operator needs to
@@ -2041,6 +2174,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       const messages = asArray(rep.messages).map(asRecord);
       const own = messages.find((m) => m.ts === ts);
       if (own) {
+        replyCount = Number(own.reply_count) || 0;
         const byReaction = await answerFromReactions(own);
         if (byReaction) return byReaction;
       }
@@ -2054,6 +2188,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const messages = asArray(hist.messages).map(asRecord);
     const own = messages.find((m) => m.ts === ts);
 
+    if (own) replyCount = Number(own.reply_count) || 0;
     // A reaction is the intended path, so it wins when both are present.
     if (own) {
       const byReaction = await answerFromReactions(own);
@@ -2145,8 +2280,19 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
     if (found) {
       await markResolved(found);
-      // stdout gets the answer and nothing else.
-      console.log(found.answer);
+      // Notes AFTER the answer is in hand: a pill used to end the poll before
+      // the thread was ever read, which is how a note beside it was lost.
+      const notes = await askCollectNotes(token, {
+        channelId, ts, threadOnly, replyCount, isAnswerer, askerUserId, askerBotId,
+        ...(ctx.threadParentTs ? { threadParentTs: ctx.threadParentTs } : {}),
+        ...(cookie ? { cookie } : {}),
+      }, ctx.after, (m) => m.ts === found!.ts);
+      const r: Parameters<typeof askEmit>[2] = {
+        status: "answered", answer: found.answer, how: found.how, notes,
+        cursor: askNextCursor(ts, ctx.after, found.ts, ...notes.map((n) => n.ts)),
+      };
+      if (found.who) r.who = found.who;
+      await askEmit(token, ctx, r);
       process.exit(0);
     }
     // A free-text reply that picks nothing is delivered NOW, not held until the
@@ -2165,7 +2311,11 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
       console.error(`  ${shown}`);
       console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
-      console.log(unchosen.text);
+      if (ctx.json) {
+        await askEmit(token, ctx, { status: "freetext", answer: unchosen.text, who: unchosen.who, notes: [], cursor: askNextCursor(ts, ctx.after, unchosen.ts) });
+      } else {
+        console.log(unchosen.text);
+      }
       process.exit(ASK_EXIT_FREETEXT);
     }
     // Said as soon as it is seen, not only at the timeout: the reply is usually
@@ -2207,6 +2357,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
     console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
+    if (ctx.json) await askEmit(token, ctx, { status: "ambiguous", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after) });
     process.exit(ASK_EXIT_UNCHOSEN);
   }
   if (timeout === 0) {
@@ -2216,6 +2367,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     console.error(`  ${shown}`);
     console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
   }
+  if (ctx.json) await askEmit(token, ctx, { status: "timeout", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after) });
   process.exit(ASK_EXIT_TIMEOUT);
 }
 
@@ -2463,6 +2615,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     timeout,
     shown,
     asBot: !!args.asBot,
+    json: !!args.json,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (cookie) ctx.cookie = cookie;
@@ -2479,7 +2632,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
  *  file to go stale, lose, or disagree with Slack, and any machine holding the
  *  permalink can collect — at the cost of the body being a parseable format
  *  (`askBuildText` ⇄ `askParseMessage`). */
-async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string }): Promise<void> {
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string }): Promise<void> {
   const url = parseSlackPermalink(args.link);
   let channelId: string;
   let ts: string;
@@ -2531,13 +2684,6 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     );
     process.exit(ASK_EXIT_ERROR);
   }
-  if (parsed.kind === "resolved") {
-    // Answered while nobody was watching — the case that makes fire-and-forget
-    // safe. Report it exactly as `--wait` would have.
-    console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
-    console.log(parsed.answer);
-    return;
-  }
 
   // Who may answer, recovered from the tags the readers can see. They are
   // already `<@U…>`-encoded in the stored text, so no directory lookup is
@@ -2556,6 +2702,38 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     const counterpart = await imCounterpart(token, channelId, args.cookie);
     if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
   }
+  if (parsed.kind === "resolved") {
+    // Answered while nobody was watching — the case that makes fire-and-forget
+    // safe. Report it exactly as `--wait` would have, plus any notes the
+    // audience left in the thread AFTER it was answered: that is the note that
+    // was lost in real use (2026-10-02), written 40 s after ✅.
+    //
+    // The default cursor is the ✅ edit itself. Everything before it was seen by
+    // the run that wrote ✅ — the answer reply among them, which must not come
+    // back as a "note" — and that run delivered the notes it saw. A body whose
+    // ✅ edit failed (non-author token) has no `edited` stamp; then the reply
+    // whose text IS the answer is skipped instead.
+    console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
+    const editedTs = typeof asRecord(msg.edited).ts === "string" ? String(asRecord(msg.edited).ts) : undefined;
+    const after = askNextCursor(args.after, editedTs) || undefined;
+    let notes: AskNote[] = [];
+    if (audience.size || broadcast) {
+      const isAnswerer = (user: unknown): user is string =>
+        typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
+      notes = await askCollectNotes(token, {
+        channelId, ts, threadOnly: !!threadTs || !channelId.startsWith("D"),
+        replyCount: Number(msg.reply_count) || 0, isAnswerer, askerUserId, askerBotId,
+        ...(threadTs ? { threadParentTs: threadTs } : {}),
+        ...(args.cookie ? { cookie: args.cookie } : {}),
+      }, after, (m) => !editedTs && typeof m.text === "string" && m.text.trim() === parsed.answer);
+    }
+    await askEmit(token, { json: args.json, shown: args.link, asBot: args.asBot, cookie: args.cookie }, {
+      status: "answered", answer: parsed.answer, notes,
+      cursor: askNextCursor(ts, after, ...notes.map((n) => n.ts)),
+    });
+    return;
+  }
+
   if (!audience.size && !broadcast) {
     console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
@@ -2579,6 +2757,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     timeout: args.timeout,
     shown: args.link,
     asBot: args.asBot,
+    json: args.json,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
@@ -3838,7 +4017,8 @@ async function main(): Promise<void> {
         .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
-        .option("after", { type: "string", describe: "With --waitFor: ignore text replies at or before this ts (the reply an exit 5 already delivered). Reactions still count." })
+        .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
+        .option("json", { type: "boolean", default: false, describe: "With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
@@ -3877,7 +4057,7 @@ async function main(): Promise<void> {
             waitCookie = ck(argv as W);
           }
           try {
-            const a: { link: string; timeout: number; asBot: boolean; cookie?: string; after?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"] };
+            const a: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"], json: !!argv.json };
             if (waitCookie) a.cookie = waitCookie;
             if (argv.after) {
               const after = String(argv.after);
@@ -3914,6 +4094,7 @@ async function main(): Promise<void> {
         if (argv.body) args.body = argv.body;
         if (argv.lang) args.lang = String(argv.lang);
         if (argv.wait) args.wait = true;
+        if (argv.json) args.json = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
         // Always resolve @tags with the user token (it has users:read), even
