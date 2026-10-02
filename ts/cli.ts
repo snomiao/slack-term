@@ -28,7 +28,11 @@ import {
   askMatchChoice,
   applyInvalidNotice,
   readInvalidNotice,
+  askResolveLang,
+  ASK_COPY,
+  ASK_LANGS,
   type AskFound,
+  type AskLang,
 } from "./ask.ts";
 import {
   POLL_KEYCAPS,
@@ -67,6 +71,7 @@ import {
   listDrafts,
   listUsers,
   userInfo,
+  userLocale,
   conversationInfo,
   openDm,
   parseSlackPermalink,
@@ -1775,6 +1780,9 @@ const ASK_MAX_CONSECUTIVE_ERRORS = 8;
 
 interface AskArgs {
   allowUrlAdjacent?: boolean;
+  /** `--lang`. Unset = pick from the readers' Slack locale, then the content,
+   *  then the system locale — see `askResolveLang`. */
+  lang?: string;
   target: string;
   question: string;
   choices: string[];
@@ -1855,6 +1863,9 @@ interface AskWaitCtx {
    *  nothing". */
   overflow: string[];
   threadOnly: boolean;
+  /** The language the question's copy is in — the ✅ stamp and the
+   *  invalid-ballot line are written in the same one. */
+  lang: AskLang;
   /** Who may answer. Empty + broadcast=false would accept nobody, which is why
    *  posting an unaddressed question is refused up front. */
   audience: Set<string>;
@@ -1880,6 +1891,7 @@ interface AskWaitCtx {
  *  cheaply on its own schedule instead of parking a process on `--wait`. */
 async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
   const { channelId, ts, question, reactable, threadOnly, audience, broadcast, cookie, timeout, shown } = ctx;
+  const copy = ASK_COPY[ctx.lang];
   const askerUserId = ctx.askerUserId;
   const askerBotId = ctx.askerBotId;
 
@@ -1923,7 +1935,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   async function noteInvalid(msg: Record<string, Json>, offenders: string[]): Promise<void> {
     const text = typeof msg.text === "string" ? msg.text : "";
     if (!text) return;
-    const next = applyInvalidNotice(text, offenders);
+    const next = applyInvalidNotice(text, offenders, ctx.lang);
     if (next === text) return;
     try {
       await editMessage(token, channelId, ts, next, cookie, true);
@@ -1957,7 +1969,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     if (!picks.length) return null;
     if (picks.length === 1) {
       const { index, users } = picks[0]!;
-      return { answer: reactable[index]!, how: `リアクション ${ASK_KEYCAPS[index]!.glyph}`, who: users[0]! };
+      return { answer: reactable[index]!, how: copy.howReaction(ASK_KEYCAPS[index]!.glyph), who: users[0]! };
     }
     const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
     console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
@@ -1989,13 +2001,13 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (!t) continue;
       // A question asked WITHOUT choices is answered by whatever comes back —
       // there is nothing to match against, and every reply is the answer.
-      if (!candidates.length) return { answer: t, how: "返信", who: m.user };
+      if (!candidates.length) return { answer: t, how: copy.howReply, who: m.user };
       const match = askMatchChoice(t, candidates);
       if (match.kind === "chosen") {
         // Answer with the CHOICE, not with the reply that selected it: "2" and
         // "2. 中止" have to reach the caller as the same decision a pill would
         // have produced, or the same answer arrives in three spellings.
-        return { answer: candidates[match.index - 1]!, how: `返信 (${match.index})`, who: m.user };
+        return { answer: candidates[match.index - 1]!, how: copy.howReplyN(match.index), who: m.user };
       }
       // Replied, but picked nothing. Recorded rather than returned: a later
       // reply may still choose, and the first one is what the operator needs to
@@ -2095,7 +2107,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // and must keep getting the answer body alone.
     if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
     try {
-      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who), cookie, true);
+      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who, ctx.lang), cookie, true);
       // Swap the marker for the resolved one so search reflects reality:
       // `has::question:` should list what still needs answering, not everything
       // ever asked. Removal last — a crash between the two leaves the question
@@ -2313,7 +2325,19 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // which makes channel mode unambiguous by construction. A question posted
   // INTO a thread is thread-scoped for the same reason.
   const threadOnly = !channelId.startsWith("D") || !!threadTs;
-  const message = askBuildText(question, body, reactable, overflow, threadOnly);
+  // The copy's language. The readers are the people who have to read it, so
+  // their Slack locale comes first — but only for a known set of people: an
+  // @here audience is not one, and is left to the content and the system.
+  const readerLocales = broadcast
+    ? []
+    : await Promise.all([...audience].map((id) => userLocale(mentionToken, id, args.mentionCookie)));
+  const picked = askResolveLang({ flag: args.lang, readerLocales, content: [question, body, ...reactable, ...overflow] });
+  if (!picked) {
+    console.error(`Error: unsupported language "${stripTerminalControls(args.lang ?? process.env.SLACK_TERM_LANG ?? "")}" — use one of: ${ASK_LANGS.join(", ")}`);
+    process.exit(ASK_EXIT_ERROR);
+  }
+  const lang = picked.lang;
+  const message = askBuildText(question, body, reactable, overflow, threadOnly, lang);
   guardUrlBoundaries(message, args.allowUrlAdjacent);
 
   // Preview the destination's last message, exactly as `send` does — the gate's
@@ -2363,6 +2387,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       // shown as its own line rather than left to be inferred from the body.
       `  Answerable by: ${audienceLabel}`,
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
+      `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_TERM_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
       `--------------------------------────────────`,
     ], recipientTz);
   }
@@ -2430,6 +2455,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     reactable,
     overflow,
     threadOnly,
+    lang,
     audience,
     broadcast,
     askerUserId: self?.userId ?? "",
@@ -2545,6 +2571,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     reactable: parsed.reactable,
     overflow: parsed.overflow,
     threadOnly: parsed.threadOnly,
+    lang: parsed.lang,
     audience,
     broadcast,
     askerUserId,
@@ -3808,6 +3835,7 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
+        .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: ignore text replies at or before this ts (the reply an exit 5 already delivered). Reactions still count." })
@@ -3884,6 +3912,7 @@ async function main(): Promise<void> {
         };
         if (argv.code) args.code = argv.code;
         if (argv.body) args.body = argv.body;
+        if (argv.lang) args.lang = String(argv.lang);
         if (argv.wait) args.wait = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];

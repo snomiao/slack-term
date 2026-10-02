@@ -201,6 +201,36 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  test("the copy follows the answerer's Slack locale, and the gate says why", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      "users.info__include_locale=true&user=U00000BOB": { ok: true, user: { id: BOB, locale: "en-US" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      // Written in Japanese, but bob reads Slack in English — bob is the one
+      // who has to follow the instructions.
+      const base = ["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("Language: en (answerers' Slack locale; override with --lang)");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const post = m.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
+      const posted = JSON.parse(post.body).text as string;
+      expect(posted).toContain(":question: Other — reply to this message");
+      expect(posted).toContain("_Press one of the reactions below to answer.");
+
+      // --lang overrides it.
+      const ja = await run([...base, "--lang", "ja"], m.baseUrl);
+      expect(ja.stdout).toContain("Language: ja (--lang; override with --lang)");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("@here opens it to the channel and posts a real broadcast tag", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
