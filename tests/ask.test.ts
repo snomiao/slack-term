@@ -1100,7 +1100,8 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
 
   test("a pill + a note written AFTER ✅ is delivered on the next --waitFor (the 2026-10-02 case)", async () => {
     const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
-    // ✅ was written at …150. The …120 note was seen by the run that wrote it.
+    // ✅ was written at …150 — by a build that collected no notes, so the …120
+    // note was never delivered either. No default cursor: both come back.
     const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
     const m = await startMock({ inline: fx(q, [note(T(120), "前の追記"), note(T(300), "也看一眼 cswap ls")]) });
     try {
@@ -1108,7 +1109,7 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
       expect(r.exitCode).toBe(0);
       const o = json(r.stdout);
       expect(o.answer).toBe("A");
-      expect(o.notes.map((n) => n.text)).toEqual(["也看一眼 cswap ls"]);
+      expect(o.notes.map((n) => n.text)).toEqual(["前の追記", "也看一眼 cswap ls"]);
       expect(o.cursor).toBe(T(300));
     } finally {
       await m.stop();
@@ -1127,6 +1128,29 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
       expect(o.cursor).toBe(T(300));
     } finally {
       await m.stop();
+    }
+  });
+
+  test("on a ✅ question answered BY A REPLY, that reply is not handed back as a note", async () => {
+    // Stamp says "reply (2)": the "2." before the ✅ edit is the answer itself.
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "B", how: "返信 (2)", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 3, edited: { user: SELF, ts: T(250) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2."), note(T(300), "2 番目の理由も書いて"), note(T(400), "あと README も")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("B");
+      // …300 also starts with "2", but it came AFTER ✅ — it cannot be the answer.
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300), T(400)]);
+    } finally {
+      await m.stop();
+    }
+    // The answer reply since deleted: a later "2 …" must not be taken for it.
+    const m2 = await startMock({ inline: fx(q, [note(T(300), "2 番目の理由も書いて")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m2.baseUrl)).stdout);
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+    } finally {
+      await m2.stop();
     }
   });
 

@@ -29,6 +29,7 @@ import {
   applyInvalidNotice,
   readInvalidNotice,
   askResolveLang,
+  askResolvedHow,
   ASK_COPY,
   ASK_LANGS,
   type AskFound,
@@ -1957,8 +1958,9 @@ async function askCollectNotes(token: string, sc: AskNoteScope, after: string | 
     .filter((m) => sc.isAnswerer(m.user) && !m.bot_id)
     .filter((m) => typeof m.subtype !== "string" || ASK_ANSWERABLE_SUBTYPES.has(m.subtype))
     .filter((m) => typeof m.text === "string" && m.text.trim() !== "")
-    .filter((m) => !skip(m))
-    .sort((a, b) => Number(a.ts) - Number(b.ts));
+    // Sorted BEFORE `skip`, which may be stateful ("the first reply that …").
+    .sort((a, b) => Number(a.ts) - Number(b.ts))
+    .filter((m) => !skip(m));
   const out: AskNote[] = [];
   for (const m of picked) {
     let permalink = "";
@@ -2279,14 +2281,16 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
     }
     if (found) {
-      await markResolved(found);
-      // Notes AFTER the answer is in hand: a pill used to end the poll before
-      // the thread was ever read, which is how a note beside it was lost.
+      // Notes once the answer is in hand: a pill used to end the poll before
+      // the thread was ever read, which is how a note beside it was lost. Read
+      // BEFORE ✅ is written, and delivered right after — ✅ is what tells a
+      // later --waitFor the question is settled.
       const notes = await askCollectNotes(token, {
         channelId, ts, threadOnly, replyCount, isAnswerer, askerUserId, askerBotId,
         ...(ctx.threadParentTs ? { threadParentTs: ctx.threadParentTs } : {}),
         ...(cookie ? { cookie } : {}),
       }, ctx.after, (m) => m.ts === found!.ts);
+      await markResolved(found);
       const r: Parameters<typeof askEmit>[2] = {
         status: "answered", answer: found.answer, how: found.how, notes,
         cursor: askNextCursor(ts, ctx.after, found.ts, ...notes.map((n) => n.ts)),
@@ -2708,14 +2712,28 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     // audience left in the thread AFTER it was answered: that is the note that
     // was lost in real use (2026-10-02), written 40 s after ✅.
     //
-    // The default cursor is the ✅ edit itself. Everything before it was seen by
-    // the run that wrote ✅ — the answer reply among them, which must not come
-    // back as a "note" — and that run delivered the notes it saw. A body whose
-    // ✅ edit failed (non-author token) has no `edited` stamp; then the reply
-    // whose text IS the answer is skipped instead.
+    // There is NO default cursor here. The ✅ edit time looks like one, but it
+    // would drop every note written before ✅ whenever the run that wrote ✅ did
+    // not deliver them: a crash between the edit and the output, or — the case
+    // that matters — any question resolved by a build that did not collect
+    // notes at all. A caller that wants no repeats passes the cursor back.
+    //
+    // What must not come back is the reply that IS the answer. The ✅ stamp says
+    // whether the answer was a reply, and which number it picked: the first
+    // audience reply before the ✅ edit that reads as that answer is it.
     console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
     const editedTs = typeof asRecord(msg.edited).ts === "string" ? String(asRecord(msg.edited).ts) : undefined;
-    const after = askNextCursor(args.after, editedTs) || undefined;
+    const how = askResolvedHow(text);
+    let answerSkipped = false;
+    const isAnswerReply = (m: Record<string, Json>): boolean => {
+      if (answerSkipped || !how.byReply) return false;
+      if (editedTs && Number(m.ts) > Number(editedTs)) return false;
+      const t = typeof m.text === "string" ? m.text.trim() : "";
+      const hit = t === parsed.answer || (how.n !== undefined && new RegExp(`^[(（]?${how.n}(?![0-9])`).test(t));
+      if (hit) answerSkipped = true;
+      return hit;
+    };
+    const after = args.after;
     let notes: AskNote[] = [];
     if (audience.size || broadcast) {
       const isAnswerer = (user: unknown): user is string =>
@@ -2725,7 +2743,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
         replyCount: Number(msg.reply_count) || 0, isAnswerer, askerUserId, askerBotId,
         ...(threadTs ? { threadParentTs: threadTs } : {}),
         ...(args.cookie ? { cookie: args.cookie } : {}),
-      }, after, (m) => !editedTs && typeof m.text === "string" && m.text.trim() === parsed.answer);
+      }, after, isAnswerReply);
     }
     await askEmit(token, { json: args.json, shown: args.link, asBot: args.asBot, cookie: args.cookie }, {
       status: "answered", answer: parsed.answer, notes,

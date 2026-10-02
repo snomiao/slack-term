@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -581,5 +581,16 @@ describe("askLangOfLocale understands both Slack and POSIX spellings", () => {
   });
   test("C, POSIX, unset, unlisted, and a prefix that only looks like one", () => {
     for (const v of ["C", "POSIX", "", undefined, "fr_FR.UTF-8", "eno"]) expect(askLangOfLocale(v)).toBeNull();
+  });
+});
+
+describe("askResolvedHow reads the ✅ stamp back, in either language", () => {
+  test("reaction, reply, reply (n)", () => {
+    for (const lang of ["ja", "en"] as const) {
+      const b = (how: string) => askBuildResolvedText("q", { answer: "x", how }, "bob", lang);
+      expect(askResolvedHow(b(lang === "ja" ? "リアクション 1️⃣" : "reaction 1️⃣"))).toEqual({ byReply: false });
+      expect(askResolvedHow(b(lang === "ja" ? "返信" : "reply"))).toEqual({ byReply: true });
+      expect(askResolvedHow(b(lang === "ja" ? "返信 (3)" : "reply (3)"))).toEqual({ byReply: true, n: 3 });
+    }
   });
 });

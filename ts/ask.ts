@@ -312,6 +312,17 @@ export function askBuildResolvedText(question: string, found: AskFound, who: str
   return `${ASK_RESOLVED_PREFIX}*${question}*\n${ASK_COPY[lang].answeredVia(found.how, who)}\n\n${quoted}`;
 }
 
+/** How a ✅-stamped question was answered, read back from its stamp line —
+ *  whether by a reply, and if the reply picked a numbered choice, which number.
+ *  `--waitFor` uses it to recognise the reply that IS the answer, so that reply
+ *  is not handed back again as a thread note. Both languages' stamps are read. */
+export function askResolvedHow(text: string): { byReply: boolean; n?: number } {
+  const stamp = text.split("\n")[1] ?? "";
+  const m = stamp.match(/^_(?:返信|Answered by reply)(?: \((\d+)\))?/);
+  if (!m) return { byReply: false };
+  return m[1] ? { byReply: true, n: Number(m[1]) } : { byReply: true };
+}
+
 /** Undo Slack's storage escaping. Only these three are ever escaped, and `&amp;`
  *  goes LAST so an answer that literally contains `&lt;` is not decoded twice. */
 function askDecodeEntities(s: string): string {
