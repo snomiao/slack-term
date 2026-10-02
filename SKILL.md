@@ -159,6 +159,10 @@ without losing clicks. A reaction is durable state anyone can read back later.
   the other party counts automatically.
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
+- **❓ is the standing "other" choice.** Every question with choices lists it last
+  (`1️⃣ … 2️⃣ … 3️⃣ … ❓ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
+  is not an answer — `--wait` notes it on stderr and keeps waiting for the reply, which
+  arrives as free text (exit `5`).
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody

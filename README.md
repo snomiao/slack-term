@@ -123,6 +123,8 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
+# A ❓ "その他 (other)" pill always follows the choices: pressing it means "none of
+# these" and the answer comes as a reply (exit 5), not as the ❓ itself.
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)

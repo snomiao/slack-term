@@ -1933,7 +1933,22 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
   }
 
+  /** Who has pressed ❓ ("other"). Not an answer — ❓ carries no text — so it
+   *  never resolves anything; the reply that should follow it does. Reported
+   *  once per person so the operator knows a reply is on its way rather than
+   *  reading the silence as "nobody looked". */
+  const otherReported = new Set<string>();
+  function noteOther(msg: Record<string, Json>): void {
+    const r = asArray(msg.reactions).map(asRecord).find((x) => x.name === ASK_MARKER);
+    for (const u of r ? asArray(r.users).filter(isAnswerer) : []) {
+      if (otherReported.has(u)) continue;
+      otherReported.add(u);
+      console.error(`  (<@${u}> が ❓ その他 を押しました。返信を待ちます)`);
+    }
+  }
+
   async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
+    if (reactable.length) noteOther(msg);
     const picks = humanChoices(msg);
     // Nothing ambiguous any more — take the notice back down if one is up.
     if (picks.length <= 1 && readInvalidNotice(typeof msg.text === "string" ? msg.text : "").length) {
@@ -2358,7 +2373,9 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   const attr = sentAttribution("ask");
   const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
-  // The marker goes on FIRST so it sits left of the pills, and as a reaction so
+  // The marker goes on LAST, after 1,2,3, because it doubles as the "other"
+  // choice the body lists under the numbered ones (people were already pressing
+  // ❓ for "none of these fit"). It is a reaction so
   // `has::question:` lists every question the way `has::pushpin:` lists every
   // todo. Body text cannot do that job: Slack's index splits on punctuation, so
   // a `:question:` written in the text is indexed as the word "question" and
@@ -2367,12 +2384,12 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // NOTE the colons: the modifier's argument is itself colon-wrapped, and the
   // bare `has:question` form does NOT error — it silently degrades to a
   // full-text search and returns plausible-looking counts. See ts/todo.ts.
-  // Marker first, then 1,2,3 — and spaced out. Sequential awaits alone are NOT
+  // 1,2,3, then the marker — and spaced out. Sequential awaits alone are NOT
   // enough: measured on two real questions from the same build, one came back
   // `two|one|question|three`. See ts/reactionSeed.ts for the evidence and for
   // SLACK_REACTION_SEED_GAP_MS.
   await seedReactionsInOrder(
-    [ASK_MARKER, ...reactable.map((_, i) => ASK_KEYCAPS[i]!.name)],
+    [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER],
     (name) => reactionAdd(token, channelId, ts, name, cookie),
     (name, e) => {
       const why = e instanceof Error ? e.message : String(e);
@@ -2684,7 +2701,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   const attr = sentAttribution("poll");
   const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
-  // Marker first, for the same reason as `ask`: it is what makes
+  // Marker first. (`ask` seeds its marker LAST, because there it doubles as the
+  // "other" choice; a poll has no such choice.) It is what makes
   // `has::ballot_box_with_ballot:` list every poll. An unrelated reaction on the message is
   // already ignored by the tally (it counts keycap names only), so this costs
   // the ballot nothing.

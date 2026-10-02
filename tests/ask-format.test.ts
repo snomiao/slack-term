@@ -434,3 +434,51 @@ describe("askMatchChoice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
   });
 });
+
+// ❓ doubles as the "other" choice: listed under the numbered ones so the body
+// reads like the pill row (1️⃣ 2️⃣ 3️⃣ ❓). It is optional on the way in — a
+// question posted before the line existed must still be collectable.
+describe("ask lists ❓ as the standing 'other' choice", () => {
+  test("the other line sits directly under the last pill, never as a choice", () => {
+    for (const threadOnly of [true, false]) {
+      const text = askBuildText("q", "", ["A", "B", "C"], [], threadOnly);
+      const lines = text.split("\n");
+      const at = lines.indexOf(":three: C");
+      expect(lines[at + 1]!.startsWith(":question: その他")).toBe(true);
+      expect(lines[at + 1]).toContain(threadOnly ? "スレッド" : "このメッセージに返信");
+      const parsed = askParseMessage(text);
+      expect(parsed.kind).toBe("open");
+      if (parsed.kind !== "open") return;
+      expect(parsed.reactable).toEqual(["A", "B", "C"]);
+    }
+  });
+
+  test("a free-text question has no other line — there are no options to be outside of", () => {
+    expect(askBuildText("q", "", [], [], true)).not.toContain("その他");
+  });
+
+  test("a body from before the other line still parses", () => {
+    const legacy = askBuildText("q", "", ["A", "B"], [], true).split("\n").filter((l) => !l.includes("その他")).join("\n");
+    const parsed = askParseMessage(legacy);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("the glyph spelling of the other line parses too (hand-edited in the Slack UI)", () => {
+    const edited = askBuildText("q", "", ["A"], [], true).replace(":question: その他", "❓ その他");
+    const parsed = askParseMessage(edited);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A"]);
+  });
+
+  test("with overflow, the other line still follows the pills and the overflow round-trips", () => {
+    const reactable = Array.from({ length: 10 }, (_, i) => `c${i + 1}`);
+    const parsed = askParseMessage(askBuildText("q", "", reactable, ["c11"], false));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(reactable);
+    expect(parsed.overflow).toEqual(["c11"]);
+  });
+});

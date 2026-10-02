@@ -51,6 +51,25 @@ const ASK_INSTRUCTION_TEXT_HERE =
   "_このメッセージに返信してください。本文がそのまま回答になります。_";
 const ASK_OVERFLOW_NOTE = "_11 番目以降はリアクションがないので、返信で答えてください。_";
 
+/** The standing "none of these" choice, listed after the numbered ones. It is
+ *  the ❓ marker pill, which is seeded LAST so the reaction row reads the same
+ *  as the body: 1️⃣ 2️⃣ 3️⃣ ❓. People already pressed ❓ to mean "none of these
+ *  fit" — this line makes that an explicit choice, and says where the actual
+ *  answer has to go: ❓ itself carries no answer text, so it never resolves the
+ *  question; the reply that follows it does (exit 5, delivered as free text).
+ *
+ *  Optional on the way in: questions posted before it existed have no such
+ *  line and must stay collectable. */
+const ASK_OTHER_THREAD = `${ASK_MARKER_PREFIX}その他 — スレッドで返信してください`;
+const ASK_OTHER_HERE = `${ASK_MARKER_PREFIX}その他 — このメッセージに返信してください`;
+
+/** True for the "other" line in either spelling — the shortcode we write, or the
+ *  glyph a body hand-edited in the Slack UI can carry. Matched by prefix, not
+ *  verbatim, so the copy stays free to change. */
+function askIsOtherLine(line: string | undefined): boolean {
+  return line !== undefined && (line.startsWith(ASK_MARKER_PREFIX) || line.startsWith("❓ "));
+}
+
 // The invalid-ballot notice, shared by `ask` and `poll` and written INTO the
 // message rather than only onto the collector's terminal. The person who has to
 // fix it is the voter, and the voter is in Slack — a warning that only the
@@ -154,6 +173,8 @@ export function askBuildText(question: string, body: string, reactable: string[]
     // form keeps posted and read-back bytes identical, which is what the
     // round-trip test can actually check. (`poll` already did this.)
     lines.push(...reactable.map((s, i) => `${askPill(i)} ${askFlatten(s)}`));
+    // Directly under the pills, matching the ❓ seeded right after them.
+    lines.push(threadOnly ? ASK_OTHER_THREAD : ASK_OTHER_HERE);
     if (overflow.length) {
       lines.push("");
       lines.push(...overflow.map((s, i) => `(${i + 11}) ${askFlatten(s)}`));
@@ -289,6 +310,7 @@ export function askParseMessage(text: string): AskParsed {
       if (lines[i] !== "") return { kind: "other" };
       i--;
     }
+    if (askIsOtherLine(lines[i])) i--;
     const raw: string[] = [];
     while (i >= 0) {
       const line = lines[i]!;
