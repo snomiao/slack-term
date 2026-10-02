@@ -37,19 +37,143 @@ export type AskFound = { answer: string; how: string; who?: string };
 export const ASK_MARKER = "question";
 export const ASK_MARKER_PREFIX = `:${ASK_MARKER}: `;
 
-// The instruction lines. These are ordinary copy now — translate them freely.
-// They are still matched verbatim when reading a message posted BEFORE the
-// marker existed, which is the only reason the exact old strings survive here:
-// deleting them would strand every question still in flight.
-const ASK_INSTRUCTION_REACTION_THREAD =
-  "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_";
-const ASK_INSTRUCTION_REACTION_HERE =
-  "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージに返信してください。_";
-const ASK_INSTRUCTION_TEXT_THREAD =
-  "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_";
-const ASK_INSTRUCTION_TEXT_HERE =
-  "_このメッセージに返信してください。本文がそのまま回答になります。_";
-const ASK_OVERFLOW_NOTE = "_11 番目以降はリアクションがないので、返信で答えてください。_";
+// The copy a reader sees, per language. Japanese is the default and its
+// strings are a WIRE FORMAT: questions already in flight were posted with them
+// and are recognised by them, so they must never be reworded. Adding a language
+// is safe — the parser accepts every language's instruction lines — but once a
+// language has shipped, its instruction and overflow lines are frozen the same
+// way. Everything else here (the other line, the answered stamp) is matched by
+// prefix or not at all, and is free to change.
+export const ASK_LANGS = ["ja", "en"] as const;
+export type AskLang = (typeof ASK_LANGS)[number];
+
+/** Where the language came from — shown on the confirm gate, so a surprising
+ *  choice can be traced and overridden before anything is posted. */
+export type AskLangSource = "flag" | "env" | "readers" | "content" | "system" | "default";
+
+/** Pick the language the body's own copy is written in. In order:
+ *
+ *  1. `--lang`, else `SLACK_TERM_LANG` — explicit. A value naming no supported
+ *     language is an error (null): a typo must not quietly post in the wrong one.
+ *  2. The READERS' Slack locale (`users.info?include_locale`) — the people the
+ *     question is addressed to, who are the ones who have to read the copy.
+ *     Slack exposes no workspace-wide language to an ordinary token, but it does
+ *     expose each person's. Used only when every reader maps to the SAME
+ *     supported language: a mixed group has no single right answer, and an
+ *     `@here` audience is not a known set of people (the caller passes none).
+ *  3. The CONTENT — what the asker wrote (question, body, choices). Instructions
+ *     in a different language from the question they sit under read as noise.
+ *  4. The system locale (`LC_ALL` → `LC_MESSAGES` → `LANG`), for content with no
+ *     letters at all (emoji, numbers).
+ *  5. `ja`, the copy `ask` has always posted — so a machine nobody configured,
+ *     asking someone whose locale cannot be read, keeps doing what it did. */
+export function askResolveLang(
+  opts: { flag?: string | undefined; readerLocales?: (string | undefined)[]; content?: string[] },
+  env: NodeJS.ProcessEnv = process.env,
+): { lang: AskLang; source: AskLangSource } | null {
+  for (const [raw, source] of [[opts.flag, "flag"], [env.SLACK_TERM_LANG, "env"]] as const) {
+    if (raw === undefined || raw.trim() === "") continue;
+    const v = raw.trim().toLowerCase();
+    return (ASK_LANGS as readonly string[]).includes(v) ? { lang: v as AskLang, source } : null;
+  }
+  const readers = (opts.readerLocales ?? []).map(askLangOfLocale);
+  if (readers.length && readers[0] && readers.every((l) => l === readers[0])) return { lang: readers[0], source: "readers" };
+  const fromContent = askDetectLang((opts.content ?? []).join("\n"));
+  if (fromContent) return { lang: fromContent, source: "content" };
+  const sys = askLangOfLocale(env.LC_ALL || env.LC_MESSAGES || env.LANG);
+  if (sys) return { lang: sys, source: "system" };
+  return { lang: "ja", source: "default" };
+}
+
+/** `ja-JP` (Slack), `ja_JP.UTF-8` (POSIX), `en` → the language we have copy
+ *  for, or null (C/POSIX, unset, or a language not listed). */
+export function askLangOfLocale(locale: string | undefined): AskLang | null {
+  const v = (locale ?? "").toLowerCase();
+  return ASK_LANGS.find((l) => v === l || /^[_.\-@]/.test(v.slice(l.length)) && v.startsWith(l)) ?? null;
+}
+
+/** The language `text` is written in, or null when it has no letters to tell
+ *  by. Two languages only, so a script check is exact enough: kana or kanji
+ *  means Japanese (kanji alone could be Chinese, but `ja` is the nearest copy
+ *  we have), and Latin letters with neither mean English. */
+export function askDetectLang(text: string): AskLang | null {
+  const words = text
+    .replace(/<[^>\s]*>/g, " ") // <@U…>, <#C…|name>, <!here>, <https://…|label>
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/:[a-z0-9_+-]+:/g, " "); // :shortcode: emoji
+  if (/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(words)) return "ja";
+  if (/\p{Script=Latin}/u.test(words)) return "en";
+  return null;
+}
+
+interface AskCopy {
+  instructionReactionThread: string;
+  instructionReactionHere: string;
+  instructionTextThread: string;
+  instructionTextHere: string;
+  overflowNote: string;
+  otherThread: string;
+  otherHere: string;
+  invalidPrefix: string;
+  answeredVia: (how: string, who: string) => string;
+  howReaction: (glyph: string) => string;
+  howReply: string;
+  howReplyN: (n: number) => string;
+}
+
+/** The standing "none of these" choice (`otherThread` / `otherHere`), listed
+ *  after the numbered ones. It is the ❓ marker pill, which is seeded LAST so
+ *  the reaction row reads the same as the body: 1️⃣ 2️⃣ 3️⃣ ❓. People already
+ *  pressed ❓ to mean "none of these fit" — the line makes that an explicit
+ *  choice, and says where the actual answer has to go: ❓ itself carries no
+ *  answer text, so it never resolves the question; the reply that follows it
+ *  does (exit 5, delivered as free text). Optional on the way in: questions
+ *  posted before it existed have no such line and must stay collectable.
+ *
+ *  The invalid-ballot prefix is shared with `poll`, which posts it in Japanese. */
+export const ASK_COPY: Record<AskLang, AskCopy> = {
+  ja: {
+    instructionReactionThread:
+      "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_",
+    instructionReactionHere:
+      "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージに返信してください。_",
+    instructionTextThread:
+      "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_",
+    instructionTextHere: "_このメッセージに返信してください。本文がそのまま回答になります。_",
+    overflowNote: "_11 番目以降はリアクションがないので、返信で答えてください。_",
+    otherThread: `${ASK_MARKER_PREFIX}その他 — スレッドで返信してください`,
+    otherHere: `${ASK_MARKER_PREFIX}その他 — このメッセージに返信してください`,
+    invalidPrefix: "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ",
+    answeredVia: (how, who) => `_${how}で回答済み${who ? ` (${who})` : ""}_`,
+    howReaction: (glyph) => `リアクション ${glyph}`,
+    howReply: "返信",
+    howReplyN: (n) => `返信 (${n})`,
+  },
+  en: {
+    instructionReactionThread:
+      "_Press one of the reactions below to answer. If none fits, reply in this message's *thread* (ordinary channel posts are not picked up as answers)._",
+    instructionReactionHere:
+      "_Press one of the reactions below to answer. If none fits, reply to this message._",
+    instructionTextThread:
+      "_Reply in this message's *thread* — your reply is the answer (ordinary channel posts are not picked up as answers)._",
+    instructionTextHere: "_Reply to this message — your reply is the answer._",
+    overflowNote: "_Choices 11 and up have no reaction — answer them with a reply._",
+    otherThread: `${ASK_MARKER_PREFIX}Other — reply in the thread`,
+    otherHere: `${ASK_MARKER_PREFIX}Other — reply to this message`,
+    invalidPrefix: "_:warning: Several choices are selected, so this is not counted as an answer — keep only one: ",
+    answeredVia: (how, who) => `_Answered by ${how}${who ? ` (${who})` : ""}_`,
+    howReaction: (glyph) => `reaction ${glyph}`,
+    howReply: "reply",
+    howReplyN: (n) => `reply (${n})`,
+  },
+};
+
+/** True for the "other" line in either spelling — the shortcode we write, or the
+ *  glyph a body hand-edited in the Slack UI can carry. Matched by prefix, not
+ *  verbatim, so the copy stays free to change. */
+function askIsOtherLine(line: string | undefined): boolean {
+  return line !== undefined && (line.startsWith(ASK_MARKER_PREFIX) || line.startsWith("❓ "));
+}
 
 // The invalid-ballot notice, shared by `ask` and `poll` and written INTO the
 // message rather than only onto the collector's terminal. The person who has to
@@ -61,15 +185,19 @@ const ASK_OVERFLOW_NOTE = "_11 番目以降はリアクションがないので�
 // duplicate across reruns and it disappears by itself the moment the extra
 // reaction is taken back. A reply, once posted, is a permanent record of a
 // situation that has since been fixed.
-const INVALID_PREFIX = "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ";
 const INVALID_SUFFIX = "_";
+
+function invalidLang(line: string | undefined): AskLang | null {
+  if (line === undefined || !line.endsWith(INVALID_SUFFIX)) return null;
+  return ASK_LANGS.find((l) => line.startsWith(ASK_COPY[l].invalidPrefix)) ?? null;
+}
 
 /** The IDs named by a message's invalid-ballot line, or [] if it has none. */
 export function readInvalidNotice(text: string): string[] {
   const lines = text.split("\n");
   const line = lines[lines.length - 2];
-  if (line === undefined || !line.startsWith(INVALID_PREFIX) || !line.endsWith(INVALID_SUFFIX)) return [];
-  return [...line.matchAll(/<@([UW][A-Z0-9]+)>/g)].map((m) => m[1]!);
+  if (!invalidLang(line)) return [];
+  return [...line!.matchAll(/<@([UW][A-Z0-9]+)>/g)].map((m) => m[1]!);
 }
 
 /** Put `invalid` into the body — inserting, replacing or REMOVING the notice so
@@ -79,12 +207,12 @@ export function readInvalidNotice(text: string): string[] {
  *
  *  The notice sits directly above the instruction line because that line has to
  *  stay last: it is what identifies the message as an `ask`/`poll` at all. */
-export function applyInvalidNotice(text: string, invalid: string[]): string {
+export function applyInvalidNotice(text: string, invalid: string[], lang: AskLang = "ja"): string {
   const lines = text.split("\n");
   if (lines.length < 2) return text;
   if (readInvalidNotice(text).length) lines.splice(lines.length - 2, 1);
   if (invalid.length) {
-    lines.splice(lines.length - 1, 0, `${INVALID_PREFIX}${invalid.map((u) => `<@${u}>`).join(", ")}${INVALID_SUFFIX}`);
+    lines.splice(lines.length - 1, 0, `${ASK_COPY[lang].invalidPrefix}${invalid.map((u) => `<@${u}>`).join(", ")}${INVALID_SUFFIX}`);
   }
   const out = lines.join("\n");
   return out === text ? text : out;
@@ -92,7 +220,7 @@ export function applyInvalidNotice(text: string, invalid: string[]): string {
 
 /** True if this line is the notice — parsers skip it when walking up. */
 export function isInvalidNotice(line: string | undefined): boolean {
-  return line !== undefined && line.startsWith(INVALID_PREFIX) && line.endsWith(INVALID_SUFFIX);
+  return invalidLang(line) !== null;
 }
 
 /** Prefix `markResolved` stamps on a settled question. `--waitFor` keys "this
@@ -141,7 +269,8 @@ export function askFlatten(s: string): string {
 /** Question body: the prompt, the numbered choices matching the seeded pills,
  *  and an instruction naming the answer paths this command actually reads.
  *  `askParseMessage` is its inverse — keep the two in step. */
-export function askBuildText(question: string, body: string, reactable: string[], overflow: string[], threadOnly: boolean): string {
+export function askBuildText(question: string, body: string, reactable: string[], overflow: string[], threadOnly: boolean, lang: AskLang = "ja"): string {
+  const c = ASK_COPY[lang];
   const lines: string[] = [`${ASK_MARKER_PREFIX}*${question}*`];
   if (body) lines.push("", body);
   if (reactable.length) {
@@ -154,19 +283,21 @@ export function askBuildText(question: string, body: string, reactable: string[]
     // form keeps posted and read-back bytes identical, which is what the
     // round-trip test can actually check. (`poll` already did this.)
     lines.push(...reactable.map((s, i) => `${askPill(i)} ${askFlatten(s)}`));
+    // Directly under the pills, matching the ❓ seeded right after them.
+    lines.push(threadOnly ? c.otherThread : c.otherHere);
     if (overflow.length) {
       lines.push("");
       lines.push(...overflow.map((s, i) => `(${i + 11}) ${askFlatten(s)}`));
-      lines.push(ASK_OVERFLOW_NOTE);
+      lines.push(c.overflowNote);
     }
     lines.push("");
     // The instruction must name the exact path the poller reads. Where only
     // thread replies are picked up, telling people to "reply to this message"
     // would get in-channel answers silently ignored.
-    lines.push(threadOnly ? ASK_INSTRUCTION_REACTION_THREAD : ASK_INSTRUCTION_REACTION_HERE);
+    lines.push(threadOnly ? c.instructionReactionThread : c.instructionReactionHere);
   } else {
     lines.push("");
-    lines.push(threadOnly ? ASK_INSTRUCTION_TEXT_THREAD : ASK_INSTRUCTION_TEXT_HERE);
+    lines.push(threadOnly ? c.instructionTextThread : c.instructionTextHere);
   }
   return lines.join("\n");
 }
@@ -174,9 +305,9 @@ export function askBuildText(question: string, body: string, reactable: string[]
 /** Resolved-question body. Every answer line is quoted, not just the first —
  *  a multi-line reply left unquoted after the first line cannot be told back
  *  apart from the surrounding text when `--waitFor` reads it. */
-export function askBuildResolvedText(question: string, found: AskFound, who: string): string {
+export function askBuildResolvedText(question: string, found: AskFound, who: string, lang: AskLang = "ja"): string {
   const quoted = found.answer.split("\n").map((l) => `> ${l}`).join("\n");
-  return `${ASK_RESOLVED_PREFIX}*${question}*\n_${found.how}で回答済み${who ? ` (${who})` : ""}_\n\n${quoted}`;
+  return `${ASK_RESOLVED_PREFIX}*${question}*\n${ASK_COPY[lang].answeredVia(found.how, who)}\n\n${quoted}`;
 }
 
 /** Undo Slack's storage escaping. Only these three are ever escaped, and `&amp;`
@@ -186,7 +317,7 @@ function askDecodeEntities(s: string): string {
 }
 
 export type AskParsed =
-  | { kind: "open"; question: string; reactable: string[]; overflow: string[]; threadOnly: boolean }
+  | { kind: "open"; question: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
   | { kind: "resolved"; question: string; answer: string }
   | { kind: "other" };
 
@@ -251,11 +382,19 @@ export function askParseMessage(text: string): AskParsed {
   // identified the only way it can be: by the instruction line it was built
   // with. Never delete these cases — they are what keeps those questions
   // collectable.
+  // Every language's lines are accepted, whatever this machine would post in:
+  // the question may have been asked from somewhere else.
+  const lang = ASK_LANGS.find((l) => [
+    ASK_COPY[l].instructionReactionThread, ASK_COPY[l].instructionReactionHere,
+    ASK_COPY[l].instructionTextThread, ASK_COPY[l].instructionTextHere,
+  ].includes(last));
+  if (!lang) return { kind: "other" };
+  const c = ASK_COPY[lang];
   switch (last) {
-    case ASK_INSTRUCTION_REACTION_THREAD: threadOnly = true; hasChoices = true; break;
-    case ASK_INSTRUCTION_REACTION_HERE: threadOnly = false; hasChoices = true; break;
-    case ASK_INSTRUCTION_TEXT_THREAD: threadOnly = true; hasChoices = false; break;
-    case ASK_INSTRUCTION_TEXT_HERE: threadOnly = false; hasChoices = false; break;
+    case c.instructionReactionThread: threadOnly = true; hasChoices = true; break;
+    case c.instructionReactionHere: threadOnly = false; hasChoices = true; break;
+    case c.instructionTextThread: threadOnly = true; hasChoices = false; break;
+    case c.instructionTextHere: threadOnly = false; hasChoices = false; break;
     default: return { kind: "other" };
   }
 
@@ -283,12 +422,13 @@ export function askParseMessage(text: string): AskParsed {
     if (isInvalidNotice(lines[i])) i--;
     if (lines[i] !== "") return { kind: "other" };
     i--;
-    if (lines[i] === ASK_OVERFLOW_NOTE) {
+    if (lines[i] === c.overflowNote) {
       i--;
       while (i >= 0 && /^\(\d+\) /.test(lines[i]!)) { overflow.unshift(lines[i]!.replace(/^\(\d+\) /, "")); i--; }
       if (lines[i] !== "") return { kind: "other" };
       i--;
     }
+    if (askIsOtherLine(lines[i])) i--;
     const raw: string[] = [];
     while (i >= 0) {
       const line = lines[i]!;
@@ -314,7 +454,7 @@ export function askParseMessage(text: string): AskParsed {
     }
   }
 
-  return { kind: "open", question, reactable, overflow, threadOnly };
+  return { kind: "open", question, reactable, overflow, threadOnly, lang };
 }
 
 /** Did a free-text reply actually PICK one of the offered choices?

@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -432,5 +432,154 @@ describe("askMatchChoice", () => {
 
   test("an empty or whitespace reply is not a choice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
+  });
+});
+
+// ❓ doubles as the "other" choice: listed under the numbered ones so the body
+// reads like the pill row (1️⃣ 2️⃣ 3️⃣ ❓). It is optional on the way in — a
+// question posted before the line existed must still be collectable.
+describe("ask lists ❓ as the standing 'other' choice", () => {
+  test("the other line sits directly under the last pill, never as a choice", () => {
+    for (const threadOnly of [true, false]) {
+      const text = askBuildText("q", "", ["A", "B", "C"], [], threadOnly);
+      const lines = text.split("\n");
+      const at = lines.indexOf(":three: C");
+      expect(lines[at + 1]!.startsWith(":question: その他")).toBe(true);
+      expect(lines[at + 1]).toContain(threadOnly ? "スレッド" : "このメッセージに返信");
+      const parsed = askParseMessage(text);
+      expect(parsed.kind).toBe("open");
+      if (parsed.kind !== "open") return;
+      expect(parsed.reactable).toEqual(["A", "B", "C"]);
+    }
+  });
+
+  test("a free-text question has no other line — there are no options to be outside of", () => {
+    expect(askBuildText("q", "", [], [], true)).not.toContain("その他");
+  });
+
+  test("a body from before the other line still parses", () => {
+    const legacy = askBuildText("q", "", ["A", "B"], [], true).split("\n").filter((l) => !l.includes("その他")).join("\n");
+    const parsed = askParseMessage(legacy);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("the glyph spelling of the other line parses too (hand-edited in the Slack UI)", () => {
+    const edited = askBuildText("q", "", ["A"], [], true).replace(":question: その他", "❓ その他");
+    const parsed = askParseMessage(edited);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A"]);
+  });
+
+  test("with overflow, the other line still follows the pills and the overflow round-trips", () => {
+    const reactable = Array.from({ length: 10 }, (_, i) => `c${i + 1}`);
+    const parsed = askParseMessage(askBuildText("q", "", reactable, ["c11"], false));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(reactable);
+    expect(parsed.overflow).toEqual(["c11"]);
+  });
+});
+
+// The copy is translated, but the body is still a wire format: whichever
+// language posted it, `--waitFor` has to read it back — from a machine that
+// would itself have posted in the other one.
+describe("ask copy is translated and every language round-trips", () => {
+  for (const lang of ASK_LANGS) {
+    for (const [name, reactable, overflow, threadOnly] of [
+      ["choices, thread", ["A", "B"], [], true],
+      ["choices, DM", ["A", "B"], [], false],
+      ["overflow", Array.from({ length: 10 }, (_, i) => `c${i + 1}`), ["c11"], false],
+      ["free text", [], [], true],
+    ] as [string, string[], string[], boolean][]) {
+      test(`${lang}: ${name}`, () => {
+        const text = askBuildText("q", "本文", reactable, overflow, threadOnly, lang);
+        const parsed = askParseMessage(text);
+        expect(parsed.kind).toBe("open");
+        if (parsed.kind !== "open") return;
+        expect(parsed.lang).toBe(lang);
+        expect(parsed.reactable).toEqual(reactable);
+        expect(parsed.overflow).toEqual(overflow);
+        expect(parsed.threadOnly).toBe(threadOnly);
+        // The invalid-ballot line goes on and comes off in the same language.
+        const noticed = applyInvalidNotice(text, ["U00000001"], lang);
+        expect(readInvalidNotice(noticed)).toEqual(["U00000001"]);
+        expect(askParseMessage(noticed).kind).toBe("open");
+        expect(applyInvalidNotice(noticed, [])).toBe(text);
+      });
+    }
+  }
+
+  test("English copy really is English", () => {
+    const text = askBuildText("Ship it?", "", ["yes", "wait"], [], true, "en");
+    expect(text).toContain(":question: Other — reply in the thread");
+    expect(text).not.toMatch(/[\p{Script=Hiragana}\p{Script=Katakana}]/u);
+  });
+
+  test("Japanese stays the default, byte-for-byte (in-flight questions depend on it)", () => {
+    expect(askBuildText("q", "", ["A"], [], true)).toBe(askBuildText("q", "", ["A"], [], true, "ja"));
+  });
+
+  test("the answered stamp follows the language, and both parse back", () => {
+    const en = askBuildResolvedText("q", { answer: "yes", how: "reaction 1️⃣" }, "Bob", "en");
+    expect(en).toContain("_Answered by reaction 1️⃣ (Bob)_");
+    expect(askParseMessage(en)).toEqual({ kind: "resolved", question: "q", answer: "yes" });
+  });
+});
+
+describe("askResolveLang picks the language the readers can read", () => {
+  const sys = { LANG: "ja_JP.UTF-8" };
+
+  test("--lang beats everything, and SLACK_TERM_LANG beats the rest", () => {
+    expect(askResolveLang({ flag: "en", readerLocales: ["ja-JP"], content: ["日本語"] }, sys)).toEqual({ lang: "en", source: "flag" });
+    expect(askResolveLang({ readerLocales: ["ja-JP"] }, { ...sys, SLACK_TERM_LANG: "EN" })).toEqual({ lang: "en", source: "env" });
+  });
+
+  test("an explicit language we have no copy for is an error, not a silent fallback", () => {
+    expect(askResolveLang({ flag: "fr" }, sys)).toBeNull();
+    expect(askResolveLang({}, { SLACK_TERM_LANG: "zz" })).toBeNull();
+  });
+
+  test("the answerers' Slack locale beats the text and the machine", () => {
+    expect(askResolveLang({ readerLocales: ["en-US"], content: ["デプロイしてよい?"] }, sys)).toEqual({ lang: "en", source: "readers" });
+    expect(askResolveLang({ readerLocales: ["ja-JP", "ja-JP"], content: ["Ship it?"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "readers" });
+  });
+
+  test("readers who disagree, or whose locale is unknown, fall through to the content", () => {
+    expect(askResolveLang({ readerLocales: ["ja-JP", "en-US"], content: ["Ship it?"] }, sys)).toEqual({ lang: "en", source: "content" });
+    expect(askResolveLang({ readerLocales: [undefined], content: ["Ship it?"] }, sys)).toEqual({ lang: "en", source: "content" });
+    expect(askResolveLang({ readerLocales: ["fr-FR"], content: ["本番?"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "content" });
+  });
+
+  test("content with no letters falls to the system locale, then to ja", () => {
+    expect(askResolveLang({ content: ["<@U00000001> 👍?", "1", "2"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "en", source: "system" });
+    expect(askResolveLang({ content: ["👍?"] }, { LC_ALL: "C", LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "default" });
+    expect(askResolveLang({ content: ["👍?"] }, {})).toEqual({ lang: "ja", source: "default" });
+  });
+});
+
+describe("askDetectLang reads the asker's words, not the markup", () => {
+  test("a tag, a channel link, a URL and an emoji shortcode are not English", () => {
+    expect(askDetectLang("<@U00000001> <#C00000001|general> https://example.com/x :thumbsup: 了解?")).toBe("ja");
+    expect(askDetectLang("<@U00000001> <!here> :thumbsup: 1 / 2")).toBeNull();
+  });
+  test("kana or kanji anywhere means ja; Latin alone means en", () => {
+    expect(askDetectLang("PR #12 をマージしてよい?")).toBe("ja");
+    expect(askDetectLang("本番")).toBe("ja");
+    expect(askDetectLang("Merge PR #12?")).toBe("en");
+  });
+});
+
+describe("askLangOfLocale understands both Slack and POSIX spellings", () => {
+  test("ja-JP, ja_JP.UTF-8, en, en-GB", () => {
+    expect(askLangOfLocale("ja-JP")).toBe("ja");
+    expect(askLangOfLocale("ja_JP.UTF-8")).toBe("ja");
+    expect(askLangOfLocale("en")).toBe("en");
+    expect(askLangOfLocale("en-GB")).toBe("en");
+  });
+  test("C, POSIX, unset, unlisted, and a prefix that only looks like one", () => {
+    for (const v of ["C", "POSIX", "", undefined, "fr_FR.UTF-8", "eno"]) expect(askLangOfLocale(v)).toBeNull();
   });
 });
