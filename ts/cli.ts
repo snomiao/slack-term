@@ -1909,10 +1909,12 @@ interface AskNoteScope {
   ts: string;
   threadParentTs?: string;
   threadOnly: boolean;
-  /** The question's own `reply_count`. Its thread is only fetched when this
-   *  says there is one: a call per collection on every question is a cost paid
-   *  for nothing on the many that never get a thread. */
-  replyCount: number;
+  /** The question's own `reply_count`, or undefined when the question was not
+   *  in the page we read. Its thread is skipped only on a KNOWN zero: a call
+   *  per collection on every threadless question is a cost paid for nothing,
+   *  but an unknown count read as zero loses the notes — in a busy channel the
+   *  question falls out of the 30-message history page. */
+  replyCount: number | undefined;
   isAnswerer: (user: unknown) => user is string;
   askerUserId: string;
   askerBotId: string;
@@ -1929,7 +1931,7 @@ interface AskNoteScope {
  *  meant for a newer question is not delivered with an older one. */
 async function askCollectNotes(token: string, sc: AskNoteScope, after: string | undefined, skip: (m: Record<string, Json>) => boolean): Promise<AskNote[]> {
   const pool = new Map<string, Record<string, Json>>();
-  if (sc.threadParentTs || sc.replyCount > 0) {
+  if (sc.threadParentTs || sc.replyCount !== 0) {
     try {
       const rep = asRecord((await replies(token, sc.channelId, sc.threadParentTs ?? sc.ts, 100, sc.cookie)) as Json);
       for (const m of asArray(rep.messages).map(asRecord)) pool.set(String(m.ts), m);
@@ -2034,8 +2036,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
 
   /** The question's `reply_count` as last seen — whether its thread is worth a
-   *  fetch when collecting notes. */
-  let replyCount = 0;
+   *  fetch when collecting notes. Undefined until the question itself is seen. */
+  let replyCount: number | undefined;
 
   /** The earliest reply from an answerer that picked none of the choices. Kept
    *  across polls so the timeout can report it, and so the operator is told once

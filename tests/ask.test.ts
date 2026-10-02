@@ -1084,6 +1084,29 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
     }
   });
 
+  test("a question missing from the history page still has its thread read", async () => {
+    // Busy conversation: the poll's history page does not include the question,
+    // so its reply_count is unknown — and unknown must not be read as zero.
+    const qd = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], false);
+    const q = { type: "message", user: SELF, ts: QTS, text: qd, reply_count: 1 };
+    const page = [{ type: "message", user: BOB, ts: T(200), text: "1" }];
+    const m = await startMock({ inline: {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      [`conversations.history__channel=${DM}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [q] },
+      ...pollFixture(DM, page),
+      [`conversations.replies__channel=${DM}&limit=100&ts=${QTS}`]: { ok: true, messages: [q, { ...note(T(300), "スレッドにも一言") }] },
+    } });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["スレッドにも一言"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("plain mode keeps stdout = the answer alone; the note goes to stderr", async () => {
     const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
     const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
