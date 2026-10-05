@@ -11,6 +11,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
 import { askBuildText, askBuildResolvedText, askBuildVoidText, askParseMessage } from "../ts/ask.ts";
+import { pollBuildText } from "../ts/poll.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -1347,21 +1348,22 @@ describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
   });
 });
 
-describe("slack edit refuses an ask / poll message unless --force (CLI)", { timeout: 90_000 }, () => {
+describe("slack edit refuses an edit that BREAKS an ask / poll (CLI)", { timeout: 90_000 }, () => {
   const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
   const fx = (text: string): InlineFixtures => ({
     ...AUTH,
     [`conversations.replies__channel=${CHAN}&limit=1&ts=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text }] },
   });
+  const edit = (newText: string, ...extra: string[]) => ["edit", `#chan:${QTS}`, newText, "--channel-id", CHAN, "--no-mentions", ...extra];
 
-  test("an ask is refused and points at `slack ask void`; --force reaches the normal gate", async () => {
+  test("free text over an open ask is refused, points at --void; --force reaches the gate and says so", async () => {
     const m = await startMock({ inline: fx(OPEN) });
     try {
-      const r = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN], m.baseUrl);
+      const r = await run(edit("書き換え"), m.baseUrl);
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("slack ask --void=");
       expect(r.stdout).not.toContain("Editing as");
-      const f = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN, "--force"], m.baseUrl);
+      const f = await run(edit("書き換え", "--force"), m.baseUrl);
       expect(f.stdout).toContain("Editing as");
       expect(f.stdout).toContain("⚠ --force");
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
@@ -1370,12 +1372,63 @@ describe("slack edit refuses an ask / poll message unless --force (CLI)", { time
     }
   });
 
+  // The consumer 51c523d broke: the ask-devteam skill resolves #dev questions by
+  // writing the ✅ form with `slack edit` (preview, then --code), and the
+  // split-vote close the same way. Those keep the message readable, so they
+  // must pass with no new flag — older builds on other hosts run the same script.
+  for (const [name, resolved] of [
+    ["the ask-devteam ✅ rewrite", `:white_check_mark: *<@${BOB}> 出してよい?*\n_リアクション 2️⃣で回答済み (bob)_\n\n> B`],
+    ["the ask-devteam split-vote close", `:white_check_mark: *<@${BOB}> 出してよい?*\n_両者の回答が分かれたため taku の決定で回答済み (ask-taku: x)_\n\n> A`],
+  ] as const) {
+    test(`${name} passes without --force, with the ordinary gate`, async () => {
+      const m = await startMock({ inline: fx(OPEN) });
+      try {
+        const dry = await run(edit(resolved), m.baseUrl);
+        expect(dry.exitCode).toBe(1);
+        expect(dry.stdout).toContain("Editing as");
+        expect(dry.stdout).not.toContain("⚠ --force");
+        const r = await run(edit(resolved, `--code=${extractCode(dry.stderr)}`), m.baseUrl);
+        expect(r.exitCode).toBe(0);
+        expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+      } finally {
+        await m.stop();
+      }
+    });
+  }
+
+  test("an answered question turned back into an open one is refused", async () => {
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "B", how: "リアクション 2️⃣" }, "bob");
+    const m = await startMock({ inline: fx(done) });
+    try {
+      const r = await run(edit(OPEN), m.baseUrl);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("back into an OPEN question");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a poll: a rewrite that is still a poll passes; one that is not is refused", async () => {
+    const poll = pollBuildText("どれにする?", "", ["A", "B"]);
+    const m = await startMock({ inline: fx(poll) });
+    try {
+      const ok = await run(edit(pollBuildText("どれにする? (締切 18:00)", "", ["A", "B"])), m.baseUrl);
+      expect(ok.stdout).toContain("Editing as");
+      const bad = await run(edit("書き換え"), m.baseUrl);
+      expect(bad.exitCode).toBe(1);
+      expect(bad.stderr).toContain("slack poll");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("an ordinary message is not affected", async () => {
     const m = await startMock({ inline: fx("ふつうのメッセージ") });
     try {
-      const r = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN], m.baseUrl);
+      const r = await run(edit("書き換え"), m.baseUrl);
       expect(r.stderr).not.toContain("slack ask --void=");
       expect(r.stdout).toContain("Editing as");
+      expect(r.stdout).not.toContain("⚠ --force");
     } finally {
       await m.stop();
     }

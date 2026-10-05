@@ -1294,24 +1294,6 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
   const originalText = typeof original.text === "string" ? original.text : "";
 
-  // An `ask` or `poll` body is a wire format: `--waitFor`/collect read the
-  // question, the pills, the ✅/🚫 state and the kept body back out of it, so a
-  // free-hand rewrite can leave a question nobody can collect — or turn an
-  // answered one back into something that looks open. Refused unless --force.
-  const askKind = askParseMessage(originalText).kind;
-  const isPoll = pollParseMessage(originalText).kind !== "other";
-  const guarded = askKind !== "other" || isPoll;
-  if (guarded && !args.force) {
-    const what = isPoll ? "a `slack poll`" : `a \`slack ask\` question (${askKind === "open" ? "open" : askKind === "resolved" ? "answered" : "void"})`;
-    console.error(
-      `Error: this message is ${what} — a plain edit can break what collect reads back (the pills, the ✅/🚫 state, the kept body).\n` +
-      (isPoll
-        ? `  Edit it anyway with --force.`
-        : `  To retire it:  slack ask --void='${args.target}' --reason '…'\n  Edit it anyway with --force.`),
-    );
-    process.exit(1);
-  }
-
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
   const mentionCookie = args.mentionCookie ?? args.cookie;
   const newText = args.mentions
@@ -1319,6 +1301,34 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     : args.newText;
 
   guardUrlBoundaries(newText, args.allowUrlAdjacent);
+
+  // An `ask` or `poll` body is a wire format: collect reads the question, the
+  // pills, the ✅/🚫 state and the kept body back out of it. What is refused is
+  // an edit that BREAKS that — new text that no longer reads as one, or an
+  // answered/void question turned back into an open one. An edit that keeps it
+  // readable is fine, and must stay fine: scripts resolve questions exactly this
+  // way (the ask-devteam skill writes the ✅ form with `slack edit`, from hosts
+  // that may run older builds — it cannot be asked to pass a new flag).
+  const askBefore = askParseMessage(originalText).kind;
+  const askAfter = askParseMessage(newText).kind;
+  const isPoll = pollParseMessage(originalText).kind !== "other";
+  const breaks = isPoll
+    ? pollParseMessage(newText).kind === "other"
+    : askBefore !== "other" && (askAfter === "other" || (askBefore !== "open" && askAfter === "open"));
+  if (breaks && !args.force) {
+    const what = isPoll ? "a `slack poll`" : `a \`slack ask\` question (${askBefore === "open" ? "open" : askBefore === "resolved" ? "answered" : "void"})`;
+    const how = isPoll || askAfter === "other"
+      ? "the new text would no longer read back as one (collect could not find the question, the pills or the answer)"
+      : "the new text would turn it back into an OPEN question";
+    console.error(
+      `Error: this message is ${what}, and ${how}.\n` +
+      (isPoll
+        ? `  Edit it anyway with --force.`
+        : `  To retire it:  slack ask --void='${args.target}' --reason '…'\n  Edit it anyway with --force.`),
+    );
+    process.exit(1);
+  }
+  const guarded = breaks;
 
   // Identity is part of the hash for the same reason it is on `send`: a code
   // minted while previewing as one identity must not confirm the write as
