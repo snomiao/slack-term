@@ -390,13 +390,9 @@ export function askParseMessage(text: string): AskParsed {
   ].includes(last));
   if (!lang) return { kind: "other" };
   const c = ASK_COPY[lang];
-  switch (last) {
-    case c.instructionReactionThread: threadOnly = true; hasChoices = true; break;
-    case c.instructionReactionHere: threadOnly = false; hasChoices = true; break;
-    case c.instructionTextThread: threadOnly = true; hasChoices = false; break;
-    case c.instructionTextHere: threadOnly = false; hasChoices = false; break;
-    default: return { kind: "other" };
-  }
+  // `last` is one of this language's four instruction lines (checked above).
+  threadOnly = last === c.instructionReactionThread || last === c.instructionTextThread;
+  hasChoices = last === c.instructionReactionThread || last === c.instructionReactionHere;
 
   // The question is the leading bold run. Taking it up to the first line that
   // closes the `*` keeps a multi-line question intact instead of truncating it

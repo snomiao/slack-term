@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -581,5 +581,22 @@ describe("askLangOfLocale understands both Slack and POSIX spellings", () => {
   });
   test("C, POSIX, unset, unlisted, and a prefix that only looks like one", () => {
     for (const v of ["C", "POSIX", "", undefined, "fr_FR.UTF-8", "eno"]) expect(askLangOfLocale(v)).toBeNull();
+  });
+});
+
+// The "how" phrases are only ever called from the CLI's waiter, which the unit
+// suite does not load — so they are pinned here, in the stamp they end up in.
+describe("the answered stamp reads naturally in each language", () => {
+  test("ja", () => {
+    const c = ASK_COPY.ja;
+    expect(c.answeredVia(c.howReaction("2️⃣"), "bob")).toBe("_リアクション 2️⃣で回答済み (bob)_");
+    expect(c.answeredVia(c.howReply, "")).toBe("_返信で回答済み_");
+    expect(c.answeredVia(c.howReplyN(3), "bob")).toBe("_返信 (3)で回答済み (bob)_");
+  });
+  test("en", () => {
+    const c = ASK_COPY.en;
+    expect(c.answeredVia(c.howReaction("2️⃣"), "bob")).toBe("_Answered by reaction 2️⃣ (bob)_");
+    expect(c.answeredVia(c.howReply, "")).toBe("_Answered by reply_");
+    expect(c.answeredVia(c.howReplyN(3), "bob")).toBe("_Answered by reply (3) (bob)_");
   });
 });
