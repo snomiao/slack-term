@@ -1300,7 +1300,8 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   // answered one back into something that looks open. Refused unless --force.
   const askKind = askParseMessage(originalText).kind;
   const isPoll = pollParseMessage(originalText).kind !== "other";
-  if ((askKind !== "other" || isPoll) && !args.force) {
+  const guarded = askKind !== "other" || isPoll;
+  if (guarded && !args.force) {
     const what = isPoll ? "a `slack poll`" : `a \`slack ask\` question (${askKind === "open" ? "open" : askKind === "resolved" ? "answered" : "void"})`;
     console.error(
       `Error: this message is ${what} — a plain edit can break what collect reads back (the pills, the ✅/🚫 state, the kept body).\n` +
@@ -1324,9 +1325,14 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   // another (Slack only lets you edit your own messages, so a silent profile
   // switch between preview and confirm otherwise turns into a bare API error).
   const self = await getSelf();
-  const code = safetyCode(originalText, newText, self?.userId ?? "");
+  // Overriding the guard is part of what the code authorizes: a code minted for
+  // an ordinary edit must not confirm a forced rewrite of a question.
+  const code = guarded
+    ? safetyCode("force-edit-ask-poll", originalText, newText, self?.userId ?? "")
+    : safetyCode(originalText, newText, self?.userId ?? "");
   if (args.code !== code) {
     requireCode(args.code, code, [
+      ...(guarded ? [`⚠ --force: rewriting a \`slack ${isPoll ? "poll" : "ask"}\` message by hand — collect may no longer read it back`] : []),
       `--- Editing as -------------------------------`,
       fromLine(self, { asBot: args.asBot }),
       `--- Original message -------------------------`,

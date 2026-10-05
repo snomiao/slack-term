@@ -1363,6 +1363,7 @@ describe("slack edit refuses an ask / poll message unless --force (CLI)", { time
       expect(r.stdout).not.toContain("Editing as");
       const f = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN, "--force"], m.baseUrl);
       expect(f.stdout).toContain("Editing as");
+      expect(f.stdout).toContain("⚠ --force");
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
     } finally {
       await m.stop();
