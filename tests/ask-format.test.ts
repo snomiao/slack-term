@@ -647,6 +647,13 @@ describe("the ✅ body keeps the background and the chosen option", () => {
     expect(askParseMessage(old)).toEqual({ kind: "resolved", question: "q", answer: "はい" });
   });
 
+  test("a multi-line question whose FIRST line ends in `*` still finds its stamp, and no body quote leaks", () => {
+    const q = "*重要*\n本番に出してよい?";
+    const done = askBuildResolvedText(q, { answer: "B", how: "返信 (2)" }, "bob", "ja", { body: "> 背景の引用\n> 二行目", chosenLine: ":two: B" });
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: q, answer: "B" });
+    expect(askResolvedHow(done)).toEqual({ byReply: true, n: 2 });
+  });
+
   test("a multi-line question: the stamp is found after the bold run, not on line 2", () => {
     const q = "1 行目\n2 行目";
     const done = askBuildResolvedText(q, { answer: "B", how: "返信 (2)" }, "bob", "ja", { body: "本文" });
@@ -659,5 +666,7 @@ describe("the ✅ body keeps the background and the chosen option", () => {
     expect(askResolvedKeep(many, 12)).toEqual({ body: "背景", chosenLine: "(12) c12" });
     expect(askResolvedKeep(askBuildText("q", "背景", [], [], true))).toEqual({ body: "背景" });
     expect(askResolvedKeep("not an ask")).toBeUndefined();
+    // Nothing to keep: the bare form, exactly as before.
+    expect(askResolvedKeep(askBuildText("q", "", [], [], true))).toBeUndefined();
   });
 });

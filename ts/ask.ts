@@ -336,7 +336,7 @@ export function askBuildResolvedText(
  *  option that was chosen (pill or overflow), written as the open body wrote it.
  *  Read from the message itself, so it is whatever is posted now — including
  *  an edit made in the Slack UI after asking. Undefined when the text is not an
- *  open ask (the caller then writes the bare form, as before). */
+ *  open ask, or there is nothing to keep (the bare form, as before). */
 export function askResolvedKeep(openText: string, choice?: number): { body?: string; chosenLine?: string } | undefined {
   const p = askParseMessage(openText);
   if (p.kind !== "open") return undefined;
@@ -348,23 +348,23 @@ export function askResolvedKeep(openText: string, choice?: number): { body?: str
       keep.chosenLine = `(${choice}) ${askFlatten(p.overflow[choice - ASK_MAX_REACTION_CHOICES - 1]!)}`;
     }
   }
-  return keep;
+  return keep.body || keep.chosenLine ? keep : undefined;
 }
 
-/** Where a ✅ body's stamp line is: right after the question's bold run, which
- *  can span lines. Reading `lines[1]` blindly took a question's second line for
- *  the stamp. -1 when the head is not a ✅ question. */
+/** Where a ✅ body's stamp line is, found by its SHAPE: the first line after
+ *  the head that is `_…_`, followed by a blank line and a quoted line — the
+ *  layout `askBuildResolvedText` writes. Not by the end of the question's bold
+ *  run: a question's own first line can end in `*` ("*重要*\n…"), which ends
+ *  the run early, and reading `lines[1]` blindly took a multi-line question's
+ *  second line for the stamp. -1 when there is no such line. */
 function askResolvedStampIndex(lines: string[]): number {
   if (!lines[0]?.startsWith(ASK_RESOLVED_PREFIX)) return -1;
-  const first = lines[0].slice(ASK_RESOLVED_PREFIX.length);
-  if (!first.startsWith("*")) return -1;
-  let end = 0;
-  while (end < lines.length) {
-    const l = end === 0 ? first : lines[end]!;
-    if (l.endsWith("*") && (end > 0 || l.length > 1)) break;
-    end++;
+  const quoted = (l: string | undefined) => !!l && (l.startsWith("> ") || l.startsWith("&gt; "));
+  for (let i = 1; i + 2 < lines.length; i++) {
+    const l = lines[i]!;
+    if (l.length > 1 && l.startsWith("_") && l.endsWith("_") && lines[i + 1] === "" && quoted(lines[i + 2])) return i;
   }
-  return end + 1 < lines.length ? end + 1 : -1;
+  return -1;
 }
 
 /** How a ✅-stamped question was answered, read back from its stamp line —
@@ -373,7 +373,8 @@ function askResolvedStampIndex(lines: string[]): number {
  *  is not handed back again as a thread note. Both languages' stamps are read. */
 export function askResolvedHow(text: string): { byReply: boolean; n?: number } {
   const lines = text.split("\n");
-  const stamp = lines[askResolvedStampIndex(lines)] ?? lines[1] ?? "";
+  const at = askResolvedStampIndex(lines);
+  const stamp = (at > 0 ? lines[at] : lines[1]) ?? "";
   const m = stamp.match(/^_(?:返信|Answered by reply)(?: \((\d+)\))?/);
   if (!m) return { byReply: false };
   return m[1] ? { byReply: true, n: Number(m[1]) } : { byReply: true };
@@ -434,19 +435,21 @@ export function askParseMessage(text: string): AskParsed {
     const unquote = (l: string) => (l.startsWith("> ") ? l.slice(2) : l.startsWith("&gt; ") ? l.slice(5) : null);
     // The answer is the quote block right under the stamp — NOT every quoted
     // line in the message: the kept body can quote things too, and a `> ` line
-    // in the background must not be read back as part of the answer. A body
-    // written before the stamp could be located (no stamp in place) falls back
-    // to the old reading, which was every quoted line — all there was then.
+    // in the background must not be read back as part of the answer. Only when
+    // no stamp can be located at all does the old reading apply — every quoted
+    // line — which is all an old ✅ body ever had.
     const stampAt = askResolvedStampIndex(lines);
-    let answerLines: string[] = [];
-    if (stampAt > 0 && lines[stampAt + 1] === "") {
+    let answerLines: string[];
+    if (stampAt > 0) {
+      answerLines = [];
       for (let i = stampAt + 2; i < lines.length; i++) {
         const u = unquote(lines[i]!);
         if (u === null) break;
         answerLines.push(u);
       }
+    } else {
+      answerLines = lines.map(unquote).filter((l): l is string => l !== null);
     }
-    if (!answerLines.length) answerLines = lines.map(unquote).filter((l): l is string => l !== null);
     const question = askDecodeEntities(
       lines.slice(0, stampAt > 0 ? stampAt : 1).join("\n").slice(ASK_RESOLVED_PREFIX.length).replace(/^\*/, "").replace(/\*$/, ""),
     );
