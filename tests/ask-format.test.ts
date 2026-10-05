@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askBuildVoidText, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askBuildVoidText, askSalvageUnreadable, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -727,5 +727,31 @@ describe("a voided question reads back as void, in either language", () => {
     expect(p.kind === "void" && p.question).toBe("出してよい?");
     // An ordinary 【…】 heading is not.
     expect(askParseMessage("【お知らせ】*q*").kind).toBe("other");
+  });
+});
+
+// 2026-10-01: a `slack edit` with blocks made Slack store an ask with every
+// newline turned into a space. It then parsed as nothing — not collectable, not
+// voidable — and stayed ❓ forever. `--void` retires such a question from this
+// best-effort read. (Anonymised copy of the real stored text.)
+describe("an ask flattened onto one line can still be read well enough to void", () => {
+  const FLAT = ":question: *:large_yellow_circle: <@U00000BOB> <@U0000ALIC> landing のテスト環境リリース（ <https://example.com/pull/131> ）を実施してよいですか？*  ランディングサイトをテスト環境に反映します。CIはすべて成功、DBの変更はありません。 _by release-bot agent_  :one: リリースする :two: 今日は見送る  _:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: <@U00000BOB>, <@U0000ALIC>_ _下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_";
+  test("it no longer parses as an ask at all", () => {
+    expect(askParseMessage(FLAT).kind).toBe("other");
+  });
+  test("salvage: the question, and the body without the instructions or the warning line", () => {
+    const r = askSalvageUnreadable(FLAT)!;
+    expect(r.question).toBe(":large_yellow_circle: <@U00000BOB> <@U0000ALIC> landing のテスト環境リリース（ <https://example.com/pull/131> ）を実施してよいですか？");
+    expect(r.body).toContain("ランディングサイトをテスト環境に反映します。");
+    expect(r.body).toContain(":one: リリースする :two: 今日は見送る");
+    expect(r.body).not.toContain("下のリアクションを");
+    expect(r.body).not.toContain("同時に複数選ばれている");
+    // The void it becomes reads back as void, with that question.
+    const v = askParseMessage(askBuildVoidText(r.question, "closed", "ja", r.body));
+    expect(v.kind === "void" && v.question).toBe(r.question);
+  });
+  test("not an ask at all → nothing to salvage", () => {
+    expect(askSalvageUnreadable("ふつうのメッセージ")).toBeNull();
+    expect(askSalvageUnreadable(":question: 太字なし")).toBeNull();
   });
 });

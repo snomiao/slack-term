@@ -383,6 +383,34 @@ export function askBuildVoidText(question: string, reason: string, lang: AskLang
   return out;
 }
 
+/** Best-effort read of an `ask` whose layout no longer parses — typically one
+ *  whose stored text lost its newlines (a `slack edit` that attached blocks made
+ *  Slack rewrite every newline to a space; 2026-10-01). Only what `--void` needs
+ *  to retire it: the question (the leading bold run after the ❓ marker) and the
+ *  rest as the body, minus the answering instructions and the invalid-ballot
+ *  line, which no longer apply. Null unless it starts with the ❓ marker and a
+ *  bold run. The options stay in the body as text: they are part of what was
+ *  asked, and voiding is no time to guess where they start. */
+export function askSalvageUnreadable(text: string): { question: string; body: string } | null {
+  if (!text.startsWith(ASK_MARKER_PREFIX)) return null;
+  const rest = text.slice(ASK_MARKER_PREFIX.length);
+  const m = rest.match(/^\*([\s\S]+?)\*(?=\s|$)/);
+  if (!m) return null;
+  let body = rest.slice(m[0].length);
+  for (const l of ASK_LANGS) {
+    const c = ASK_COPY[l];
+    for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere]) {
+      body = body.split(fixed).join(" ");
+    }
+    const at = body.indexOf(c.invalidPrefix);
+    if (at >= 0) {
+      const end = body.indexOf(INVALID_SUFFIX, at + c.invalidPrefix.length);
+      body = body.slice(0, at) + " " + (end >= 0 ? body.slice(end + INVALID_SUFFIX.length) : "");
+    }
+  }
+  return { question: m[1]!, body: body.replace(/[ \t]{3,}/g, "  ").trim() };
+}
+
 /** Where a ✅ body's stamp line is, found by its SHAPE: the first line after
  *  the head that is `_…_`, followed by a blank line and a quoted line — the
  *  layout `askBuildResolvedText` writes. Not by the end of the question's bold

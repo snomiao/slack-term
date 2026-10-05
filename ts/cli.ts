@@ -32,6 +32,8 @@ import {
   askResolvedHow,
   askResolvedKeep,
   askBuildVoidText,
+  askSalvageUnreadable,
+  askDetectLang,
   ASK_VOID_MARKER,
   ASK_COPY,
   ASK_LANGS,
@@ -1354,7 +1356,13 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
 
   const attr = sentAttribution("edit");
-  const newTs = await editMessage(token, channelId, ts, newText, args.cookie, undefined, attr.metadata);
+  // An ask/poll body goes up PLAIN (no blocks): with blocks attached Slack
+  // rewrites the stored text — every newline becomes a space — and the message
+  // can never be read back as an ask again (2026-10-01: a release ask edited
+  // this way could neither be collected nor voided). Ordinary messages keep
+  // the blocks they always had.
+  const askish = askBefore !== "other" || askAfter !== "other" || isPoll || pollParseMessage(newText).kind !== "other";
+  const newTs = await editMessage(token, channelId, ts, newText, args.cookie, askish ? true : undefined, attr.metadata);
   console.log(`✓ Edited (ts: ${newTs})`);
   attr.record({ team: self?.team, channel: channelId, target: args.target, ts, text: newText, asBot: args.asBot });
 }
@@ -2166,12 +2174,23 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       return { answer: reactable[index]!, how: copy.howReaction(ASK_KEYCAPS[index]!.glyph), who: users[0]!, choice: index + 1 };
     }
     const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
-    console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
-    // Whoever is on more than one pill. Named in the question itself so the
-    // person who has to fix it is the person who sees it — and rewritten from
-    // the current state each pass, so reruns cannot stack up notices and the
-    // line clears itself once a reaction is taken back.
-    const offenders = [...new Set(picks.flatMap((p) => p.users))].sort();
+    // Two cases, both "do not guess": one person on several pills, or
+    // different people on different pills (a split). Only the first is the
+    // voter's to fix, so only those people are named in the message.
+    const pillsPerUser = new Map<string, number>();
+    for (const p of picks) for (const u of p.users) pillsPerUser.set(u, (pillsPerUser.get(u) ?? 0) + 1);
+    const multi = [...pillsPerUser].filter(([, n]) => n > 1).map(([u]) => u);
+    console.error(multi.length
+      ? `  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`
+      : `  (回答が分かれています: ${glyphs}。どちらか一方にそろうまで待ちます)`);
+    // Whoever is on more than one pill — and ONLY them. Naming everyone on any
+    // pill told a voter who had pressed exactly one that she had pressed two
+    // (2026-10-01: a voter on 1️⃣ only was named because someone else was on 1️⃣
+    // and 2️⃣). Named in the question itself so the person who has to fix it is
+    // the person who sees it; rewritten from the current state each pass, so
+    // reruns cannot stack up notices and the line clears itself once a
+    // reaction is taken back. A pure split names nobody (empty = no notice).
+    const offenders = multi.sort();
     await noteInvalid(msg, offenders);
     return null;
   }
@@ -3067,7 +3086,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       process.exit(ASK_EXIT_ERROR);
     }
   }
-  type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; pressed: string[] };
+  type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; pressed: string[]; unreadable?: boolean };
   const targets: Target[] = [];
   let refused = 0;
   for (const link of args.links) {
@@ -3084,15 +3103,35 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       continue;
     }
     const text = typeof msg.text === "string" ? msg.text : "";
-    const parsed = askParseMessage(text);
+    let parsed = askParseMessage(text);
+    let unreadable = false;
     if (parsed.kind === "void") { console.error(`- ${shown}: すでに作废済みです（何もしません）`); continue; }
     if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問は作废できません（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）`); refused++; continue; }
-    if (parsed.kind !== "open") { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); refused++; continue; }
+    if (parsed.kind !== "open") {
+      // Our own ❓ question whose layout no longer parses (2026-10-01: a
+      // `slack edit` flattened one; it could then be neither collected nor
+      // voided, and stayed ❓ forever). Voiding is exactly what is left to do
+      // with it, so it is voided from a best-effort read — question and body
+      // kept as they are, our own seeded pills removed — and the gate says so.
+      const salvage = askSalvageUnreadable(text);
+      if (!salvage) { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); refused++; continue; }
+      const seeded = asArray(msg.reactions).map(asRecord)
+        .filter((r) => asArray(r.users).includes(self?.userId ?? "\u0000"))
+        .map((r) => ASK_KEYCAPS.findIndex((k) => k.name === r.name))
+        .filter((i) => i >= 0);
+      parsed = {
+        kind: "open", question: salvage.question, body: salvage.body,
+        // Placeholders: only the COUNT is used — which of our keycap seeds to take off.
+        reactable: Array.from({ length: seeded.length ? Math.max(...seeded) + 1 : 0 }, () => ""),
+        overflow: [], threadOnly: true, lang: askDetectLang(text) ?? "ja",
+      };
+      unreadable = true;
+    }
     const pressed = asArray(msg.reactions).map(asRecord)
       .filter((r) => typeof r.name === "string" && ASK_KEYCAPS.some((k) => k.name === r.name))
       .filter((r) => asArray(r.users).some((u) => u !== self?.userId))
       .map((r) => `:${String(r.name)}:`);
-    targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, pressed });
+    targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, pressed, ...(unreadable ? { unreadable } : {}) });
   }
   if (!targets.length) {
     console.error(refused ? "作废できる質問がありません。" : "何もすることがありません。");
@@ -3108,7 +3147,8 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       ...(args.supersededBy ? [`  Replaced: ${stripTerminalControls(args.supersededBy)}`] : []),
       `  ${targets.length} question(s):`,
       ...targets.map((t) => `   • ${stripTerminalControls(t.link)}\n     ${stripTerminalControls(t.parsed.question.split("\n")[0] ?? "").slice(0, 100)}` +
-        (t.pressed.length ? `\n     (already pressed: ${t.pressed.join(" ")} — left in place, never collected)` : "")),
+        (t.pressed.length ? `\n     (already pressed: ${t.pressed.join(" ")} — left in place, never collected)` : "") +
+        (t.unreadable ? `\n     ⚠ its layout no longer reads as an ask (edited by hand?) — voided from a best-effort read: question and the rest of the text kept as they are` : "")),
       `  Each becomes 🚫 (body kept, options and instructions removed); our pills and ❓ come off; a 🚫 reaction is added.`,
       ...(refused ? [`  (${refused} link(s) above were refused and will be skipped)`] : []),
       `----------------------------------------------`,

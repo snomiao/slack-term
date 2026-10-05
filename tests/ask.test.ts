@@ -1619,3 +1619,100 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
     }
   });
 });
+
+describe("unreadable asks, plain edits, and who the multi-select notice names (CLI)", { timeout: 120_000 }, () => {
+  const FLAT = ":question: *:large_yellow_circle: <@U00000BOB> <@U0000ALIC> landing のテスト環境リリース（ <https://example.com/pull/131> ）を実施してよいですか？*  ランディングサイトをテスト環境に反映します。CIはすべて成功、DBの変更はありません。 _by release-bot agent_  :one: リリースする :two: 今日は見送る  _:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: <@U00000BOB>, <@U0000ALIC>_ _下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_";
+  const OLD = "1699999999.000100";
+  const LINK = `${CHAN}:${OLD}`;
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+  const fxAt = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${OLD}`]: { ok: true, messages: [{ ts: OLD, ...msg }] },
+  });
+
+  test("--void retires our own ❓ question that no longer parses: gate warns, 🚫 + body, our seeds off", async () => {
+    const m = await startMock({ inline: fxAt({ type: "message", user: SELF, text: FLAT, reactions: [
+      { name: "question", users: [SELF], count: 1 },
+      { name: "one", users: [SELF, BOB, ALICE], count: 3 },
+      { name: "two", users: [SELF], count: 1 },
+    ] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reason", "1 で承認済み"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("no longer reads as an ask");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      const v = askParseMessage(text);
+      expect(v.kind).toBe("void");
+      expect(text).toContain("ランディングサイトをテスト環境に反映します。");
+      expect(text).not.toContain("下のリアクションを");
+      expect(m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name)).toEqual(["one", "two", "question"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("…but never someone else's", async () => {
+    const m = await startMock({ inline: fxAt({ type: "message", user: BOB, text: FLAT }) });
+    try {
+      expect((await run(["ask", `--void=${LINK}`], m.baseUrl)).exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("slack edit sends an ask PLAIN (no blocks, so Slack keeps the newlines); an ordinary message keeps its blocks", async () => {
+    const open = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+    const done = `:white_check_mark: *<@${BOB}> 出してよい?*\n_リアクション 1️⃣で回答済み (bob)_\n\n> A`;
+    for (const [orig, next, blocks] of [[open, done, false], ["ふつう", "ふつう2", true]] as const) {
+      const m = await startMock({ inline: {
+        ...AUTH,
+        [`conversations.replies__channel=${CHAN}&limit=1&ts=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: orig }] },
+      } });
+      try {
+        const args = ["edit", `#chan:${QTS}`, next, "--channel-id", CHAN, "--no-mentions"];
+        const dry = await run(args, m.baseUrl);
+        expect((await run([...args, `--code=${extractCode(dry.stderr)}`], m.baseUrl)).exitCode).toBe(0);
+        const upd = body(m.requests.find((q) => q.method === "chat.update")!);
+        expect(upd.blocks !== undefined).toBe(blocks);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  // 2026-10-01: the notice named a voter who had pressed only 1️⃣, because
+  // someone else was briefly on two pills. Only the multi-pressers are named;
+  // a split between different people names nobody (and still decides nothing).
+  test("the notice names only people on several pills; a split names nobody", async () => {
+    const Q = askBuildText(`<@${BOB}> <@${ALICE}> 出してよい?`, "", ["A", "B"], [], true);
+    for (const [reactions, named] of [
+      [[{ name: "one", users: [SELF, BOB, ALICE], count: 3 }, { name: "two", users: [SELF, BOB], count: 2 }], [BOB]],
+      [[{ name: "one", users: [SELF, BOB], count: 2 }, { name: "two", users: [SELF, ALICE], count: 2 }], []],
+    ] as const) {
+      const m = await startMock({ inline: {
+        ...AUTH,
+        [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: Q, reactions }] },
+        ...pollFixture(CHAN, [{ type: "message", user: SELF, ts: QTS, text: Q, reactions }]),
+      } });
+      try {
+        const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
+        expect(r.exitCode).toBe(2);
+        const upd = m.requests.find((q) => q.method === "chat.update");
+        if (named.length) {
+          const t = body(upd!).text as string;
+          const warning = t.split("\n").find((l) => l.includes(":warning:"))!;
+          expect([...warning.matchAll(/<@([A-Z0-9]+)>/g)].map((x) => x[1])).toEqual([...named]);
+        } else {
+          expect(upd).toBeUndefined();
+          expect(r.stderr).toContain("回答が分かれています");
+        }
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+});
