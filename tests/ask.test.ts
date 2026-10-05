@@ -36,7 +36,7 @@ afterAll(() => {
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
 
-function run(args: string[], baseUrl: string): Promise<RunResult> {
+function run(args: string[], baseUrl: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
@@ -47,6 +47,7 @@ function run(args: string[], baseUrl: string): Promise<RunResult> {
     HOME: tmpHome,
     SLACK_API_BASE: `${baseUrl}/api`,
     SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
+    ...extraEnv,
   };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env });
@@ -1431,6 +1432,150 @@ describe("slack edit refuses an edit that BREAKS an ask / poll (CLI)", { timeout
       expect(r.stdout).not.toContain("⚠ --force");
     } finally {
       await m.stop();
+    }
+  });
+});
+
+// The rest of the lifecycle (design agreed with taku 2026-10-05): change a
+// question through the builder, re-ask one whose options must change after a
+// vote, and list what I asked with its live state.
+describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
+  const OLD = "1699999999.000100"; // the question being edited/replaced (the mock posts new ones at QTS)
+  const LINK = `${CHAN}:${OLD}`;
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+  const fx = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${OLD}`]: { ok: true, messages: [{ ts: OLD, ...msg }] },
+    [`conversations.history__channel=${CHAN}&limit=1`]: { ok: true, messages: [] },
+  });
+
+  test("--edit rewords the question and body through the builder; options and pills untouched", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--edit=${LINK}`, `<@${BOB}> 本番に出してよい？（head 2c706eb4）`, "--body", "背景: head 2c706eb4"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("+ 背景: head 2c706eb4");
+      expect(dry.stdout).toContain("Choices: (unchanged)");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      const p = askParseMessage(text);
+      expect(p.kind).toBe("open");
+      if (p.kind !== "open") return;
+      expect(p.question).toBe(`<@${BOB}> 本番に出してよい？（head 2c706eb4）`);
+      expect(p.body).toBe("背景: head 2c706eb4");
+      expect(p.reactable).toEqual(["リリースする", "見送る"]);
+      expect(m.requests.some((q) => q.method === "reactions.remove" || q.method === "reactions.add")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit changes the options while nobody has answered, and re-seeds the pills in order", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "one", users: [SELF], count: 1 }] }) });
+    try {
+      const base = ["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "リリースする", "見送る", "明日にする"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("+ 3. 明日にする");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["one", "two", "three", "question"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit refuses to change the options once someone has answered, and points at --reask", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "two", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "A", "B", "C"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("--reask");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit refuses an answered question", async () => {
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "見送る", how: "リアクション 2️⃣" }, "bob");
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: done }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, "--body", "x"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--void --reask: one gate, the new question goes up, then the old one is voided as replaced by it", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "two", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reask", "--reason", "head moved", `<@${BOB}> 出してよい?（head 2c706eb4）`, "リリースする", "見送る"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain(`Then 作废: ${LINK}`);
+      expect(m.requests.some((q) => q.method === "chat.postMessage" || q.method === "chat.update")).toBe(false);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const posted = body(m.requests.find((q) => q.method === "chat.postMessage")!).text as string;
+      expect(askParseMessage(posted).kind).toBe("open");
+      expect(posted).toContain("背景: head bcb7fd8e"); // body carried over (no --body given)
+      const upd = m.requests.find((q) => q.method === "chat.update")!;
+      expect(body(upd).ts).toBe(OLD);
+      const v = askParseMessage(body(upd).text as string);
+      expect(v.kind).toBe("void");
+      expect(v.kind === "void" && v.supersededBy).toContain(QTS);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--ls lists what I asked with its live state; --stale prints the gated --void command", async () => {
+    const db = join(tmpHome, `ls-${Date.now()}.sqlite`);
+    const env = { SLACK_TERM_SENT_DB: db };
+    const q = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+    const ask = await startMock({ inline: { ...AUTH, "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } } } });
+    try {
+      const base = ["ask", "#chan", `@bob 出してよい?`, "A", "B", "--channel-id", CHAN];
+      const dry = await run(base, ask.baseUrl, env);
+      expect((await run([...base, `--code=${extractCode(dry.stderr)}`], ask.baseUrl, env)).exitCode).toBe(0);
+    } finally {
+      await ask.stop();
+    }
+    const live = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: q }] },
+    } });
+    try {
+      const r = await run(["ask", "--ls", "--json"], live.baseUrl, env);
+      expect(r.exitCode).toBe(0);
+      const items = JSON.parse(r.stdout) as { state: string; link: string }[];
+      expect(items.map((i) => i.state)).toEqual(["open"]);
+      // Not stale yet:
+      const fresh = await run(["ask", "--ls", "--stale", "1h"], live.baseUrl, env);
+      expect(fresh.stderr).not.toContain("--void=");
+      const stale = await run(["ask", "--ls", "--stale", "0s"], live.baseUrl, env);
+      expect(stale.stderr).toContain(`--void='`);
+    } finally {
+      await live.stop();
+    }
+    // Answered elsewhere: the live state wins over what the log recorded.
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "B", how: "リアクション 2️⃣" }, "bob");
+    const after = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: done }] },
+    } });
+    try {
+      expect(JSON.parse((await run(["ask", "--ls", "--json"], after.baseUrl, env)).stdout)).toEqual([]);
+      const all = JSON.parse((await run(["ask", "--ls", "--state", "all", "--json"], after.baseUrl, env)).stdout) as { state: string; answer?: string }[];
+      expect(all.map((i) => [i.state, i.answer])).toEqual([["answered", "B"]]);
+    } finally {
+      await after.stop();
     }
   });
 });

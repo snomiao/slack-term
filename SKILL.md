@@ -207,8 +207,20 @@ kept, our pills come off, and a 🚫 reaction is added. Three states, three pref
 `--waitFor` on a void question **exit 6** (`--json` → `status: "void"`): stop waiting.
 Answered questions cannot be voided.
 
-**Don't `slack edit` a question.** `edit` refuses an ask/poll message (its body is what
-collect reads back); `--force` overrides. Retire it with `--void` instead.
+**Changing a question: `--edit`, not `slack edit`.**
+`slack ask --edit='<permalink>' ["new question" [choices…]] [--body …]` rebuilds it with the
+ask layout (same `--code` gate), so collect still reads it. Wording can change any time;
+the **options** only while nobody has answered. After that, re-ask it:
+`slack ask --void='<permalink>' --reask [--reason …] ["new question" [choices…]]` posts the
+question again in the same place (old text/choices/body unless you give new ones) and voids
+the old one as replaced by it — one gate for both. Plain `slack edit` refuses an edit that
+would break an ask/poll (text no longer readable, or an answered/void question made open
+again); edits that keep it readable — e.g. a script writing the ✅ form — pass as usual.
+
+**What did I ask, and what became of it.** `slack ask --ls` lists your asks from the local
+sent-log with their LIVE state (`--state open|answered|void|all`, default open; `--channel`;
+`--json`). `--ls --stale 24h` = open and older than 24h, and prints the one `--void=` command
+that would retire them all (behind the usual gate). Only asks sent from this machine.
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
