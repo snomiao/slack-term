@@ -2752,6 +2752,28 @@ async function askFetchByLink(token: string, link: string, cookie?: string): Pro
  *  all behind ONE confirm code covering every target and the reason. */
 async function cmdAskVoid(token: string, args: { links: string[]; reason: string; supersededBy?: string; code?: string; asBot: boolean; cookie?: string }): Promise<void> {
   const self = await selfIdentity(token, args.cookie);
+  // The replacement link is written into every voided question for good, so it
+  // must name a real message before anything is touched — a typo would point
+  // people at nothing, permanently.
+  if (args.supersededBy) {
+    const shown = stripTerminalControls(args.supersededBy);
+    let found = false;
+    try {
+      const rep = await askFetchByLink(token, args.supersededBy, args.cookie);
+      found = !!rep?.msg;
+      if (!rep) {
+        console.error(`Error: --superseded-by must be a message permalink (or 'C…:1700000000.000100'): ${shown}`);
+        process.exit(ASK_EXIT_ERROR);
+      }
+    } catch (e: unknown) {
+      console.error(`Error: --superseded-by を確認できません: ${shown} (${e instanceof Error ? e.message : String(e)})`);
+      process.exit(ASK_EXIT_ERROR);
+    }
+    if (!found) {
+      console.error(`Error: --superseded-by のメッセージが見つかりません: ${shown}`);
+      process.exit(ASK_EXIT_ERROR);
+    }
+  }
   type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; pressed: string[] };
   const targets: Target[] = [];
   let refused = 0;

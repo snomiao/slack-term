@@ -724,6 +724,7 @@ describe("a voided question reads back as void, in either language", () => {
       askBuildText("q", "", ["A"], [], true).split("\n").pop();
     const p = askParseMessage(legacy);
     expect(p.kind).toBe("void");
+    expect(p.kind === "void" && p.question).toBe("出してよい?");
     // An ordinary 【…】 heading is not.
     expect(askParseMessage("【お知らせ】*q*").kind).toBe("other");
   });

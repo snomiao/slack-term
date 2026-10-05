@@ -1247,9 +1247,12 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
 describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
   const LINK = `${CHAN}:${QTS}`;
   const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
+  const NEW_TS = "1700000000.000900";
   const fx = (msg: Record<string, unknown>): InlineFixtures => ({
     ...AUTH,
     [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] },
+    // The replacement question --superseded-by points at.
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${NEW_TS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: NEW_TS, text: "new" }] },
     ...pollFixture(CHAN, [msg]),
   });
   const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
@@ -1257,7 +1260,7 @@ describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
   test("voids your own open question behind the code gate: 🚫 text, body kept, seeds off, 🚫 on", async () => {
     const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: OPEN, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] }) });
     try {
-      const base = ["ask", `--void=${LINK}`, "--reason", "head moved", "--superseded-by", "https://acme.slack.com/archives/C00000001/p1700000000000900"];
+      const base = ["ask", `--void=${LINK}`, "--reason", "head moved", "--superseded-by", `https://acme.slack.com/archives/C00000001/p1700000000000900`];
       const dry = await run(base, m.baseUrl);
       expect(dry.exitCode).toBe(1);
       expect(dry.stdout).toContain("1 question(s)");
@@ -1275,6 +1278,19 @@ describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
       const removed = m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name);
       expect(removed).toEqual(["one", "two", "question"]);
       expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["no_entry_sign"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a --superseded-by that names no message is refused before anything is edited", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: OPEN }) });
+    try {
+      for (const bad of ["not-a-link", "https://acme.slack.com/archives/C00000001/p1700000000000777"]) {
+        const r = await run(["ask", `--void=${LINK}`, "--superseded-by", bad], m.baseUrl);
+        expect(r.exitCode).toBe(3);
+      }
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
     } finally {
       await m.stop();
     }

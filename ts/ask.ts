@@ -471,7 +471,12 @@ export function askParseMessage(text: string): AskParsed {
     return link ? { kind: "void", question, reason, supersededBy: link } : { kind: "void", question, reason };
   }
   const legacyVoid = lines[0]!.match(ASK_LEGACY_VOID_RE);
-  if (legacyVoid) return { kind: "void", question: "", reason: askDecodeEntities(lines[0]!) };
+  if (legacyVoid) {
+    // The hand-voided body still carries the original `:question: *…*` after
+    // the prefix — keep that as the question rather than dropping it.
+    const q = text.match(/:question: \*([^\n]*?)\*/);
+    return { kind: "void", question: q ? askDecodeEntities(q[1]!) : "", reason: askDecodeEntities(lines[0]!) };
+  }
 
   // Resolved is checked FIRST: a settled question carries the ✅ prefix where an
   // open one carries the ❓ marker, and reading a resolved body as an open one
