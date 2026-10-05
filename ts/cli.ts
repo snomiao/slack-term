@@ -2803,7 +2803,12 @@ async function askHasResponses(token: string, t: { channelId: string; ts: string
   const pressed = asArray(t.msg.reactions).map(asRecord)
     .some((r) => ASK_KEYCAPS.some((k) => k.name === r.name) && asArray(r.users).some(notSelf));
   if (pressed) return true;
-  if (Number(t.msg.reply_count) > 0) return true;
+  // A thread counts only if someone OTHER than us is in it — our own
+  // follow-up note must not lock the options.
+  if (Number(t.msg.reply_count) > 0) {
+    const rep = asRecord((await replies(token, t.channelId, t.ts, 100, cookie)) as Json);
+    if (asArray(rep.messages).map(asRecord).some((m) => Number(m.ts) > Number(t.ts) && notSelf(m.user) && !m.bot_id)) return true;
+  }
   if (t.channelId.startsWith("D")) {
     const hist = asRecord((await history(token, t.channelId, 30, t.ts, undefined, cookie, true)) as Json);
     if (asArray(hist.messages).map(asRecord).some((m) => Number(m.ts) > Number(t.ts) && notSelf(m.user) && !m.bot_id)) return true;
@@ -2849,7 +2854,9 @@ async function cmdAskEdit(token: string, args: {
   }
   // Still addressed to someone: the tags are who may answer, and an edit must
   // not leave a question nobody may answer (a 1:1 DM needs none).
-  const addressed = /<@[UW][A-Z0-9]+(?:\|[^>]*)?>|<!(?:here|channel|everyone)/.test(`${question}\n${body}`) || t.channelId.startsWith("D");
+  // Tagging yourself grants nothing — same rule as when asking.
+  const tagged = [...`${question}\n${body}`.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].some((m) => m[1] !== self?.userId);
+  const addressed = tagged || /<!(?:here|channel|everyone)/.test(`${question}\n${body}`) || t.channelId.startsWith("D");
   if (!addressed) {
     console.error(`✗ 誰にも宛てられていない質問になります — 回答できる人を @ で残してください`);
     process.exit(ASK_EXIT_ERROR);
@@ -2885,6 +2892,7 @@ async function cmdAskEdit(token: string, args: {
            ...oldChoices.map((c, i) => `    - ${i + 1}. ${askFlatten(c)}`),
            ...choices.map((c, i) => `    + ${i + 1}. ${askFlatten(c)}`)]
         : [`  Choices: (unchanged)`]),
+      ...(lang !== old.lang ? [`  Language: ${old.lang} → ${lang} (the instructions are rewritten)`] : []),
       `----------------------------------------------`,
     ]);
   }

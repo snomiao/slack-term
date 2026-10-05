@@ -1500,6 +1500,46 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
     }
   });
 
+  test("--edit: our OWN thread note does not lock the options; someone else's reply does", async () => {
+    for (const [who, locked] of [[SELF, false], [BOB, true]] as const) {
+      const m = await startMock({ inline: {
+        ...fx({ type: "message", user: SELF, text: OPEN, reply_count: 1 }),
+        [`conversations.replies__channel=${CHAN}&limit=100&ts=${OLD}`]: { ok: true, messages: [
+          { type: "message", user: SELF, ts: OLD, text: OPEN },
+          { type: "message", user: who, ts: "1699999999.000200", thread_ts: OLD, text: "補足" },
+        ] },
+      } });
+      try {
+        const r = await run(["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "A", "B", "C"], m.baseUrl);
+        expect(r.exitCode).toBe(locked ? 3 : 1); // 1 = reached the gate
+        expect(r.stderr.includes("--reask")).toBe(locked);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  test("--edit refuses a question that would only tag the asker", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, `<@${SELF}> 出してよい?`], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit shows a language change in the gate", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, "--lang", "en"], m.baseUrl);
+      expect(r.stdout).toContain("Language: ja → en");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("--edit refuses an answered question", async () => {
     const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "見送る", how: "リアクション 2️⃣" }, "bob");
     const m = await startMock({ inline: fx({ type: "message", user: SELF, text: done }) });
