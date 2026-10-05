@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askBuildVoidText, askParseMessage } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -1238,6 +1238,127 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
       // A cursor between the two delivers only the newer one.
       const mid = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${T(200)}`], m.baseUrl)).stdout);
       expect(mid.notes.map((n) => n.text)).toEqual(["two"]);
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
+  const LINK = `${CHAN}:${QTS}`;
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
+  const fx = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] },
+    ...pollFixture(CHAN, [msg]),
+  });
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+
+  test("voids your own open question behind the code gate: 🚫 text, body kept, seeds off, 🚫 on", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: OPEN, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reason", "head moved", "--superseded-by", "https://acme.slack.com/archives/C00000001/p1700000000000900"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("1 question(s)");
+      expect(dry.stdout).toContain("already pressed: :one:");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      expect(text.startsWith(":no_entry_sign: ")).toBe(true);
+      expect(text).toContain("背景: head bcb7fd8e");
+      expect(text).not.toContain(":one: リリースする");
+      const p = askParseMessage(text);
+      expect(p.kind === "void" && p.supersededBy).toBe("https://acme.slack.com/archives/C00000001/p1700000000000900");
+      const removed = m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name);
+      expect(removed).toEqual(["one", "two", "question"]);
+      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["no_entry_sign"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("refuses a question someone else posted, and an answered one", async () => {
+    for (const msg of [
+      { type: "message", user: BOB, ts: QTS, text: OPEN },
+      { type: "message", user: SELF, ts: QTS, text: askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "見送る", how: "リアクション 2️⃣" }, "bob") },
+    ]) {
+      const m = await startMock({ inline: fx(msg) });
+      try {
+        const r = await run(["ask", "void", LINK], m.baseUrl);
+        expect(r.exitCode).toBe(3);
+        expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  test("collect / --waitFor on a void question exits 6 — plain stdout empty, --json says void", async () => {
+    const voided = askBuildVoidText(`<@${BOB}> 出してよい?`, "head moved", "ja", "背景");
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: voided }) });
+    try {
+      const plain = await run(["ask", "collect", LINK, "--timeout", "0"], m.baseUrl);
+      expect(plain.exitCode).toBe(6);
+      expect(plain.stdout).toBe("");
+      const j = await run(["ask", "--waitFor", LINK, "--timeout", "0", "--json"], m.baseUrl);
+      expect(j.exitCode).toBe(6);
+      const o = JSON.parse(j.stdout);
+      expect(o.status).toBe("void");
+      expect(o.reason).toContain("head moved");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a wait on a question that gets voided meanwhile stops with 6", async () => {
+    // --waitFor opens on the OPEN text; the poll then sees it voided.
+    const voided = askBuildVoidText(`<@${BOB}> 出してよい?`, "expired", "ja");
+    const m = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: OPEN }] },
+      ...pollFixture(CHAN, [{ type: "message", user: SELF, ts: QTS, text: voided }]),
+    } });
+    try {
+      const r = await run(["ask", "--waitFor", LINK, "--timeout", "5"], m.baseUrl);
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("slack edit refuses an ask / poll message unless --force (CLI)", { timeout: 90_000 }, () => {
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+  const fx = (text: string): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.replies__channel=${CHAN}&limit=1&ts=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text }] },
+  });
+
+  test("an ask is refused and points at `slack ask void`; --force reaches the normal gate", async () => {
+    const m = await startMock({ inline: fx(OPEN) });
+    try {
+      const r = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("slack ask --void=");
+      expect(r.stdout).not.toContain("Editing as");
+      const f = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN, "--force"], m.baseUrl);
+      expect(f.stdout).toContain("Editing as");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an ordinary message is not affected", async () => {
+    const m = await startMock({ inline: fx("ふつうのメッセージ") });
+    try {
+      const r = await run(["edit", `#chan:${QTS}`, "書き換え", "--channel-id", CHAN], m.baseUrl);
+      expect(r.stderr).not.toContain("slack ask --void=");
+      expect(r.stdout).toContain("Editing as");
     } finally {
       await m.stop();
     }

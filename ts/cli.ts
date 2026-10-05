@@ -31,6 +31,8 @@ import {
   askResolveLang,
   askResolvedHow,
   askResolvedKeep,
+  askBuildVoidText,
+  ASK_VOID_MARKER,
   ASK_COPY,
   ASK_LANGS,
   type AskFound,
@@ -1204,6 +1206,8 @@ function sumCounts(m: Map<string, number>): number {
 // --- edit ---
 interface EditArgs {
   allowUrlAdjacent?: boolean;
+  /** Edit an `ask`/`poll` message anyway. Without it, `edit` refuses one. */
+  force?: boolean;
   target: string;
   newText: string;
   code?: string;
@@ -1289,6 +1293,23 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
     process.exit(1);
   }
   const originalText = typeof original.text === "string" ? original.text : "";
+
+  // An `ask` or `poll` body is a wire format: `--waitFor`/collect read the
+  // question, the pills, the ✅/🚫 state and the kept body back out of it, so a
+  // free-hand rewrite can leave a question nobody can collect — or turn an
+  // answered one back into something that looks open. Refused unless --force.
+  const askKind = askParseMessage(originalText).kind;
+  const isPoll = pollParseMessage(originalText).kind !== "other";
+  if ((askKind !== "other" || isPoll) && !args.force) {
+    const what = isPoll ? "a `slack poll`" : `a \`slack ask\` question (${askKind === "open" ? "open" : askKind === "resolved" ? "answered" : "void"})`;
+    console.error(
+      `Error: this message is ${what} — a plain edit can break what collect reads back (the pills, the ✅/🚫 state, the kept body).\n` +
+      (isPoll
+        ? `  Edit it anyway with --force.`
+        : `  To retire it:  slack ask --void='${args.target}' --reason '…'\n  Edit it anyway with --force.`),
+    );
+    process.exit(1);
+  }
 
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
   const mentionCookie = args.mentionCookie ?? args.cookie;
@@ -1758,6 +1779,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 //   5  replied in free text, picking none of the offered choices — the reply
 //      text is on stdout. NOT a decision: the question is left open, so a pill
 //      pressed later still settles it (`--waitFor … --after=<reply ts>`).
+//   6  the question was VOIDED (作废, `slack ask --void`) — it will never be
+//      answered; stop waiting. stdout stays empty.
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
 const ASK_EXIT_TIMEOUT = 2;
@@ -1773,6 +1796,10 @@ const ASK_EXIT_UNCHOSEN = 4;
  *  (measured 2026-09-27: 8 of 71 asks answered this way, none collected). Still
  *  not 0, so nothing mistakes it for a decision. */
 const ASK_EXIT_FREETEXT = 5;
+/** The question was voided (作废) — expired, superseded, or overtaken by events.
+ *  Neither "open" nor "answered": a monitor that kept waiting on it would wait
+ *  forever, and one that read it as answered would act on nothing. */
+const ASK_EXIT_VOID = 6;
 
 const ASK_PHI = 1.618033988749895;
 const ASK_POLL_MIN_MS = 1000;
@@ -1990,11 +2017,12 @@ function askNextCursor(...tss: (string | undefined)[]): string {
 async function askEmit(
   token: string,
   o: { json: boolean; shown: string; asBot: boolean; cookie?: string | undefined },
-  r: { status: "answered" | "freetext" | "ambiguous" | "timeout"; answer: string | null; how?: string; who?: string; notes: AskNote[]; cursor: string },
+  r: { status: "answered" | "freetext" | "ambiguous" | "timeout" | "void"; answer: string | null; how?: string; who?: string; reason?: string; supersededBy?: string; notes: AskNote[]; cursor: string },
 ): Promise<void> {
   if (o.json) {
     console.log(JSON.stringify({
       status: r.status, answer: r.answer, how: r.how ?? null, who: r.who ?? null,
+      ...(r.status === "void" ? { reason: r.reason ?? "", supersededBy: r.supersededBy ?? null } : {}),
       notes: r.notes, cursor: r.cursor, permalink: o.shown,
     }));
     return;
@@ -2041,6 +2069,13 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   let replyCount: number | undefined;
   /** The question's text as last read — what the ✅ rewrite keeps the body of. */
   let ownText: string | undefined;
+  /** Set when the question is voided while we wait — the wait ends there. */
+  let voided: Extract<ReturnType<typeof askParseMessage>, { kind: "void" }> | undefined;
+  const checkVoid = (own: Record<string, Json>): boolean => {
+    const p = typeof own.text === "string" ? askParseMessage(own.text) : undefined;
+    if (p?.kind === "void") voided = p;
+    return !!voided;
+  };
 
   /** The earliest reply from an answerer that picked none of the choices. Kept
    *  across polls so the timeout can report it, and so the operator is told once
@@ -2183,6 +2218,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (own) {
         replyCount = Number(own.reply_count) || 0;
         if (typeof own.text === "string") ownText = own.text;
+        if (checkVoid(own)) return null;
         const byReaction = await answerFromReactions(own);
         if (byReaction) return byReaction;
       }
@@ -2199,6 +2235,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     if (own) {
       replyCount = Number(own.reply_count) || 0;
       if (typeof own.text === "string") ownText = own.text;
+      if (checkVoid(own)) return null;
     }
     // A reaction is the intended path, so it wins when both are present.
     if (own) {
@@ -2292,6 +2329,17 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
         process.exit(ASK_EXIT_ERROR);
       }
       console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    if (voided) {
+      askReportVoid(voided, shown);
+      if (ctx.json) {
+        await askEmit(token, ctx, {
+          status: "void", answer: null, reason: voided.reason,
+          ...(voided.supersededBy ? { supersededBy: voided.supersededBy } : {}),
+          notes: [], cursor: askNextCursor(ts, ctx.after),
+        });
+      }
+      process.exit(ASK_EXIT_VOID);
     }
     if (found) {
       // Notes once the answer is in hand: a pill used to end the poll before
@@ -2641,6 +2689,143 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
 
 
 
+/** Say on stderr that a question is void, and where its replacement is. */
+function askReportVoid(p: { reason: string; supersededBy?: string }, shown: string): void {
+  console.error(`この質問は作废（無効）です — 回答されることはありません。待つのをやめてください: ${stripTerminalControls(shown)}`);
+  if (p.reason) console.error(`  ${stripTerminalControls(p.reason)}`);
+  if (p.supersededBy) console.error(`  新しい質問: ${stripTerminalControls(p.supersededBy)}`);
+}
+
+/** Find the one message a permalink (or `C…:ts`) names. A question posted into
+ *  a thread is not in history at all, so where the link says it is a reply, it
+ *  is read from the thread. */
+async function askFetchByLink(token: string, link: string, cookie?: string): Promise<
+  { channelId: string; ts: string; threadTs?: string; msg?: Record<string, Json> } | null
+> {
+  const url = parseSlackPermalink(link);
+  let channelId: string;
+  let ts: string;
+  let threadTs: string | undefined;
+  if (url?.ts) {
+    channelId = url.channel;
+    ts = url.ts;
+    threadTs = url.threadTs && url.threadTs !== url.ts ? url.threadTs : undefined;
+  } else {
+    const m = link.match(/^([A-Za-z0-9]+):(\d{10}\.\d{6})$/);
+    if (!m) return null;
+    channelId = m[1]!;
+    ts = m[2]!;
+  }
+  let msg: Record<string, Json> | undefined;
+  if (threadTs) {
+    const rep = asRecord((await replies(token, channelId, threadTs, 100, cookie)) as Json);
+    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
+  } else {
+    const hist = asRecord((await history(token, channelId, 1, ts, undefined, cookie, true)) as Json);
+    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
+  }
+  const out: { channelId: string; ts: string; threadTs?: string; msg?: Record<string, Json> } = { channelId, ts };
+  if (threadTs) out.threadTs = threadTs;
+  if (msg) out.msg = msg;
+  return out;
+}
+
+/** `slack ask --void <permalink>…` — 作废: mark questions that have expired or
+ *  stopped meaning anything, so nobody answers them and nothing waits on them.
+ *
+ *  Case, 2026-10-05: a release ask was pinned to one head SHA; three minutes
+ *  later main moved and approving it would have approved a different head. The
+ *  bot had to void it by hand (prefix the text, leave the pills), and nothing
+ *  machine-readable said so: `--waitFor` still treated it as open, the
+ *  stale-pill reminder still counted it, the pills were still pressable.
+ *
+ *  What voiding does, per question: the text becomes the 🚫 form (head, void
+ *  stamp with the reason, optional pointer to the replacement, the body); our
+ *  seeded pills and the ❓ marker come off; a 🚫 reaction goes on. Pills someone
+ *  already pressed stay — Slack lets only their owner remove them — and are
+ *  never collected, because a void is never polled again.
+ *
+ *  Only your OWN questions: Slack lets only the author edit a message, and
+ *  voiding someone else's decision is not a thing this should make possible.
+ *  An answered question is final and is refused; an already-void one is a
+ *  no-op. Several links at once — the morning triage found 38 stale pills —
+ *  all behind ONE confirm code covering every target and the reason. */
+async function cmdAskVoid(token: string, args: { links: string[]; reason: string; supersededBy?: string; code?: string; asBot: boolean; cookie?: string }): Promise<void> {
+  const self = await selfIdentity(token, args.cookie);
+  type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; pressed: string[] };
+  const targets: Target[] = [];
+  let refused = 0;
+  for (const link of args.links) {
+    const shown = stripTerminalControls(link);
+    const got = await askFetchByLink(token, link, args.cookie);
+    if (!got) { console.error(`✗ ${shown}: permalink (または 'C…:1700000000.000100') ではありません`); refused++; continue; }
+    if (!got.msg) { console.error(`✗ ${shown}: メッセージが見つかりません`); refused++; continue; }
+    const msg = got.msg;
+    const own = (!!self?.userId && msg.user === self.userId) || (!!self?.botId && msg.bot_id === self.botId);
+    if (!own) {
+      console.error(`✗ ${shown}: 自分（${senderLabel(self, args.asBot)}）が投稿した質問ではないので作废できません` +
+        `${args.asBot ? "" : " — bot が出した質問なら --as-bot で"}`);
+      refused++;
+      continue;
+    }
+    const text = typeof msg.text === "string" ? msg.text : "";
+    const parsed = askParseMessage(text);
+    if (parsed.kind === "void") { console.error(`- ${shown}: すでに作废済みです（何もしません）`); continue; }
+    if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問は作废できません（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）`); refused++; continue; }
+    if (parsed.kind !== "open") { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); refused++; continue; }
+    const pressed = asArray(msg.reactions).map(asRecord)
+      .filter((r) => typeof r.name === "string" && ASK_KEYCAPS.some((k) => k.name === r.name))
+      .filter((r) => asArray(r.users).some((u) => u !== self?.userId))
+      .map((r) => `:${String(r.name)}:`);
+    targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, pressed });
+  }
+  if (!targets.length) {
+    console.error(refused ? "作废できる質問がありません。" : "何もすることがありません。");
+    process.exit(refused ? ASK_EXIT_ERROR : 0);
+  }
+
+  const code = safetyCode("ask-void", ...targets.map((t) => `${t.channelId}:${t.ts}`), args.reason, args.supersededBy ?? "", self?.userId ?? "");
+  if (args.code !== code) {
+    requireCode(args.code, code, [
+      `--- 作废 (void) -------------------------------`,
+      fromLine(self, { asBot: args.asBot }),
+      `  Reason:   ${args.reason ? stripTerminalControls(args.reason) : "(none)"}`,
+      ...(args.supersededBy ? [`  Replaced: ${stripTerminalControls(args.supersededBy)}`] : []),
+      `  ${targets.length} question(s):`,
+      ...targets.map((t) => `   • ${stripTerminalControls(t.link)}\n     ${stripTerminalControls(t.parsed.question.split("\n")[0] ?? "").slice(0, 100)}` +
+        (t.pressed.length ? `\n     (already pressed: ${t.pressed.join(" ")} — left in place, never collected)` : "")),
+      `  Each becomes 🚫 (body kept, options and instructions removed); our pills and ❓ come off; a 🚫 reaction is added.`,
+      ...(refused ? [`  (${refused} link(s) above were refused and will be skipped)`] : []),
+      `----------------------------------------------`,
+    ]);
+  }
+
+  let failed = 0;
+  for (const t of targets) {
+    const shown = stripTerminalControls(t.link);
+    try {
+      const next = askBuildVoidText(t.parsed.question, args.reason, t.parsed.lang, t.parsed.body || undefined, args.supersededBy);
+      await editMessage(token, t.channelId, t.ts, next, args.cookie, true);
+    } catch (e: unknown) {
+      console.error(`✗ ${shown}: 書き換えに失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+      failed++;
+      continue;
+    }
+    // The text is what marks it void; the reactions are cleanup + searchability,
+    // so a failure there is reported and does not undo the void.
+    for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER]) {
+      try { await reactionRemove(token, t.channelId, t.ts, name, args.cookie); } catch { /* not ours / already gone */ }
+    }
+    try {
+      await reactionAdd(token, t.channelId, t.ts, ASK_VOID_MARKER, args.cookie);
+    } catch (e: unknown) {
+      console.error(`  (${shown}: 🚫 リアクションを付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    console.error(`✓ 作废: ${shown}`);
+  }
+  process.exit(failed || refused ? ASK_EXIT_ERROR : 0);
+}
+
 /** `slack ask --waitFor <permalink>` — collect the answer to a question that was
  *  posted without blocking.
  *
@@ -2719,6 +2904,18 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     const counterpart = await imCounterpart(token, channelId, args.cookie);
     if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
   }
+  if (parsed.kind === "void") {
+    askReportVoid(parsed, args.link);
+    if (args.json) {
+      await askEmit(token, { json: true, shown: args.link, asBot: args.asBot, cookie: args.cookie }, {
+        status: "void", answer: null, reason: parsed.reason,
+        ...(parsed.supersededBy ? { supersededBy: parsed.supersededBy } : {}),
+        notes: [], cursor: askNextCursor(ts, args.after),
+      });
+    }
+    process.exit(ASK_EXIT_VOID);
+  }
+
   if (parsed.kind === "resolved") {
     // Answered while nobody was watching — the case that makes fire-and-forget
     // safe. Report it exactly as `--wait` would have, plus any notes the
@@ -4037,7 +4234,7 @@ async function main(): Promise<void> {
     )
     .command(
       "ask [target] [question] [choices..]",
-      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate)",
+      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate). Lifecycle: --waitFor=<link> collect, --void=<link> 作废 (verb aliases: `ask collect <link>`, `ask void <link…>`)",
       (y) => y
         .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --waitFor)" })
         .positional("question", { type: "string", describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
@@ -4046,15 +4243,77 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open)." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (作废, `slack ask void`) — stop waiting." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
+        .option("void", { type: "string", array: true, describe: "作废: void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
+        .option("reason", { type: "string", describe: "With --void: why it is void (written into the message)" })
+        .option("superseded-by", { type: "string", describe: "With --void: permalink of the question that replaces it" })
         .option("json", { type: "boolean", default: false, describe: "With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Ask via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient" }),
       async (argv) => {
+        // Verbs. A target is always #chan / @user / a permalink / a raw ID, so a
+        // bare word here cannot be one — `slack ask void …` is unambiguous.
+        //   slack ask void <link…> [--reason …] [--superseded-by <link>]   作废
+        //   slack ask collect <link>                                        = --waitFor
+        const voidFlag = ((argv.void as string[] | undefined) ?? []).map(String).filter(Boolean);
+        if (argv.target === "void" || voidFlag.length) {
+          const verbLinks = argv.target === "void" ? [argv.question, ...((argv.choices as string[] | undefined) ?? [])] : [];
+          if (argv.target !== "void" && (argv.target || argv.question || (argv.choices as string[] | undefined)?.length)) {
+            console.error("Error: --void voids existing questions — do not also pass a target/question/choices.");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          const links = [...voidFlag, ...verbLinks.map((x) => String(x ?? ""))].filter(Boolean);
+          if (!links.length) {
+            console.error("Error: --void=<permalink> — which question(s)?");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          if (argv.wait || argv.waitFor) {
+            console.error("Error: --void voids existing questions — do not also pass --wait/--waitFor.");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          let voidToken: string;
+          let voidCookie: string | undefined;
+          if (argv["as-bot"]) {
+            const botToken = resolveBotToken();
+            if (!botToken) {
+              console.error(
+                "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+                "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+              );
+              process.exit(ASK_EXIT_ERROR);
+            }
+            voidToken = botToken;
+          } else {
+            voidToken = tok(argv as W);
+            voidCookie = ck(argv as W);
+          }
+          const a: { links: string[]; reason: string; supersededBy?: string; code?: string; asBot: boolean; cookie?: string } = {
+            links, reason: unescapeArg(String(argv.reason ?? "")).trim(), asBot: !!argv["as-bot"],
+          };
+          if (argv["superseded-by"]) a.supersededBy = String(argv["superseded-by"]);
+          if (argv.code) a.code = String(argv.code);
+          if (voidCookie) a.cookie = voidCookie;
+          try {
+            await cmdAskVoid(voidToken, a);
+          } catch (e: unknown) {
+            console.error(friendlySlackError(e));
+            process.exit(ASK_EXIT_ERROR);
+          }
+          return;
+        }
+        if (argv.target === "collect") {
+          if (!argv.question || (argv.choices as string[] | undefined)?.length) {
+            console.error("Error: slack ask collect <permalink> — exactly one question.");
+            process.exit(ASK_EXIT_ERROR);
+          }
+          argv.waitFor = String(argv.question);
+          argv.target = undefined;
+          argv.question = undefined;
+        }
         const waitFor = argv.waitFor ? String(argv.waitFor) : "";
         const timeout = Number(argv.timeout);
         // 0 is a real value only for --waitFor ("look once"). For --wait it would
@@ -4486,12 +4745,14 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
         .positional("newText", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
+        .option("force", { type: "boolean", default: false, describe: "Edit a `slack ask` / `slack poll` message anyway. Refused by default: their body is what collect reads back, and a free-hand edit can make the question uncollectable (use `slack ask void` to retire one)." })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
         .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),
       async (argv) => {
         const args: EditArgs = { target: argv.target!, newText: argv.newText!, allowUrlAdjacent: argv["allow-url-adjacent"] };
+        if (argv.force) args.force = true;
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv.mentions !== false) args.mentions = true;

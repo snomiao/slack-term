@@ -123,6 +123,8 @@ interface AskCopy {
   howReaction: (glyph: string) => string;
   howReply: string;
   howReplyN: (n: number) => string;
+  voidStamp: (reason: string) => string;
+  supersededBy: (link: string) => string;
 }
 
 /** The standing "none of these" choice (`otherThread` / `otherHere`), listed
@@ -152,6 +154,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
     howReaction: (glyph) => `リアクション ${glyph}`,
     howReply: "返信",
     howReplyN: (n) => `返信 (${n})`,
+    voidStamp: (reason) => `_作废（無効）${reason ? `: ${reason}` : ""} — この質問への回答は受け付けません。_`,
+    supersededBy: (link) => `↪ 新しい質問: ${link}`,
   },
   en: {
     instructionReactionThread:
@@ -169,6 +173,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
     howReaction: (glyph) => `reaction ${glyph}`,
     howReply: "reply",
     howReplyN: (n) => `reply (${n})`,
+    voidStamp: (reason) => `_Void${reason ? `: ${reason}` : ""} — this question no longer takes answers._`,
+    supersededBy: (link) => `↪ Replaced by: ${link}`,
   },
 };
 
@@ -232,6 +238,20 @@ export function isInvalidNotice(line: string | undefined): boolean {
  *  reason a fire-and-forget ask can be collected later at all. */
 export const ASK_RESOLVED_MARKER = "white_check_mark";
 export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
+
+/** Prefix `--void` stamps on a question that should no longer be answered —
+ *  expired, superseded, or overtaken by events (作废). A THIRD state beside open
+ *  (`:question:`) and answered (`:white_check_mark:`), on purpose: anything that
+ *  keys on "starts with :question:" (the stale-pill reminder, `has::question:`)
+ *  stops counting it the moment it is voided, and nothing reads it as answered.
+ *  Also seeded as a reaction, so `has::no_entry_sign:` lists every void. */
+export const ASK_VOID_MARKER = "no_entry_sign";
+export const ASK_VOID_PREFIX = `:${ASK_VOID_MARKER}: `;
+
+/** A question voided BY HAND before `--void` existed: the release bot prefixed
+ *  the body with 「【superseded / 作废】」. Read as void too, so monitors stop on
+ *  those as well instead of rejecting them as "not an ask". */
+const ASK_LEGACY_VOID_RE = /^【[^】]*(?:作废|作廢|superseded|void)[^】]*】/i;
 
 /** How a keycap is WRITTEN into the body, and how it is read back.
  *
@@ -351,6 +371,18 @@ export function askResolvedKeep(openText: string, choice?: number): { body?: str
   return keep.body || keep.chosenLine ? keep : undefined;
 }
 
+/** Voided-question body: the 🚫 head, the void stamp (with the reason), an
+ *  optional pointer to the question that replaces it, then the body — kept for
+ *  the same reason the ✅ body keeps it: the context outlives the question.
+ *  The options and the answering instructions go; none of them apply now. */
+export function askBuildVoidText(question: string, reason: string, lang: AskLang = "ja", body?: string, supersededBy?: string): string {
+  const c = ASK_COPY[lang];
+  let out = `${ASK_VOID_PREFIX}*${question}*\n${c.voidStamp(askFlatten(reason.trim()))}`;
+  if (supersededBy) out += `\n${c.supersededBy(supersededBy)}`;
+  if (body) out += `\n\n${body}`;
+  return out;
+}
+
 /** Where a ✅ body's stamp line is, found by its SHAPE: the first line after
  *  the head that is `_…_`, followed by a blank line and a quoted line — the
  *  layout `askBuildResolvedText` writes. Not by the end of the question's bold
@@ -389,6 +421,9 @@ function askDecodeEntities(s: string): string {
 export type AskParsed =
   | { kind: "open"; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
   | { kind: "resolved"; question: string; answer: string }
+  /** Voided (作废). `reason` is the stamp line as written; `supersededBy` the
+   *  replacement's link when one was given. */
+  | { kind: "void"; question: string; reason: string; supersededBy?: string }
   | { kind: "other" };
 
 /** Read an `ask` message back out of Slack. The inverse of `askBuildText` /
@@ -423,6 +458,20 @@ export function askExplainReject(text: string): string {
 
 export function askParseMessage(text: string): AskParsed {
   const lines = text.split("\n");
+
+  // Void before anything else: a voided question is neither open nor answered,
+  // and must never be polled as one.
+  if (text.startsWith(ASK_VOID_PREFIX)) {
+    const stampAt = lines.findIndex((l, i) => i > 0 && l.startsWith("_") && l.endsWith("_"));
+    const question = askDecodeEntities(
+      lines.slice(0, stampAt > 0 ? stampAt : 1).join("\n").slice(ASK_VOID_PREFIX.length).replace(/^\*/, "").replace(/\*$/, ""),
+    );
+    const reason = stampAt > 0 ? lines[stampAt]!.replace(/^_|_$/g, "") : "";
+    const link = stampAt > 0 ? lines[stampAt + 1]?.match(/^↪ [^:：]*[:：] (.+)$/)?.[1] : undefined;
+    return link ? { kind: "void", question, reason, supersededBy: link } : { kind: "void", question, reason };
+  }
+  const legacyVoid = lines[0]!.match(ASK_LEGACY_VOID_RE);
+  if (legacyVoid) return { kind: "void", question: "", reason: askDecodeEntities(lines[0]!) };
 
   // Resolved is checked FIRST: a settled question carries the ✅ prefix where an
   // open one carries the ❓ marker, and reading a resolved body as an open one

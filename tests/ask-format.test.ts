@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askBuildVoidText, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -685,5 +685,46 @@ describe("the answered stamp reads naturally in each language", () => {
     expect(c.answeredVia(c.howReaction("2️⃣"), "bob")).toBe("_Answered by reaction 2️⃣ (bob)_");
     expect(c.answeredVia(c.howReply, "")).toBe("_Answered by reply_");
     expect(c.answeredVia(c.howReplyN(3), "bob")).toBe("_Answered by reply (3) (bob)_");
+  });
+});
+
+// 作废 (void): a third state beside open and answered. Real case 2026-10-05: a
+// release ask pinned to one head SHA went stale three minutes later, and nothing
+// machine-readable said so — collect still saw it as open, the stale-pill
+// reminder still counted it.
+describe("a voided question reads back as void, in either language", () => {
+  for (const lang of ASK_LANGS) {
+    test(`${lang}: reason, replacement, body kept`, () => {
+      const t = askBuildVoidText("<@U00000001> 出してよい?", "head moved", lang, "背景: v6", "https://acme.slack.com/archives/C00000001/p1700000000000200");
+      expect(t.startsWith(":no_entry_sign: *<@U00000001> 出してよい?*")).toBe(true);
+      expect(t).toContain("背景: v6");
+      const p = askParseMessage(t);
+      expect(p.kind).toBe("void");
+      if (p.kind !== "void") return;
+      expect(p.question).toBe("<@U00000001> 出してよい?");
+      expect(p.reason).toContain("head moved");
+      expect(p.supersededBy).toBe("https://acme.slack.com/archives/C00000001/p1700000000000200");
+    });
+  }
+
+  test("no reason, no replacement", () => {
+    const p = askParseMessage(askBuildVoidText("q", "", "en"));
+    expect(p).toEqual({ kind: "void", question: "q", reason: "Void — this question no longer takes answers." });
+  });
+
+  test("never mistaken for open or answered — the prefix is not :question: or :white_check_mark:", () => {
+    const t = askBuildVoidText("q", "expired", "ja", "> 引用");
+    expect(t.startsWith(":question:")).toBe(false);
+    expect(t.startsWith(":white_check_mark:")).toBe(false);
+    expect(askParseMessage(t).kind).toBe("void");
+  });
+
+  test("a body hand-voided before `ask void` existed (「【superseded / 作废】…」) is void too", () => {
+    const legacy = "【superseded / 作废】[release-bot] 無効な ask です。 :question: *出してよい?*\n\n:one: リリースする\n\n" +
+      askBuildText("q", "", ["A"], [], true).split("\n").pop();
+    const p = askParseMessage(legacy);
+    expect(p.kind).toBe("void");
+    // An ordinary 【…】 heading is not.
+    expect(askParseMessage("【お知らせ】*q*").kind).toBe("other");
   });
 });

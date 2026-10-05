@@ -171,7 +171,7 @@ without losing clicks. A reaction is durable state anyone can read back later.
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
   replied, `3` transport/config failure, `4` a reply matched several choices (stdout
-  empty), `5` a **free-text reply** that picked none of the offered choices — the reply
+  empty), `6` the question was **voided** (stop waiting), `5` a **free-text reply** that picked none of the offered choices — the reply
   text is on stdout. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
 - **A reply that chooses nothing is delivered, but is not a decision.** When choices were
@@ -196,6 +196,19 @@ bystanders are never notes.
 and the chosen option; only the options not chosen, the ❓ line and the instructions go.
 The head is unchanged (`:white_check_mark:` prefix, question, stamp, quoted answer), so
 anything that keys on the prefix or re-reads the answer works on old and new ✅ bodies alike.
+
+**Voiding a question (作废).** When a question has expired or stopped meaning anything
+(the head it was pinned to moved, the decision was made elsewhere), retire it:
+`slack ask --void='<permalink>' --reason '…' [--superseded-by '<new permalink>']`
+(repeatable `--void=`; alias `slack ask void <link…>`; same `--code` gate; own questions
+only, `--as-bot` for the bot's). The text becomes `:no_entry_sign:` + reason with the body
+kept, our pills come off, and a 🚫 reaction is added. Three states, three prefixes:
+`:question:` open, `:white_check_mark:` answered, `:no_entry_sign:` void. `--wait` /
+`--waitFor` on a void question **exit 6** (`--json` → `status: "void"`): stop waiting.
+Answered questions cannot be voided.
+
+**Don't `slack edit` a question.** `edit` refuses an ask/poll message (its body is what
+collect reads back); `--force` overrides. Retire it with `--void` instead.
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
