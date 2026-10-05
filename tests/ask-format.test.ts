@@ -753,5 +753,7 @@ describe("an ask flattened onto one line can still be read well enough to void",
   test("not an ask at all → nothing to salvage", () => {
     expect(askSalvageUnreadable("ふつうのメッセージ")).toBeNull();
     expect(askSalvageUnreadable(":question: 太字なし")).toBeNull();
+    // ❓ + bold, but nothing `ask` writes: not evidence enough to rewrite it.
+    expect(askSalvageUnreadable(":question: *これは質問ではない* ただのお知らせ")).toBeNull();
   });
 });

@@ -389,7 +389,7 @@ export function askBuildVoidText(question: string, reason: string, lang: AskLang
  *  to retire it: the question (the leading bold run after the ❓ marker) and the
  *  rest as the body, minus the answering instructions and the invalid-ballot
  *  line, which no longer apply. Null unless it starts with the ❓ marker and a
- *  bold run. The options stay in the body as text: they are part of what was
+ *  bold run AND still carries one of `ask`'s answering instructions verbatim. The options stay in the body as text: they are part of what was
  *  asked, and voiding is no time to guess where they start. */
 export function askSalvageUnreadable(text: string): { question: string; body: string } | null {
   if (!text.startsWith(ASK_MARKER_PREFIX)) return null;
@@ -397,8 +397,14 @@ export function askSalvageUnreadable(text: string): { question: string; body: st
   const m = rest.match(/^\*([\s\S]+?)\*(?=\s|$)/);
   if (!m) return null;
   let body = rest.slice(m[0].length);
+  // Evidence that this WAS an ask, not just any message that opens with ❓ and
+  // a bold line: one of the answering instructions `ask` writes, verbatim.
+  let wasAsk = false;
   for (const l of ASK_LANGS) {
     const c = ASK_COPY[l];
+    for (const instr of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere]) {
+      if (body.includes(instr)) wasAsk = true;
+    }
     for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere]) {
       body = body.split(fixed).join(" ");
     }
@@ -408,6 +414,7 @@ export function askSalvageUnreadable(text: string): { question: string; body: st
       body = body.slice(0, at) + " " + (end >= 0 ? body.slice(end + INVALID_SUFFIX.length) : "");
     }
   }
+  if (!wasAsk) return null;
   return { question: m[1]!, body: body.replace(/[ \t]{3,}/g, "  ").trim() };
 }
 
