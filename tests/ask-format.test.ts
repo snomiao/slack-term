@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -592,5 +592,72 @@ describe("askResolvedHow reads the ✅ stamp back, in either language", () => {
       expect(askResolvedHow(b(lang === "ja" ? "返信" : "reply"))).toEqual({ byReply: true });
       expect(askResolvedHow(b(lang === "ja" ? "返信 (3)" : "reply (3)"))).toEqual({ byReply: true, n: 3 });
     }
+  });
+});
+
+// Real use 2026-10-05: collecting an answer replaced the whole message with
+// question + answer, and the background the decision was made against was gone.
+// The ✅ body now keeps the body and the CHOSEN option; only the options not
+// chosen, the ❓ line and the instructions go. The head (✅, question, stamp,
+// quoted answer) is where it always was, so old and new ✅ bodies read alike.
+describe("the ✅ body keeps the background and the chosen option", () => {
+  const BODY = "背景: リリース前\n> 引用された資料の一節\n推奨: B";
+  const open = askBuildText("<@U00000001> どっち?", BODY, ["A", "B", "C"], [], true);
+
+  test("the open parse exposes the body, with or without the invalid notice", () => {
+    for (const t of [open, applyInvalidNotice(open, ["U00000002"])]) {
+      const p = askParseMessage(t);
+      expect(p.kind).toBe("open");
+      if (p.kind !== "open") return;
+      expect(p.body).toBe(BODY);
+    }
+    const free = askParseMessage(askBuildText("q", "本文だけ", [], [], false));
+    expect(free.kind === "open" && free.body).toBe("本文だけ");
+    const bare = askParseMessage(askBuildText("q", "", ["A"], [], false));
+    expect(bare.kind === "open" && bare.body).toBe("");
+  });
+
+  test("a pill answer keeps the body and ONLY the chosen option", () => {
+    const keep = askResolvedKeep(open, 2)!;
+    expect(keep).toEqual({ body: BODY, chosenLine: ":two: B" });
+    const done = askBuildResolvedText("<@U00000001> どっち?", { answer: "B", how: "リアクション 2️⃣" }, "bob", "ja", keep);
+    expect(done.startsWith(":white_check_mark: ")).toBe(true);
+    expect(done).toContain("背景: リリース前");
+    expect(done).toContain(":two: B");
+    expect(done).not.toContain(":one: A");
+    expect(done).not.toContain(":three: C");
+    expect(done).not.toContain("その他");
+    expect(done).not.toContain("リアクションを 1 つ押す");
+  });
+
+  test("it still reads back as the same answer — a `> ` line in the body is not part of it", () => {
+    const done = askBuildResolvedText("<@U00000001> どっち?", { answer: "B", how: "リアクション 2️⃣" }, "bob", "ja", askResolvedKeep(open, 2));
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: "<@U00000001> どっち?", answer: "B" });
+    // As Slack stores it: every `>` escaped.
+    const stored = done.replace(/^> /gm, "&gt; ");
+    expect(askParseMessage(stored)).toEqual({ kind: "resolved", question: "<@U00000001> どっち?", answer: "B" });
+    // A multi-line answer still comes back whole.
+    const multi = askBuildResolvedText("q", { answer: "A でいく\n理由: 期日", how: "返信" }, "", "ja", { body: "> 背景の引用" });
+    expect(askParseMessage(multi)).toEqual({ kind: "resolved", question: "q", answer: "A でいく\n理由: 期日" });
+  });
+
+  test("an OLD ✅ body (no background) parses exactly as before", () => {
+    const old = askBuildResolvedText("q", { answer: "はい", how: "リアクション 1️⃣" }, "Bob");
+    expect(old).toBe(":white_check_mark: *q*\n_リアクション 1️⃣で回答済み (Bob)_\n\n> はい");
+    expect(askParseMessage(old)).toEqual({ kind: "resolved", question: "q", answer: "はい" });
+  });
+
+  test("a multi-line question: the stamp is found after the bold run, not on line 2", () => {
+    const q = "1 行目\n2 行目";
+    const done = askBuildResolvedText(q, { answer: "B", how: "返信 (2)" }, "bob", "ja", { body: "本文" });
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: q, answer: "B" });
+    expect(askResolvedHow(done)).toEqual({ byReply: true, n: 2 });
+  });
+
+  test("an overflow choice keeps its (n) line; no choice keeps the body only", () => {
+    const many = askBuildText("q", "背景", Array.from({ length: 10 }, (_, i) => `c${i + 1}`), ["c11", "c12"], false);
+    expect(askResolvedKeep(many, 12)).toEqual({ body: "背景", chosenLine: "(12) c12" });
+    expect(askResolvedKeep(askBuildText("q", "背景", [], [], true))).toEqual({ body: "背景" });
+    expect(askResolvedKeep("not an ask")).toBeUndefined();
   });
 });

@@ -20,9 +20,11 @@ export const ASK_KEYCAPS = [
 ] as const;
 export const ASK_MAX_REACTION_CHOICES = ASK_KEYCAPS.length;
 
-/** `ts` is set when the answer is a REPLY — so that reply is not delivered again
+/** `choice` is the 1-based number of the option picked, when one was (a pill,
+ *  or a reply naming it) — the one option line the ✅ body keeps.
+ *  `ts` is set when the answer is a REPLY — so that reply is not delivered again
  *  as a thread note alongside the answer it already is. */
-export type AskFound = { answer: string; how: string; who?: string; ts?: string };
+export type AskFound = { answer: string; how: string; who?: string; ts?: string; choice?: number };
 
 /** The marker that says "this message is an `ask`". A shortcode, so it is the
  *  SAME token in every language — that is the whole point of it.
@@ -306,10 +308,63 @@ export function askBuildText(question: string, body: string, reactable: string[]
 
 /** Resolved-question body. Every answer line is quoted, not just the first —
  *  a multi-line reply left unquoted after the first line cannot be told back
- *  apart from the surrounding text when `--waitFor` reads it. */
-export function askBuildResolvedText(question: string, found: AskFound, who: string, lang: AskLang = "ja"): string {
+ *  apart from the surrounding text when `--waitFor` reads it.
+ *
+ *  `keep` carries what the question was asked WITH: its body (the background a
+ *  decision was made against) and the option line that was chosen. Reported
+ *  from real use 2026-10-05: collecting an answer replaced the whole message
+ *  with question + answer, and the context of the decision was gone. Only what
+ *  no longer applies goes — the options NOT chosen, the ❓ line, the answering
+ *  instructions.
+ *
+ *  The head is unchanged on purpose: ✅ prefix, question, stamp, blank, quoted
+ *  answer. The body follows the answer, so everything that reads a ✅ message
+ *  — scripts keyed on the prefix, `askParseMessage`, `askResolvedHow` — finds
+ *  what it always found where it always found it. */
+export function askBuildResolvedText(
+  question: string, found: AskFound, who: string, lang: AskLang = "ja",
+  keep?: { body?: string; chosenLine?: string },
+): string {
   const quoted = found.answer.split("\n").map((l) => `> ${l}`).join("\n");
-  return `${ASK_RESOLVED_PREFIX}*${question}*\n${ASK_COPY[lang].answeredVia(found.how, who)}\n\n${quoted}`;
+  let out = `${ASK_RESOLVED_PREFIX}*${question}*\n${ASK_COPY[lang].answeredVia(found.how, who)}\n\n${quoted}`;
+  if (keep?.body) out += `\n\n${keep.body}`;
+  if (keep?.chosenLine) out += `\n\n${keep.chosenLine}`;
+  return out;
+}
+
+/** What a ✅ rewrite keeps from the OPEN message: its body, and the line of the
+ *  option that was chosen (pill or overflow), written as the open body wrote it.
+ *  Read from the message itself, so it is whatever is posted now — including
+ *  an edit made in the Slack UI after asking. Undefined when the text is not an
+ *  open ask (the caller then writes the bare form, as before). */
+export function askResolvedKeep(openText: string, choice?: number): { body?: string; chosenLine?: string } | undefined {
+  const p = askParseMessage(openText);
+  if (p.kind !== "open") return undefined;
+  const keep: { body?: string; chosenLine?: string } = {};
+  if (p.body) keep.body = p.body;
+  if (choice !== undefined && choice >= 1) {
+    if (choice <= p.reactable.length) keep.chosenLine = `${askPill(choice - 1)} ${askFlatten(p.reactable[choice - 1]!)}`;
+    else if (choice - ASK_MAX_REACTION_CHOICES <= p.overflow.length && choice > ASK_MAX_REACTION_CHOICES) {
+      keep.chosenLine = `(${choice}) ${askFlatten(p.overflow[choice - ASK_MAX_REACTION_CHOICES - 1]!)}`;
+    }
+  }
+  return keep;
+}
+
+/** Where a ✅ body's stamp line is: right after the question's bold run, which
+ *  can span lines. Reading `lines[1]` blindly took a question's second line for
+ *  the stamp. -1 when the head is not a ✅ question. */
+function askResolvedStampIndex(lines: string[]): number {
+  if (!lines[0]?.startsWith(ASK_RESOLVED_PREFIX)) return -1;
+  const first = lines[0].slice(ASK_RESOLVED_PREFIX.length);
+  if (!first.startsWith("*")) return -1;
+  let end = 0;
+  while (end < lines.length) {
+    const l = end === 0 ? first : lines[end]!;
+    if (l.endsWith("*") && (end > 0 || l.length > 1)) break;
+    end++;
+  }
+  return end + 1 < lines.length ? end + 1 : -1;
 }
 
 /** How a ✅-stamped question was answered, read back from its stamp line —
@@ -317,7 +372,8 @@ export function askBuildResolvedText(question: string, found: AskFound, who: str
  *  `--waitFor` uses it to recognise the reply that IS the answer, so that reply
  *  is not handed back again as a thread note. Both languages' stamps are read. */
 export function askResolvedHow(text: string): { byReply: boolean; n?: number } {
-  const stamp = text.split("\n")[1] ?? "";
+  const lines = text.split("\n");
+  const stamp = lines[askResolvedStampIndex(lines)] ?? lines[1] ?? "";
   const m = stamp.match(/^_(?:返信|Answered by reply)(?: \((\d+)\))?/);
   if (!m) return { byReply: false };
   return m[1] ? { byReply: true, n: Number(m[1]) } : { byReply: true };
@@ -330,7 +386,7 @@ function askDecodeEntities(s: string): string {
 }
 
 export type AskParsed =
-  | { kind: "open"; question: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
+  | { kind: "open"; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
   | { kind: "resolved"; question: string; answer: string }
   | { kind: "other" };
 
@@ -371,17 +427,30 @@ export function askParseMessage(text: string): AskParsed {
   // open one carries the ❓ marker, and reading a resolved body as an open one
   // would re-poll a question that already has its answer.
   if (text.startsWith(ASK_RESOLVED_PREFIX)) {
-    const head = lines[0]!.slice(ASK_RESOLVED_PREFIX.length);
-    const question = askDecodeEntities(head.replace(/^\*/, "").replace(/\*$/, ""));
     // `&gt; `, not only `> `: Slack HTML-escapes `&`, `<` and `>` in the text it
     // hands back, so the quote we wrote as `> ` is STORED as `&gt; `. Matching
     // only the raw form made every collected question unreadable — re-running
     // `--waitFor` on one exited 3 (measured 2026-09-27: 40 of 71 asks).
-    const answer = lines
-      .map((l) => (l.startsWith("> ") ? l.slice(2) : l.startsWith("&gt; ") ? l.slice(5) : null))
-      .filter((l): l is string => l !== null)
-      .map(askDecodeEntities)
-      .join("\n");
+    const unquote = (l: string) => (l.startsWith("> ") ? l.slice(2) : l.startsWith("&gt; ") ? l.slice(5) : null);
+    // The answer is the quote block right under the stamp — NOT every quoted
+    // line in the message: the kept body can quote things too, and a `> ` line
+    // in the background must not be read back as part of the answer. A body
+    // written before the stamp could be located (no stamp in place) falls back
+    // to the old reading, which was every quoted line — all there was then.
+    const stampAt = askResolvedStampIndex(lines);
+    let answerLines: string[] = [];
+    if (stampAt > 0 && lines[stampAt + 1] === "") {
+      for (let i = stampAt + 2; i < lines.length; i++) {
+        const u = unquote(lines[i]!);
+        if (u === null) break;
+        answerLines.push(u);
+      }
+    }
+    if (!answerLines.length) answerLines = lines.map(unquote).filter((l): l is string => l !== null);
+    const question = askDecodeEntities(
+      lines.slice(0, stampAt > 0 ? stampAt : 1).join("\n").slice(ASK_RESOLVED_PREFIX.length).replace(/^\*/, "").replace(/\*$/, ""),
+    );
+    const answer = answerLines.map(askDecodeEntities).join("\n");
     // A ✅-stamped body with no quoted answer is not a settled question we can
     // report; treat it as unknown rather than answer with an empty string.
     if (!answer) return { kind: "other" };
@@ -426,6 +495,11 @@ export function askParseMessage(text: string): AskParsed {
 
   const reactable: string[] = [];
   const overflow: string[] = [];
+  // Where the body ends: the blank line above the choice block, or above the
+  // instruction for a free-text question. What lies between the question and
+  // there is the body — kept by the ✅ rewrite.
+  let bodyEnd = lines.length - 1;
+  if (isInvalidNotice(lines[bodyEnd - 1])) bodyEnd--;
   if (hasChoices) {
     // Walk UP from the instruction line rather than down from the question. The
     // choice block is anchored to the bottom of the body, and scanning downward
@@ -461,13 +535,15 @@ export function askParseMessage(text: string): AskParsed {
     }
     if (lines[i] !== "") return { kind: "other" };
     if (i < end + 1) return { kind: "other" };
+    bodyEnd = i;
     // Overflow numbering starts at 11 and runs contiguously.
     for (let n = 0; n < overflow.length; n++) {
       if (!lines.includes(`(${n + 11}) ${overflow[n]}`)) return { kind: "other" };
     }
   }
 
-  return { kind: "open", question, reactable, overflow, threadOnly, lang };
+  const body = lines.slice(end + 1, bodyEnd).join("\n").replace(/^\n+|\n+$/g, "");
+  return { kind: "open", question, body, reactable, overflow, threadOnly, lang };
 }
 
 /** Did a free-text reply actually PICK one of the offered choices?

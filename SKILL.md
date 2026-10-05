@@ -192,6 +192,11 @@ exit codes. Pass `cursor` back as `--after` on your next `--waitFor --timeout 0`
 never get the same note twice. Only the question's audience counts; the asker, bots and
 bystanders are never notes.
 
+**Answering keeps the context.** The ✅ rewrite keeps the question's body (its background)
+and the chosen option; only the options not chosen, the ❓ line and the instructions go.
+The head is unchanged (`:white_check_mark:` prefix, question, stamp, quoted answer), so
+anything that keys on the prefix or re-reads the answer works on old and new ✅ bodies alike.
+
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
 and recovers everything it needs by parsing the message, so nothing is stored locally and

@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -717,6 +717,36 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       // No confirm gate and nothing new posted: --waitFor only reads and stamps.
       expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("collecting keeps the background and the chosen option, and drops the rest", async () => {
+    const withBody = askBuildText(`<@${BOB}> どっち?`, "背景: リリース前\n推奨: B", ["A", "B"], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [{
+        type: "message", user: SELF, ts: QTS, text: withBody,
+        reactions: [{ name: "two", users: [SELF, BOB], count: 2 }],
+      }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B");
+      const upd = m.requests.find((q) => q.method === "chat.update")!;
+      const text = (upd.body.startsWith("{") ? JSON.parse(upd.body).text : new URLSearchParams(upd.body).get("text")) as string;
+      expect(text.startsWith(":white_check_mark: ")).toBe(true);
+      expect(text).toContain("背景: リリース前\n推奨: B");
+      expect(text).toContain(":two: B");
+      expect(text).not.toContain(":one: A");
+      expect(text).not.toContain("その他");
+      // And it reads back as the same answer.
+      expect(askParseMessage(text)).toEqual({ kind: "resolved", question: `<@${BOB}> どっち?`, answer: "B" });
     } finally {
       await m.stop();
     }
