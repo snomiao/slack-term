@@ -183,6 +183,14 @@ describe("restoreNewlines — old flattened messages read back with their breaks
     ] }];
     expect(restoreNewlines(stored, blocks as never)).toBe("[slack-term-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : **gras**\n- élément un\n- élément deux");
   });
+  test("an emoji before a break aligns whether the text holds `:name:` or the glyph", () => {
+    const blocks = [{ type: "rich_text", elements: [SEC(T("完了 "), { type: "emoji", name: "white_check_mark", unicode: "2705" }, T("\n次へ"))] }];
+    expect(restoreNewlines("完了 :white_check_mark: 次へ", blocks as never)).toBe("完了 :white_check_mark:\n次へ");
+    expect(restoreNewlines("完了 ✅ 次へ", blocks as never)).toBe("完了 ✅\n次へ");
+    const keycap = [{ type: "rich_text", elements: [SEC({ type: "emoji", name: "one", unicode: "0031-fe0f-20e3" }, T(" A\nB"))] }];
+    expect(restoreNewlines("1️⃣ A B", keycap as never)).toBe("1️⃣ A\nB");
+    expect(restoreNewlines("1⃣ A B", keycap as never)).toBe("1⃣ A\nB");
+  });
   test("only ever turns spaces into newlines", () => {
     for (const md of samples) {
       const stored = flatten(md);

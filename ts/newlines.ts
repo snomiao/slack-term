@@ -17,10 +17,23 @@ import type { Json } from "./slack.ts";
 
 const ESC: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;" };
 
-/** The characters of `blocks` that must appear, in order, in the message's
- *  stored `text`, with `null` wherever the blocks put a line break. */
-function anchors(blocks: Json[]): Array<string | null> {
-  const out: Array<string | null> = [];
+/** What must appear, in order, in the message's stored `text`: one character,
+ *  or (an emoji) any one of several spellings. */
+type Anchor = string | string[];
+
+/** The glyph forms of an emoji element (`unicode: "2705-fe0f"`), with and
+ *  without the variation selector — the stored text may hold either. */
+function emojiGlyphs(unicode: Json | undefined): string[] {
+  if (typeof unicode !== "string" || !/^[0-9a-f]+(-[0-9a-f]+)*$/i.test(unicode)) return [];
+  const cps = unicode.split("-").map((h) => parseInt(h, 16));
+  const full = String.fromCodePoint(...cps);
+  const bare = String.fromCodePoint(...cps.filter((c) => c !== 0xfe0f));
+  return full === bare ? [full] : [full, bare];
+}
+
+/** The anchors of `blocks`, with `null` wherever the blocks put a line break. */
+function anchors(blocks: Json[]): Array<Anchor | null> {
+  const out: Array<Anchor | null> = [];
   const chars = (s: string) => { for (const ch of s) { if (ch === "\n") out.push(null); else if (!/\s/u.test(ch)) out.push(...(ESC[ch] ?? ch)); } };
   const inline = (e: Record<string, Json>) => {
     switch (e.type) {
@@ -30,7 +43,8 @@ function anchors(blocks: Json[]): Array<string | null> {
       case "channel": chars(String(e.channel_id ?? "")); break;
       case "usergroup": chars(String(e.usergroup_id ?? "")); break;
       case "broadcast": chars(String(e.range ?? "")); break;
-      case "emoji": chars(String(e.name ?? "")); break;
+      // `:name:` in most stored texts, but a literal glyph in some.
+      case "emoji": out.push([`:${String(e.name ?? "")}:`, ...emojiGlyphs(e.unicode)].filter((x) => x !== "::")); break;
       default: break;
     }
   };
@@ -48,6 +62,24 @@ function anchors(blocks: Json[]): Array<string | null> {
     if (r.type === "rich_text") container(r);
   });
   return out;
+}
+
+/** Earliest position at or after `from` where `a` (any of its spellings)
+ *  occurs in `chars`, and its length in code points; [-1, 0] if nowhere. */
+function find(chars: string[], a: Anchor, from: number): [number, number] {
+  if (typeof a === "string") {
+    let q = from;
+    while (q < chars.length && chars[q] !== a) q++;
+    return q < chars.length ? [q, 1] : [-1, 0];
+  }
+  let best: [number, number] = [-1, 0];
+  for (const alt of a) {
+    const cps = [...alt];
+    for (let q = from; q + cps.length <= chars.length && (best[0] < 0 || q < best[0]); q++) {
+      if (cps.every((c, k) => chars[q + k] === c)) { best = [q, cps.length]; break; }
+    }
+  }
+  return best;
 }
 
 /** `text` with its line breaks put back, for a message Slack stored flattened
@@ -76,11 +108,10 @@ export function restoreNewlines(text: string, blocks: Json | undefined): string 
   const breaks: Array<[number, number]> = [];
   for (const a of seq) {
     if (a === null) { if (last >= -1) pendingBreak = true; continue; }
-    let q = p;
-    while (q < chars.length && chars[q] !== a) q++;
-    if (q >= chars.length) return text;
+    const [q, len] = find(chars, a, p);
+    if (q < 0) return text;
     if (pendingBreak) { breaks.push([last + 1, q]); pendingBreak = false; }
-    last = q; p = q + 1;
+    last = q + len - 1; p = q + len;
   }
   if (endsPre && last >= 0) breaks.push([last + 1, chars.length]);
   const MARKER = /^(?:[-*+•]|\d{1,9}[.)]|&gt;|>)$/;
