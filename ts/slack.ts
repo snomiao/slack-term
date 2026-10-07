@@ -1,5 +1,6 @@
 // Slack Web API client (user token, Authorization: Bearer)
 import { resolveCookie } from "./profiles.ts";
+import { markdownToRichText, repairMessageText } from "./richtext.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -230,7 +231,21 @@ export async function history(
   if (oldest !== undefined) params.oldest = oldest;
   if (cursor !== undefined) params.cursor = cursor;
   if (inclusive) params.inclusive = "true";
-  return get(token, "conversations.history", params, cookie);
+  return repairMessages(await get(token, "conversations.history", params, cookie));
+}
+
+/** Give every message in a history/replies/search response its line breaks
+ *  back when Slack stored its text flattened (see richtext.ts). Done here, at
+ *  the fetch, so `read`, `--format jsonl`, `ask`'s parser and every other
+ *  reader of `.text` agree on one text. */
+function repairMessages(resp: Json): Json {
+  const r = resp as { messages?: Json };
+  const msgs = Array.isArray(r.messages) ? r.messages
+    : r.messages && typeof r.messages === "object" && Array.isArray((r.messages as { matches?: Json }).matches)
+      ? (r.messages as { matches: Json[] }).matches
+      : [];
+  for (const m of msgs) repairMessageText(m);
+  return resp;
 }
 
 export async function replies(
@@ -240,7 +255,7 @@ export async function replies(
   limit = 50,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie);
+  return repairMessages(await get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie));
 }
 
 // Metadata for a single uploaded file (files.info). Carries url_private_download,
@@ -297,13 +312,13 @@ export async function searchPage(
   page: number,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "search.messages", {
+  return repairMessages(await get(token, "search.messages", {
     query,
     sort: "timestamp",
     sort_dir: "desc",
     count: String(Math.min(Math.max(count, 1), 100)),
     page: String(Math.max(page, 1)),
-  }, cookie);
+  }, cookie));
 }
 
 export async function search(token: string, query: string, cookie?: string): Promise<Json> {
@@ -338,25 +353,64 @@ export async function send(
   threadTs?: string,
   replyBroadcast?: boolean,
   cookie?: string,
-  // Post the text as-is, with no `blocks`. Slack REWRITES the stored `text`
-  // when blocks are attached — newlines collapse to spaces and emoji become
-  // `:one:` — so a message whose body has to be read back verbatim (`ask`,
-  // `poll`) must not carry them. Verified against a real workspace 2026-08-20.
+  // Post the text as-is, with no `blocks`, so Slack renders it as mrkdwn. A
+  // message whose body has to be read back verbatim (`ask`, `poll`) uses this:
+  // Slack still normalizes emoji in the stored text (`1️⃣` → `:one:`), which
+  // their parsers expect. Without it the text is rendered as markdown — see
+  // `markdownBlocks`.
   plain?: boolean,
   /** Message metadata (`event_type`/`event_payload`) — invisible to readers.
    *  Dropped and retried once if Slack rejects it: attribution is bookkeeping,
    *  and must never be the reason a message was not sent. */
   metadata?: MessageMetadata,
 ): Promise<string> {
-  const body: Record<string, Json> = plain
-    ? { channel, text }
-    : { channel, text, blocks: [{ type: "markdown", text }] };
+  const body: Record<string, Json> = { channel, text };
   if (threadTs !== undefined) body.thread_ts = threadTs;
   // "Also send to channel": broadcast a threaded reply back to the channel.
   // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
   if (replyBroadcast && threadTs !== undefined) body.reply_broadcast = true;
-  const resp = (await postWithMetadata(token, "chat.postMessage", body, metadata, cookie)) as { ts?: string };
+  const resp = (await postMarkdown(token, "chat.postMessage", body, plain, metadata, cookie)) as { ts?: string };
   return resp.ts ?? "";
+}
+
+/** The blocks that render `text` as markdown, preferring ones that keep the
+ *  stored `text` intact.
+ *
+ *  A `markdown` block renders right, but Slack then regenerates the message's
+ *  `text` from it with every newline turned into a space — so push previews,
+ *  search snippets and every API reader saw one long line (measured
+ *  2026-10-07: 126 of 127 multi-line sends). `rich_text` blocks are stored as
+ *  given and leave `text` alone, so the markdown is converted here, the way
+ *  Slack converts it (richtext.ts). The `markdown` block is the fallback for
+ *  what that converter does not model. */
+export function markdownBlocks(text: string): { blocks: Json[]; keepsText: boolean } {
+  const rich = markdownToRichText(text);
+  return rich ? { blocks: rich, keepsText: true } : { blocks: [{ type: "markdown", text }], keepsText: false };
+}
+
+/** Errors that mean "Slack refused these blocks" — never a send that went
+ *  out, so retrying with the `markdown` block cannot double-post. */
+function isBlocksError(e: unknown): boolean {
+  return e instanceof Error && /: (invalid_blocks\w*|invalid_arguments|block_\w+)$/.test(e.message);
+}
+
+/** Post (or update) `body` with `text` rendered as markdown. If Slack rejects
+ *  the converted `rich_text`, retry once with the `markdown` block, which it
+ *  always accepted: a richer `.text` must never be the reason a message was
+ *  not sent. `plain` sends no blocks at all. */
+async function postMarkdown(
+  token: string, method: string, body: Record<string, Json>, plain: boolean | undefined,
+  metadata: MessageMetadata | undefined, cookie?: string,
+): Promise<Json> {
+  if (plain) return postWithMetadata(token, method, body, metadata, cookie);
+  const text = String(body.text ?? "");
+  const { blocks, keepsText } = markdownBlocks(text);
+  try {
+    return await postWithMetadata(token, method, { ...body, blocks }, metadata, cookie);
+  } catch (e: unknown) {
+    if (!keepsText || !isBlocksError(e)) throw e;
+    return postWithMetadata(token, method, { ...body, blocks: [{ type: "markdown", text }] }, metadata, cookie);
+  }
 }
 
 export type MessageMetadata = { event_type: string; event_payload: Record<string, string | number> };
@@ -388,14 +442,9 @@ export async function scheduleMessage(
   threadTs?: string,
   cookie?: string,
 ): Promise<string> {
-  const body: Record<string, Json> = {
-    channel,
-    text,
-    post_at: postAt,
-    blocks: [{ type: "markdown", text }],
-  };
+  const body: Record<string, Json> = { channel, text, post_at: postAt };
   if (threadTs !== undefined) body.thread_ts = threadTs;
-  const resp = (await post(token, "chat.scheduleMessage", body, cookie)) as { scheduled_message_id?: string };
+  const resp = (await postMarkdown(token, "chat.scheduleMessage", body, false, undefined, cookie)) as { scheduled_message_id?: string };
   return resp.scheduled_message_id ?? "";
 }
 
@@ -440,14 +489,11 @@ export async function editMessage(
   ts: string,
   text: string,
   cookie?: string,
-  /** As in `send`: no blocks, so the stored text survives verbatim. */
+  /** As in `send`: no blocks — Slack renders the text as mrkdwn. */
   plain?: boolean,
   metadata?: MessageMetadata,
 ): Promise<string> {
-  const resp = (await postWithMetadata(token, "chat.update", plain
-    ? { channel, ts, text }
-    : { channel, ts, text, blocks: [{ type: "markdown", text }] },
-  metadata, cookie)) as { ts?: string };
+  const resp = (await postMarkdown(token, "chat.update", { channel, ts, text }, plain, metadata, cookie)) as { ts?: string };
   return resp.ts ?? ts;
 }
 

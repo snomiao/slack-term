@@ -1356,11 +1356,12 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
 
   const attr = sentAttribution("edit");
-  // An ask/poll body goes up PLAIN (no blocks): with blocks attached Slack
-  // rewrites the stored text — every newline becomes a space — and the message
-  // can never be read back as an ask again (2026-10-01: a release ask edited
-  // this way could neither be collected nor voided). Ordinary messages keep
-  // the blocks they always had.
+  // An ask/poll body goes up PLAIN (no blocks), as mrkdwn — the form it was
+  // posted in and its parser reads. (Before 2026-10-07 the alternative was a
+  // `markdown` block, with which Slack rewrote the stored text — every newline
+  // a space — so a release ask edited that way could neither be collected nor
+  // voided.) Ordinary messages get markdown rendered as rich_text, which keeps
+  // their text as written.
   const askish = askBefore !== "other" || askAfter !== "other" || isPoll || pollParseMessage(newText).kind !== "other";
   const newTs = await editMessage(token, channelId, ts, newText, args.cookie, askish ? true : undefined, attr.metadata);
   console.log(`✓ Edited (ts: ${newTs})`);
@@ -2659,9 +2660,9 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     ], recipientTz);
   }
 
-  // `plain`: with blocks attached Slack rewrites the stored text (newlines to
-  // spaces, emoji to `:one:`) and `--waitFor` can no longer read the question
-  // back out of it — which is the entire recovery path.
+  // `plain`: the question is mrkdwn, stored as written (bar Slack's emoji
+  // normalization, `1️⃣` → `:one:`), so `--waitFor` can read it back out —
+  // which is the entire recovery path.
   const attr = sentAttribution("ask");
   const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
@@ -3466,8 +3467,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
     ], recipientTz);
   }
 
-  // `plain`: no blocks, or Slack rewrites the stored text and the ballot
-  // stops parsing on the way back.
+  // `plain`: the ballot is mrkdwn and must read back as it was sent.
   const attr = sentAttribution("poll");
   const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
