@@ -1,7 +1,11 @@
-// Line breaks must survive into the stored `.text` on every write path, and be
-// readable again on messages Slack stored flattened (2026-10-07: a `markdown`
-// block made Slack regenerate `.text` with every newline as a space, so push
-// previews, `read --format jsonl` and every API reader saw one long line).
+// Line breaks on the write and read paths (2026-10-07). Slack stores `.text`
+// with every newline as a space whenever a message has blocks, so push
+// previews, `read --format jsonl` and every API reader saw one long line.
+// - Writes: the caller's text leaves this CLI with its newlines intact. The
+//   flattening happens at Slack: a live send carrying these exact payloads,
+//   rich_text blocks included, came back flattened. Pinned here so a
+//   regression on OUR side cannot hide behind Slack's.
+// - Reads: messages stored flattened get their breaks back from their blocks.
 //
 // Spawns the TS CLI against the mock and asserts on the request bodies.
 
@@ -12,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures, type RecordedRequest } from "./mock.ts";
-import { markdownToRichText } from "../ts/richtext.ts";
+import { markdownToRichText } from "./slack-markdown.ts";
 import { askBuildText, askParseMessage } from "../ts/ask.ts";
 
 const TS_ENTRY = join(dirname(fileURLToPath(import.meta.url)), "..", "ts", "cli.ts");
@@ -61,27 +65,11 @@ async function confirmed(args: string[], baseUrl: string, env: Record<string, st
 const body = (q: RecordedRequest): Record<string, unknown> =>
   (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
 const nl = (s: unknown): number => String(s).split("\n").length - 1;
-function blockNewlines(blocks: unknown): number {
-  let n = 0;
-  const walk = (x: unknown): void => {
-    if (Array.isArray(x)) { x.forEach(walk); return; }
-    if (x && typeof x === "object") {
-      const o = x as Record<string, unknown>;
-      if (o.type === "text" && typeof o.text === "string") n += nl(o.text);
-      Object.values(o).forEach(walk);
-    }
-  };
-  walk(blocks);
-  return n;
-}
-/** A write that keeps `.text`: the caller's text verbatim, and rich_text
- *  blocks — never a `markdown` block, which makes Slack flatten `.text`. */
-function expectKeepsText(b: Record<string, unknown>, text: string): void {
+/** What every non-ask write sends: the caller's text, newlines and all, plus
+ *  the `markdown` block that makes Slack render it as markdown. */
+function expectPayload(b: Record<string, unknown>, text: string): void {
   expect(b.text).toBe(text);
-  const blocks = b.blocks as Array<Record<string, unknown>>;
-  expect(Array.isArray(blocks)).toBe(true);
-  expect(blocks.some((x) => x.type === "markdown")).toBe(false);
-  expect(blocks[0]!.type).toBe("rich_text");
+  expect(b.blocks).toEqual([{ type: "markdown", text }]);
 }
 
 const AUTH: InlineFixtures = {
@@ -95,19 +83,15 @@ const AUTH: InlineFixtures = {
   [`chat.getPermalink__channel=${CHAN}&message_ts=${TS}`]: { ok: true, channel: CHAN, permalink: `https://acme.slack.com/archives/${CHAN}/p1700000000000100` },
 };
 
-describe("every write path keeps the caller's line breaks in .text", { timeout: 90_000 }, () => {
-  test("send: text verbatim + rich_text blocks that render the same lines", async () => {
+describe("every write path sends the caller's line breaks", { timeout: 90_000 }, () => {
+  test("send: the text goes out verbatim, every \\n included", async () => {
     const m = await startMock({ inline: AUTH });
     try {
       const r = await confirmed(["send", "#channel-01", MULTI, "--channel-id", CHAN, "--no-mentions"], m.baseUrl);
       expect(r.exitCode).toBe(0);
       const b = body(m.requests.find((q) => q.method === "chat.postMessage")!);
-      expectKeepsText(b, MULTI);
+      expectPayload(b, MULTI);
       expect(nl(b.text)).toBe(5);
-      // The blocks show the same lines: each list item is its own row, so the
-      // two `- ` lines need no \n of their own.
-      expect(b.blocks).toEqual(markdownToRichText(MULTI));
-      expect(blockNewlines(b.blocks)).toBe(4);
     } finally {
       await m.stop();
     }
@@ -124,7 +108,7 @@ describe("every write path keeps the caller's line breaks in .text", { timeout: 
       expect(r.exitCode).toBe(0);
       const b = body(m.requests.find((q) => q.method === "chat.postMessage")!);
       expect(b.thread_ts).toBe(parent);
-      expectKeepsText(b, MULTI);
+      expectPayload(b, MULTI);
     } finally {
       await m.stop();
     }
@@ -141,7 +125,7 @@ describe("every write path keeps the caller's line breaks in .text", { timeout: 
       expect(r.exitCode).toBe(0);
       const post = m.requests.find((q) => q.method === "chat.postMessage")!;
       expect(post.headers.authorization).toBe("Bearer xoxb-fake");
-      expectKeepsText(body(post), MULTI);
+      expectPayload(body(post), MULTI);
     } finally {
       await m.stop();
     }
@@ -155,7 +139,7 @@ describe("every write path keeps the caller's line breaks in .text", { timeout: 
     try {
       const r = await confirmed(["edit", `#chan:${TS}`, MULTI, "--channel-id", CHAN, "--no-mentions"], m.baseUrl);
       expect(r.exitCode).toBe(0);
-      expectKeepsText(body(m.requests.find((q) => q.method === "chat.update")!), MULTI);
+      expectPayload(body(m.requests.find((q) => q.method === "chat.update")!), MULTI);
     } finally {
       await m.stop();
     }
@@ -166,7 +150,7 @@ describe("every write path keeps the caller's line breaks in .text", { timeout: 
     try {
       const r = await confirmed(["schedule", "send", "#channel-01", MULTI, "--at", "2099-01-01T00:00:00Z", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(0);
-      expectKeepsText(body(m.requests.find((q) => q.method === "chat.scheduleMessage")!), MULTI);
+      expectPayload(body(m.requests.find((q) => q.method === "chat.scheduleMessage")!), MULTI);
     } finally {
       await m.stop();
     }
@@ -196,37 +180,10 @@ describe("every write path keeps the caller's line breaks in .text", { timeout: 
     }
   });
 
-  test("if Slack refuses the converted blocks, the send is retried once with the markdown block", async () => {
-    const m = await startMock({ inline: {
-      ...AUTH,
-      "chat.postMessage": { __whenBodyIncludes: { needle: "rich_text", response: { ok: false, error: "invalid_blocks" } } },
-    } });
-    try {
-      const r = await confirmed(["send", "#channel-01", MULTI, "--channel-id", CHAN, "--no-mentions"], m.baseUrl);
-      expect(r.exitCode).toBe(0);
-      const posts = m.requests.filter((q) => q.method === "chat.postMessage").map(body);
-      expect(posts).toHaveLength(2);
-      expect((posts[1]!.blocks as Array<Record<string, unknown>>)[0]).toEqual({ type: "markdown", text: MULTI });
-    } finally {
-      await m.stop();
-    }
-  });
-
-  test("markdown the converter does not model (a heading) keeps the markdown block", async () => {
-    const m = await startMock({ inline: AUTH });
-    try {
-      const r = await confirmed(["send", "#channel-01", "# 見出し\n本文", "--channel-id", CHAN, "--no-mentions"], m.baseUrl);
-      expect(r.exitCode).toBe(0);
-      const b = body(m.requests.find((q) => q.method === "chat.postMessage")!);
-      expect(b.blocks).toEqual([{ type: "markdown", text: "# 見出し\n本文" }]);
-    } finally {
-      await m.stop();
-    }
-  });
 });
 
-// A message sent with the old `markdown` block, as Slack stored it: `.text`
-// with every newline as a space; the blocks still have the breaks.
+// A message sent with blocks, as Slack stored it: `.text` with every newline
+// as a space; the blocks still have the breaks.
 const flat = (md: string) => ({ type: "message", user: SELF, ts: TS, text: md.replace(/\n/g, " "), blocks: markdownToRichText(md) });
 
 describe("readers show line breaks for old flattened messages", { timeout: 90_000 }, () => {

@@ -48,9 +48,9 @@ describe("poll body round-trips", () => {
 
 // Slack REWRITES the stored `text` of a posted message: a unicode keycap comes
 // back as `:one:`. The body is built in that form for exactly this reason — a
-// glyph-built ballot would never read back as what was sent. (With a
-// `markdown` block attached Slack also collapsed newlines, one reason `poll`
-// posts plain. Verified against a real workspace 2026-08-20.)
+// glyph-built ballot would never read back as what was sent. (The same rewrite
+// also collapses newlines when `blocks` are attached, which is why `poll` posts
+// plain. Verified against a real workspace 2026-08-20.)
 describe("the ballot is written the way Slack stores it", () => {
   test("built with shortcodes, not glyphs", () => {
     const text = pollBuildText("q", "", ["A", "B"]);

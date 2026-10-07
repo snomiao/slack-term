@@ -1,11 +1,12 @@
-// markdown → rich_text (what `send`/`edit`/`schedule` now attach instead of a
-// `markdown` block), and the reverse repair readers apply to messages Slack
-// stored flattened. The expected shapes are what Slack's own markdown block
-// produced for the same input (fitted against 276 messages this CLI sent;
-// the samples here are synthetic stand-ins with the same structure).
+// The repair readers apply to messages Slack stored flattened, and the fixture
+// builder (tests/slack-markdown.ts) that gives them Slack-shaped blocks. The
+// builder's expected shapes are what Slack's own markdown block produced for
+// the same input (fitted against 247 messages this CLI sent; the samples here
+// are synthetic stand-ins with the same structure).
 
 import { describe, test, expect } from "./harness.ts";
-import { markdownToRichText, restoreNewlines, repairMessageText } from "../ts/richtext.ts";
+import { markdownToRichText } from "./slack-markdown.ts";
+import { restoreNewlines, repairMessageText } from "../ts/newlines.ts";
 import { askBuildText, askParseMessage } from "../ts/ask.ts";
 
 type B = Record<string, unknown>;
@@ -31,7 +32,7 @@ function blockNewlines(blocks: unknown): number {
   return n;
 }
 
-describe("markdownToRichText — paragraphs keep their line breaks", () => {
+describe("fixture builder: markdownToRichText — paragraphs keep their line breaks", () => {
   test("a multi-line message is one section whose text carries every \\n", () => {
     const md = "[slack-term-nl] 换行测试\n第一行\n第二行\n\n第三行";
     expect(rich(md)).toEqual([{ type: "rich_text", elements: [SEC(T(md))] }]);
@@ -42,7 +43,7 @@ describe("markdownToRichText — paragraphs keep their line breaks", () => {
   });
 });
 
-describe("markdownToRichText — lists", () => {
+describe("fixture builder: markdownToRichText — lists", () => {
   test("`-` and `•` bullets; a blank line before the list ends the paragraph with \\n\\n", () => {
     expect(rich("intro\n\n- one\n- two")).toEqual([{ type: "rich_text", elements: [
       SEC(T("intro\n\n")),
@@ -81,7 +82,7 @@ describe("markdownToRichText — lists", () => {
   });
 });
 
-describe("markdownToRichText — inline", () => {
+describe("fixture builder: markdownToRichText — inline", () => {
   test("`*x*`/`_x_` italic, `**x**` bold, `~~x~~` strike, `code`", () => {
     expect(rich("*i* _j_ **b** ~~s~~ `c`")).toEqual([{ type: "rich_text", elements: [SEC(
       T("i", { italic: true }), T(" "), T("j", { italic: true }), T(" "), T("b", { bold: true }), T(" "),
@@ -124,7 +125,7 @@ describe("markdownToRichText — inline", () => {
   });
 });
 
-describe("markdownToRichText — code, quotes, dividers, and what falls back", () => {
+describe("fixture builder: markdownToRichText — code, quotes, dividers, and what falls back", () => {
   test("a fenced block is preformatted, its lines kept", () => {
     expect(rich("run:\n```\nls -la\npwd\n```")).toEqual([{ type: "rich_text", elements: [
       SEC(T("run:")), { type: "rich_text_preformatted", elements: [T("ls -la\npwd")] },
@@ -138,7 +139,7 @@ describe("markdownToRichText — code, quotes, dividers, and what falls back", (
       { type: "rich_text", elements: [SEC(T("a"))] }, { type: "divider" }, { type: "rich_text", elements: [SEC(T("b"))] },
     ]);
   });
-  test("headings, setext underlines and tables are not modelled → null (caller keeps the markdown block)", () => {
+  test("headings, setext underlines and tables are not modelled → null", () => {
     expect(markdownToRichText("# Title\nbody")).toBeNull();
     expect(markdownToRichText("Title\n=====")).toBeNull();
     expect(markdownToRichText("| a | b |\n|---|---|\n| 1 | 2 |")).toBeNull();
@@ -173,6 +174,14 @@ describe("restoreNewlines — old flattened messages read back with their breaks
   test("a label with spaces inside <url|label> is not split", () => {
     const md = "<https://acme.slack.com/x|a b c>\nnext";
     expect(restoreNewlines(flatten(md), rich(md) as never)).toBe(md);
+  });
+  test("the live 2026-10-07 test DM: sent with rich_text blocks, stored flattened all the same", () => {
+    const stored = "[slack-term-nl] Test des retours à la ligne Ligne 1 : texte simple Ligne 2 : **gras** - élément un - élément deux";
+    const blocks = [{ type: "rich_text", elements: [
+      SEC(T("[slack-term-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : "), T("gras", { bold: true })),
+      { type: "rich_text_list", style: "bullet", indent: 0, elements: [SEC(T("élément un")), SEC(T("élément deux"))] },
+    ] }];
+    expect(restoreNewlines(stored, blocks as never)).toBe("[slack-term-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : **gras**\n- élément un\n- élément deux");
   });
   test("only ever turns spaces into newlines", () => {
     for (const md of samples) {
