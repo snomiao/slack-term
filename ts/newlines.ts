@@ -104,16 +104,18 @@ export function restoreNewlines(text: string, blocks: Json | undefined): string 
   const lastElems = lastBlock.elements;
   const startsPre = Array.isArray(elems) && (elems[0] as Record<string, Json>)?.type === "rich_text_preformatted";
   const endsPre = Array.isArray(lastElems) && (lastElems[lastElems.length - 1] as Record<string, Json>)?.type === "rich_text_preformatted";
-  let p = 0, last = startsPre ? -1 : -2, pendingBreak = startsPre;
+  // `last` = -1 before the first anchor, so a leading break covers the gap
+  // from the start of the text.
+  let p = 0, last = -1, pendingBreak = startsPre;
   const breaks: Array<[number, number]> = [];
   for (const a of seq) {
-    if (a === null) { if (last >= -1) pendingBreak = true; continue; }
+    if (a === null) { pendingBreak = true; continue; }
     const [q, len] = find(chars, a, p);
     if (q < 0) return text;
     if (pendingBreak) { breaks.push([last + 1, q]); pendingBreak = false; }
     last = q + len - 1; p = q + len;
   }
-  if (endsPre && last >= 0) breaks.push([last + 1, chars.length]);
+  if ((pendingBreak || endsPre) && last >= 0) breaks.push([last + 1, chars.length]);
   const MARKER = /^(?:[-*+•]|\d{1,9}[.)]|&gt;|>)$/;
   for (const [gapFrom, to] of breaks) {
     // The gap between two visible characters holds the old newline(s) as
@@ -127,7 +129,7 @@ export function restoreNewlines(text: string, blocks: Json | undefined): string 
       const close = chars.indexOf(">", gapFrom);
       if (close !== -1 && close < to) k = close + 1;
     }
-    let word = "", lineStart = false;
+    let word = "", lineStart = gapFrom === 0;
     while (k < to) {
       if (chars[k] === " ") {
         let e = k; while (e < to && chars[e] === " ") e++;

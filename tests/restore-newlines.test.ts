@@ -191,6 +191,14 @@ describe("restoreNewlines — old flattened messages read back with their breaks
     expect(restoreNewlines("1️⃣ A B", keycap as never)).toBe("1️⃣ A\nB");
     expect(restoreNewlines("1⃣ A B", keycap as never)).toBe("1⃣ A\nB");
   });
+  test("a break before the first or after the last visible character comes back too", () => {
+    const lead = [{ type: "rich_text", elements: [SEC(T("\nfoo bar"))] }];
+    expect(restoreNewlines(" foo bar", lead as never)).toBe("\nfoo bar");
+    const trail = [{ type: "rich_text", elements: [SEC(T("foo bar\n"))] }];
+    expect(restoreNewlines("foo bar ", trail as never)).toBe("foo bar\n");
+    const leadList = [{ type: "rich_text", elements: [SEC(T("\n")), { type: "rich_text_list", style: "bullet", indent: 0, elements: [SEC(T("x"))] }] }];
+    expect(restoreNewlines(" - x", leadList as never)).toBe("\n- x");
+  });
   test("only ever turns spaces into newlines", () => {
     for (const md of samples) {
       const stored = flatten(md);
