@@ -546,14 +546,19 @@ export function restoreNewlines(text: string, blocks: Json | undefined): string 
     last = q; p = q + 1;
   }
   if (endsPre && last >= 0) breaks.push([last + 1, chars.length]);
-  const MARKER = /^(?:[-*+•]|\d{1,9}[.)]|&gt;)$/;
+  const MARKER = /^(?:[-*+•]|\d{1,9}[.)]|&gt;|>)$/;
   for (const [gapFrom, to] of breaks) {
     // The gap between two visible characters holds the old newline(s) as
     // spaces plus markup: the rest of a `<url|label>` (skip past its `>`),
     // emphasis, `- `/`1. `/`&gt; ` markers, code fences. A space after a
     // marker that itself starts a line is the marker's own, not a break.
     let k = gapFrom;
-    for (let x = gapFrom; x < to; x++) if (chars[x] === ">") k = x + 1;
+    // Inside a `<url|label>` token (its `<` opened before the gap and is not
+    // yet closed) the rest of the token up to its `>` is not a line break.
+    if (chars.lastIndexOf("<", gapFrom - 1) > chars.lastIndexOf(">", gapFrom - 1)) {
+      const close = chars.indexOf(">", gapFrom);
+      if (close !== -1 && close < to) k = close + 1;
+    }
     let word = "", lineStart = false;
     while (k < to) {
       if (chars[k] === " ") {

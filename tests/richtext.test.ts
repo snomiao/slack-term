@@ -165,6 +165,15 @@ describe("restoreNewlines — old flattened messages read back with their breaks
       expect(restoreNewlines(stored, rich(md) as never)).toBe(want);
     });
   }
+  test("a flattened blockquote gets its quote lines back, escaped or raw", () => {
+    const blocks = rich("> first\n> second") as never;
+    expect(restoreNewlines("&gt; first &gt; second", blocks)).toBe("&gt; first\n&gt; second");
+    expect(restoreNewlines("> first > second", blocks)).toBe("> first\n> second");
+  });
+  test("a label with spaces inside <url|label> is not split", () => {
+    const md = "<https://acme.slack.com/x|a b c>\nnext";
+    expect(restoreNewlines(flatten(md), rich(md) as never)).toBe(md);
+  });
   test("only ever turns spaces into newlines", () => {
     for (const md of samples) {
       const stored = flatten(md);
