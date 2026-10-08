@@ -22,7 +22,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname } from "node:path";
 import { history, RateLimitError, repliesPage, userConversations, userName, type Json } from "./slack.ts";
 
-export type ChannelRef = { id: string; name: string; isIm: boolean; user?: string };
+export type ChannelRef = { id: string; name: string; isIm: boolean; isMpim?: boolean; user?: string };
 
 export type Page = { messages: Record<string, Json>[]; nextCursor?: string };
 
@@ -50,7 +50,11 @@ export function webClient(token: string, cookie?: string): StreamClient {
       return raw.flatMap((c): ChannelRef[] => {
         if (!c || typeof c !== "object" || Array.isArray(c) || typeof c.id !== "string") return [];
         const isIm = c.is_im === true;
-        return [{ id: c.id, name: str(c.name) || c.id, isIm, ...(isIm && typeof c.user === "string" ? { user: c.user } : {}) }];
+        return [{
+          id: c.id, name: str(c.name) || c.id, isIm,
+          ...(c.is_mpim === true ? { isMpim: true } : {}),
+          ...(isIm && typeof c.user === "string" ? { user: c.user } : {}),
+        }];
       });
     },
     history: async (channel, oldest, cursor) => page(await history(token, channel, 200, oldest, cursor, cookie)),
@@ -189,6 +193,11 @@ export function loadState(path: string, identity: string): StreamState {
     // whatever arrived while we were down) — refuse and let a human decide.
     throw new StreamFatal(`state file ${path} is unreadable (${errText(e)}); move it aside to start fresh`);
   }
+  const shapeOk = parsed && typeof parsed === "object" && parsed.version === 1 &&
+    parsed.channels && typeof parsed.channels === "object" &&
+    Object.values(parsed.channels).every((c) =>
+      c && typeof c.since === "string" && typeof c.cursor === "string" && c.threads && typeof c.threads === "object");
+  if (!shapeOk) throw new StreamFatal(`state file ${path} is not a slack stream state; move it aside to start fresh`);
   if (parsed.identity !== identity) {
     throw new StreamFatal(`state file ${path} belongs to identity ${parsed.identity}, not ${identity}; pass a different --state`);
   }
@@ -206,7 +215,11 @@ export function saveState(path: string, st: StreamState): void {
 export function acquireLock(path: string): () => void {
   const lock = `${path}.lock`;
   mkdirSync(dirname(lock), { recursive: true });
-  const release = (): void => { try { unlinkSync(lock); } catch { /* already gone */ } };
+  // Remove the lock only while it is still ours: if it was taken over (removed
+  // by hand, reclaimed as stale), the new owner's lock must survive us.
+  const release = (): void => {
+    try { if (readFileSync(lock, "utf8").trim() === String(process.pid)) unlinkSync(lock); } catch { /* already gone */ }
+  };
   try {
     writeFileSync(lock, String(process.pid), { flag: "wx" });
   } catch {
@@ -253,7 +266,7 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
   const senderName = uid
     ? await nameOf(ctx, uid)
     : str(m.username) || str((m.bot_profile as Record<string, Json> | undefined)?.name) || bid;
-  const chName = ch.isIm ? `@${ch.user ? await nameOf(ctx, ch.user) : ch.id}` : `#${ch.name}`;
+  const chName = ch.isIm ? `@${ch.user ? await nameOf(ctx, ch.user) : ch.id}` : ch.isMpim ? ch.name : `#${ch.name}`;
   const rec: StreamMatch = {
     type: isReply ? "reply" : "message",
     channel: { id: ch.id, name: chName },
@@ -351,7 +364,9 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     const ctx: Ctx = { opts, client, state, names: new Map(), matches: 0 };
     const skipped = new Set<string>();
     let channels: ChannelRef[] = [];
-    let lastRefreshSec = _internals.now() / 1000;
+    const runStartSec = _internals.now() / 1000;
+    let lastRefreshSec = runStartSec;
+    let lastSkip = "";
     let failures = 0;
     let cycle = 0;
 
@@ -376,12 +391,12 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
           const isFirst = Object.keys(state.channels).length === 0;
           for (const c of channels) {
             if (state.channels[c.id]) continue;
-            // First run: start now (or --since). A channel that appears later
-            // (new invite / DM) starts at the previous refresh, so the gap
-            // between joining and noticing it is still scanned.
-            const start = opts.sinceSec !== undefined && cycle === 0
-              ? nowSec - opts.sinceSec
-              : isFirst || cycle === 0 ? nowSec : lastRefreshSec;
+            // First run: start now. A channel that appears later (new invite /
+            // DM) starts at the previous refresh, so the gap between joining
+            // and noticing it is still scanned. --since reaches back further,
+            // for late-discovered channels too.
+            const natural = isFirst || cycle === 0 ? nowSec : lastRefreshSec;
+            const start = Math.min(natural, opts.sinceSec !== undefined ? runStartSec - opts.sinceSec : Infinity);
             state.channels[c.id] = { since: fmt(start), cursor: fmt(start), threads: {} };
           }
           lastRefreshSec = nowSec;
@@ -404,6 +419,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
               }
               if (classify(e) === "channel") {
                 skipped.add(ch.id);
+                lastSkip = errText(e);
                 _internals.err(`slack stream: skipping ${ch.isIm ? ch.id : "#" + ch.name} (${ch.id}): ${errText(e)}`);
                 break;
               }
@@ -412,7 +428,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
           }
         }
         if (channels.length > 0 && channels.every((c) => skipped.has(c.id))) {
-          throw new StreamFatal("every channel failed — nothing left to watch");
+          throw new StreamFatal(`every channel failed — nothing left to watch (last: ${lastSkip})`);
         }
         if (failures > 0) _internals.err(`slack stream: recovered after ${failures} failed attempt(s)`);
         failures = 0;

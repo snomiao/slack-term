@@ -218,6 +218,14 @@ describe("runStream — threads", () => {
     expect(s.calls.some((c) => c.startsWith("replies"))).toBe(false);
   });
 
+  test("a group DM is named without a # prefix", async () => {
+    const s = new FakeSlack();
+    s.channels = [{ id: "G00000001", name: "mpdm-alice--bob-1", isIm: false, isMpim: true }];
+    s.post("G00000001", { ts: ts(-60), user: "U00000001", text: "@mybot hi" });
+    await runStream(s, opts({ sinceSec: 120 }));
+    expect(emitted()[0]!.channel).toEqual({ id: "G00000001", name: "mpdm-alice--bob-1" });
+  });
+
   test("DM channel names resolve to the other person", async () => {
     const s = new FakeSlack();
     s.channels = [{ id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" }];
@@ -283,6 +291,13 @@ describe("runStream — cursor", () => {
     expect(err.join("\n")).toContain("unreadable");
   });
 
+  test("a state file of the wrong shape is refused (exit 3)", async () => {
+    const s = new FakeSlack();
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ version: 1, identity: SELF, channels: { C00000001: { cursor: "1" } } }));
+    expect(await runStream(s, opts())).toBe(3);
+    expect(err.join("\n")).toContain("not a slack stream state");
+  });
+
   test("threads that slid out of the window are forgotten", async () => {
     const s = new FakeSlack();
     s.post("C00000001", { ts: ts(-59), user: "U00000001", text: "topic", thread_ts: ts(-59) });
@@ -321,7 +336,7 @@ describe("runStream — channels", () => {
     const s = new FakeSlack();
     s.failChannel.set("C00000001", new Error("Slack error on conversations.history: not_in_channel"));
     expect(await runStream(s, opts({ sinceSec: 120 }))).toBe(3);
-    expect(err.join("\n")).toContain("every channel failed");
+    expect(err.join("\n")).toContain("every channel failed — nothing left to watch (last: Slack error on conversations.history: not_in_channel)");
   });
 
   test("a channel joined mid-run is scanned from the previous refresh", async () => {
@@ -340,6 +355,22 @@ describe("runStream — channels", () => {
     const code = await runStream(s, opts({ once: false, refreshEvery: 2, signal: ac.signal }));
     expect(code).toBe(0);
     expect(emitted().map((m) => m.channel.name)).toEqual(["#new"]);
+  });
+
+  test("with --since, a channel discovered mid-run is replayed from the --since point too", async () => {
+    const s = new FakeSlack();
+    const ac = new AbortController();
+    let sleeps = 0;
+    onSleep = () => {
+      sleeps++;
+      if (sleeps === 1) {
+        s.channels.push({ id: "C00000002", name: "new", isIm: false });
+        s.post("C00000002", { ts: ts(-100), user: "U00000001", text: "@mybot from before the run" });
+      }
+      if (sleeps === 2) ac.abort();
+    };
+    await runStream(s, opts({ once: false, refreshEvery: 1, sinceSec: 300, signal: ac.signal }));
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot from before the run"]);
   });
 });
 
@@ -413,6 +444,14 @@ describe("lock", () => {
     release(); // idempotent
   });
 
+  test("release leaves a lock that another stream has taken over", () => {
+    const path = join(dir, "s.json");
+    const release = acquireLock(path);
+    writeFileSync(`${path}.lock`, "4242"); // reclaimed by someone else
+    release();
+    expect(readFileSync(`${path}.lock`, "utf8")).toBe("4242");
+  });
+
   test("the real pidAlive sees this process", () => {
     expect(saved.pidAlive(process.pid)).toBe(true);
     expect(saved.pidAlive(2 ** 22 + 12345)).toBe(false);
@@ -469,6 +508,7 @@ describe("webClient (against the mock Slack API)", () => {
           channels: [
             { id: "C00000001", name: "dev" },
             { id: "D00000001", is_im: true, user: "U00000001" },
+            { id: "G00000001", name: "mpdm-alice--bob-1", is_mpim: true },
             { name: "no-id" },
           ],
           response_metadata: { next_cursor: "" },
@@ -501,6 +541,7 @@ describe("webClient (against the mock Slack API)", () => {
     expect(await c.listChannels()).toEqual([
       { id: "C00000001", name: "dev", isIm: false },
       { id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" },
+      { id: "G00000001", name: "mpdm-alice--bob-1", isIm: false, isMpim: true },
     ]);
     const p1 = await c.history("C00000001", "1.000000");
     expect(p1).toEqual({ messages: [{ ts: "2.000000", text: "a" }], nextCursor: "n1" });
