@@ -77,6 +77,7 @@ import {
   searchAll,
   send as slackSend,
   pinsAdd,
+  RateLimitError,
   repliesCursor,
   type MessageMetadata,
   getPermalink,
@@ -1430,6 +1431,28 @@ function pinlogStateArg(positional: string | undefined, file: string | undefined
   return positional === undefined ? undefined : unescapeArg(positional);
 }
 
+/** Slack truncates `text` beyond 40,000 characters — which would cut the footer
+ *  off a board, after which `list` cannot find it and `update` refuses it. */
+const PINLOG_MAX_TEXT = 40_000;
+function pinlogCheckSize(what: string, text: string): void {
+  if (text.length > PINLOG_MAX_TEXT) {
+    console.error(`Error: the ${what} is ${text.length} characters; Slack truncates past ${PINLOG_MAX_TEXT}. Shorten it — move detail to a linked page.`);
+    process.exit(2);
+  }
+}
+
+/** Did this failed write DEFINITELY not land? Only a Slack error response
+ *  names a rejection. A network failure, or Slack's own internal_error /
+ *  fatal_error (documented as possibly-partial), means the write MAY have
+ *  landed — and advising a blind retry would then duplicate a board or a
+ *  notifying log line. */
+function pinlogWriteRejected(e: unknown): boolean {
+  const raw = e instanceof Error ? e.message : String(e);
+  const m = raw.match(/Slack error on \S+: (\w+)/);
+  if (e instanceof RateLimitError) return true;
+  return !!m && !["internal_error", "fatal_error", "request_timeout", "service_unavailable"].includes(m[1]!);
+}
+
 /** The quiet-hours line as a warning, or null outside them. The confirm gate
  *  already prints the clock; this repeats it on the CONFIRMED run too, because
  *  that is the run whose output an agent actually reads. */
@@ -1494,6 +1517,7 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
   const code = safetyCode("pinlog-create", channelId, args.state, args.name ?? "", self?.userId ?? "");
   const now = new Date();
   const head = composeHead(args.state, now);
+  pinlogCheckSize("HEAD (state + footer)", head);
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, args.cookie);
     requireCode(args.code, code, [
@@ -1514,7 +1538,14 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
     // footer in the stored text, which Slack rewrites when blocks are attached.
     headTs = await slackSend(token, channelId, head, undefined, false, args.cookie, true, attr.metadata);
   } catch (e: unknown) {
-    console.error(`✗ HEAD was NOT posted: ${friendlySlackError(e)}`);
+    if (pinlogWriteRejected(e)) {
+      console.error(`✗ HEAD was NOT posted: ${friendlySlackError(e)}`);
+    } else {
+      console.error(
+        `⚠ UNKNOWN whether the HEAD was posted: ${friendlySlackError(e)}\n` +
+        `  Check before retrying, or you will have two boards:  slack pinlog list ${shQuote(args.target)}${args.asBot ? " --as-bot" : ""}`,
+      );
+    }
     process.exit(1);
   }
   if (!headTs) {
@@ -1562,6 +1593,8 @@ interface PinlogUpdateArgs {
    *  opt-out of the marker check, for a board people already ran by hand. */
   adopt?: boolean;
   name?: string;
+  /** `-w`, carried into the printed retry so it acts on the same workspace. */
+  workspace?: string;
   code?: string;
   cookie?: string;
   asBot?: boolean;
@@ -1579,6 +1612,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   }
   guardUrlBoundaries(args.log, args.allowUrlAdjacent);
   if (args.state !== undefined) guardUrlBoundaries(args.state, args.allowUrlAdjacent);
+  pinlogCheckSize("log line", args.log);
 
   const getSelf = selfLookup(token, args.cookie);
   const { channel, ts, ref } = await resolvePinlogTarget(token, args.target, args.cookie);
@@ -1619,7 +1653,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   const self = await getSelf();
   const id = pinlogId(channel, ts);
   const now = new Date();
-  const bot = args.asBot ? " --as-bot" : "";
+  const bot = `${args.workspace ? ` -w ${shQuote(args.workspace)}` : ""}${args.asBot ? " --as-bot" : ""}`;
   // The retry command for a failed log post is printed with its code already
   // in it, so the hash for --log-only must be computable here without a gate.
   const logOnlyCode = safetyCode("pinlog-log", channel, ts, args.log, self?.userId ?? "");
@@ -1639,6 +1673,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
     }
   } else {
     const newHead = composeHead(args.state!, now);
+    pinlogCheckSize("new HEAD (state + footer)", newHead);
     // The CURRENT text is in the hash: if someone else updated the board
     // between your preview and your confirm, the code you were shown no longer
     // matches, and you re-read before overwriting their change.
@@ -1672,7 +1707,10 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
       const hint = /cant_update_message/.test(raw)
         ? `\n  Only the HEAD's author can edit it${args.asBot ? "" : " — if the bot created this board, add --as-bot"}.`
         : "";
-      console.error(`✗ HEAD was NOT updated: ${friendlySlackError(e)}${hint}\n  The log reply was NOT posted either (a log line for a change the board does not show would be a lie).`);
+      const what = pinlogWriteRejected(e)
+        ? `✗ HEAD was NOT updated: ${friendlySlackError(e)}${hint}`
+        : `⚠ UNKNOWN whether the HEAD was updated: ${friendlySlackError(e)}\n  Check it first:  slack pinlog show ${id}${bot}`;
+      console.error(`${what}\n  The log reply was NOT posted (a log line for a change the board may not show would be a lie).`);
       process.exit(1);
     }
     attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
@@ -1692,10 +1730,14 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   try {
     logTs = await slackSend(token, channel, args.log, ts, false, args.cookie, true, attrLog.metadata);
   } catch (e: unknown) {
+    const rejected = pinlogWriteRejected(e);
     console.error(
-      `✗ Log reply was NOT posted: ${friendlySlackError(e)}\n` +
-      (args.logOnly ? "" : `  The HEAD IS updated — only the log line is missing.\n`) +
-      `  Retry just the log line:\n    ${logOnlyRetry}`,
+      (rejected
+        ? `✗ Log reply was NOT posted: ${friendlySlackError(e)}\n`
+        : `⚠ UNKNOWN whether the log reply was posted: ${friendlySlackError(e)}\n`) +
+      (args.logOnly ? "" : `  The HEAD IS updated — only the log line ${rejected ? "is" : "may be"} missing.\n`) +
+      (rejected ? "" : `  Check the thread first (retrying a reply that landed notifies everyone twice):  slack pinlog show ${id}${bot}\n`) +
+      `  Retry just the log line${rejected ? "" : " (only if it is not there)"}:\n    ${logOnlyRetry}`,
     );
     process.exit(1);
   }
@@ -4830,6 +4872,7 @@ async function main(): Promise<void> {
                 allowUrlAdjacent: argv["allow-url-adjacent"],
               };
               if (argv.name !== undefined) args.name = argv.name;
+              if (typeof argv.workspace === "string") args.workspace = argv.workspace;
               if (state !== undefined) {
                 if (args.logOnly) {
                   console.error("Error: --log-only leaves HEAD as is — drop the state argument, or drop --log-only.");

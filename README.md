@@ -310,6 +310,11 @@ slack pinlog pin gtm-blockers           # pin later (e.g. create lacked pins:wri
 - **Update order:** the HEAD edit first, then the log reply. If the edit fails, **no** log
   reply is posted. If the reply fails, the command exits 1, says the HEAD *is* updated, and
   prints the exact retry (`slack pinlog update <id> --log-only --log '…' --code=…`).
+  A failure that *may* have landed (network error, Slack `internal_error`/`fatal_error`)
+  is reported as `UNKNOWN`, not `NOT posted`, with the `show`/`list` command to check
+  first, because a blind retry would post a second board or a second notifying reply.
+  A HEAD over Slack's 40,000-character limit is refused before posting, because Slack
+  would truncate the footer.
 - `create` without the pin scope still creates the board: it says `NOT pinned`, prints
   the `slack pinlog pin` command, and exits 0, because retrying `create` would make a
   second board. Pinning needs `pins:write` on the token you act with.

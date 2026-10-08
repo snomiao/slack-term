@@ -179,6 +179,24 @@ describe("pinlog create", { timeout: 60_000 }, () => {
     });
   });
 
+  test("an ambiguous create failure says UNKNOWN and to list before retrying", async () => {
+    await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
+      const { r, writes } = await confirmed(m, ["pinlog", "create", CH, "x"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("UNKNOWN whether the HEAD was posted");
+      expect(r.stderr).toContain(`slack pinlog list '${CH}'`);
+      expect(writes).toEqual(["chat.postMessage"]);
+    });
+  });
+
+  test("an oversized initial state is refused before any write", async () => {
+    await withMock({}, async (m) => {
+      const r = await run(m, ["pinlog", "create", CH, "y".repeat(40_001)]);
+      expect(r.exitCode).toBe(2);
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+    });
+  });
+
   test("--name registers the id; a second create with the same name is refused before any write", async () => {
     await withMock({}, async (m) => {
       const { r } = await confirmed(m, ["pinlog", "create", CH, "x", "--name", "dup-test"]);
@@ -335,6 +353,37 @@ describe("pinlog update", { timeout: 60_000 }, () => {
       const r = await run(m, argv);
       expect(r.exitCode).toBe(0);
       expect(String(body(m, "chat.postMessage").text)).toBe(log);
+    });
+  });
+
+  // Codex round 3: a failure that MAY have landed (network, internal_error,
+  // fatal_error) must not be reported as "NOT posted" with a blind retry —
+  // retrying a reply that landed notifies everyone twice.
+  test("an ambiguous log failure says UNKNOWN and to check the thread first", async () => {
+    await withMock({ "chat.postMessage": { ok: false, error: "internal_error" } }, async (m) => {
+      const { r } = await confirmed(m, args);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("UNKNOWN whether the log reply was posted");
+      expect(r.stderr).not.toContain("Log reply was NOT posted");
+      expect(r.stderr).toContain(`slack pinlog show ${ID}`);
+      expect(r.stderr).toContain("only if it is not there");
+    });
+  });
+
+  test("a definite log rejection says NOT posted, with no check-first detour", async () => {
+    await withMock({ "chat.postMessage": { ok: false, error: "not_in_channel" } }, async (m) => {
+      const { r } = await confirmed(m, args);
+      expect(r.stderr).toContain("Log reply was NOT posted");
+      expect(r.stderr).not.toContain("UNKNOWN");
+    });
+  });
+
+  test("a state that would push the footer past Slack's 40k truncation is refused before any write", async () => {
+    await withMock({}, async (m) => {
+      const r = await run(m, ["pinlog", "update", ID, "x".repeat(40_000), "--log", "big", "--code=0000"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("Slack truncates past 40000");
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
     });
   });
 
