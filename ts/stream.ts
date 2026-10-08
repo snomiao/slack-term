@@ -147,8 +147,10 @@ export const _internals = {
   now: (): number => Date.now(),
   sleep: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((res) => {
     if (signal?.aborted) return res();
-    const t = setTimeout(res, ms);
-    signal?.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true });
+    // The listener goes when the timer fires, so long-lived signals don't collect them.
+    const onAbort = (): void => { clearTimeout(t); res(); };
+    const t = setTimeout(() => { signal?.removeEventListener("abort", onAbort); res(); }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   }),
   out: (line: string): void => { process.stdout.write(line + "\n"); },
   err: (line: string): void => { process.stderr.write(line + "\n"); },
@@ -492,7 +494,8 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     // --- relay: a background subscription that only queues bells; the loop
     // below handles them, so Slack calls and state writes stay sequential.
     // `live` starts undefined so the first outcome, up or down, is announced.
-    type Pending = { seq: number; bell: Doorbell; tries: number; dueMs: number };
+    /** tries: reads that worked but did not find the message; fails: reads that errored. */
+    type Pending = { seq: number; bell: Doorbell; tries: number; dueMs: number; fails?: number };
     const bus = {
       queue: [] as Pending[], // in seq order, due now
       retry: [] as Pending[], // waiting for dueMs
@@ -526,8 +529,9 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         // resubscribing; the relay replays what we did not take from storage.
         while (pendingCount() >= MAX_QUEUED_BELLS / 2 && !inner.signal.aborted) {
           await new Promise<void>((res) => {
-            bus.onDrain = res;
-            inner.signal.addEventListener("abort", () => res(), { once: true });
+            const onAbort = (): void => res();
+            bus.onDrain = () => { inner.signal.removeEventListener("abort", onAbort); res(); };
+            inner.signal.addEventListener("abort", onAbort, { once: true });
           });
         }
         if (inner.signal.aborted) return;
@@ -632,7 +636,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         bus.inflight = p;
         n++;
         let done: boolean;
-        let why = "not visible yet";
+        let failed: unknown;
         try {
           done = await handleBell(p.bell);
         } catch (e) {
@@ -645,14 +649,31 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
             break;
           }
           done = false;
-          why = errText(e);
+          failed = e;
         }
         bus.inflight = undefined;
+        if (failed !== undefined && classify(failed) === "channel") {
+          // The channel itself is unreadable (left, archived, no scope).
+          _internals.err(`slack stream: relay bell for ${p.bell.channel} dropped: ${errText(failed)}`);
+          done = true;
+        }
+        if (failed === undefined && bellsFailing) {
+          _internals.err("slack stream: relay bell reads recovered");
+          bellsFailing = false;
+        }
         if (done) {
           bus.handled = Math.max(bus.handled, p.seq);
+        } else if (failed !== undefined) {
+          // A transient failure says nothing about the message: keep it
+          // pending (holding the resume point) for as long as it takes.
+          p.fails = (p.fails ?? 0) + 1;
+          if (!bellsFailing) _internals.err(`slack stream: relay bell for ${p.bell.channel} failed (${errText(failed)}) — retrying`);
+          bellsFailing = true;
+          p.dueMs = _internals.now() + phiDelay(p.fails, 1500, 60_000);
+          bus.retry.push(p);
         } else if (++p.tries >= BELL_TRIES) {
-          // Name the place, never the message.
-          _internals.err(`slack stream: relay bell for ${p.bell.channel} abandoned after ${p.tries} tries (${why}) — only the poll can find it now`);
+          // Read fine, but the message is not there. Name the place, never the message.
+          _internals.err(`slack stream: relay bell for ${p.bell.channel} abandoned after ${p.tries} tries (not visible) — only the poll can find it now`);
           bus.handled = Math.max(bus.handled, p.seq);
         } else {
           p.dueMs = _internals.now() + phiDelay(p.tries, 1500, 60_000);
@@ -677,6 +698,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     // second slice (however many bells are waiting).
     const bellsWaiting = (): boolean => bus.queue.length > 0 || bus.retry.some((p) => p.dueMs <= _internals.now());
     let bellsOwed = false;
+    let bellsFailing = false; // one stderr line per streak of failed bell reads
 
     while (!opts.signal?.aborted) {
       if (pollDue() && !(bellsOwed && bellsWaiting())) {

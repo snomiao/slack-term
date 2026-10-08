@@ -840,7 +840,7 @@ describe("runStream — relay", () => {
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(emitted().map((m) => m.text)).toEqual(["@mybot ok"]);
     expect(seqs).toEqual([0]); // bell 2 is done, but bell 1 is still pending
-    expect(err.filter((l) => l.includes("relay bell for C00000001 abandoned after 8 tries (not visible yet)"))).toHaveLength(1);
+    expect(err.filter((l) => l.includes("relay bell for C00000001 abandoned after 8 tries (not visible)"))).toHaveLength(1);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.relay?.seq).toBe(2);
   });
@@ -1207,7 +1207,11 @@ describe("runStream — relay", () => {
       return realReplies(c, tt, oldest, cursor);
     };
     const sleeps = stepper({
-      1: () => { for (let i = 1; i <= 2001; i++) r.ring(i, { channel: "C00000001", ts: (now / 1000).toFixed(6) }); },
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "chat" });
+        for (let i = 1; i <= 2001; i++) r.ring(i, { channel: "C00000001", ts: t });
+      },
       2: () => { stalled = false; },
       4000: () => ac.abort(),
     }, ac, 5000);
@@ -1313,6 +1317,65 @@ describe("runStream — relay", () => {
     const firstBell = order.indexOf("bell");
     expect(order.slice(0, order.lastIndexOf("bell")).join(",")).not.toContain("poll,poll");
     expect(firstBell).toBeGreaterThan(0);
+  });
+
+  test("an outage keeps a bell pending (and the resume point held) however long it lasts", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const parent = ts(-10 * 86400); // only the bell can find this reply
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+    let down = true;
+    const realReplies = s.replies.bind(s);
+    s.replies = async (c, tt, oldest, cursor) => {
+      if (down) throw new Error("fetch failed");
+      return realReplies(c, tt, oldest, cursor);
+    };
+    let heldAt: number | undefined;
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: parent, user: "U00000001", text: "@mybot during outage" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: parent });
+      },
+      60: () => {
+        heldAt = (JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState).relay?.seq;
+        now += 10 * 60_000; // a ten-minute outage
+        down = false;
+      },
+      200: () => ac.abort(),
+    }, ac, 300);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(heldAt).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot during outage"]);
+    expect(err.filter((l) => l.includes("failed (fetch failed) — retrying"))).toHaveLength(1);
+    expect(err).toContain("slack stream: relay bell reads recovered");
+    expect(err.some((l) => l.includes("abandoned"))).toBe(false);
+  });
+
+  test("a bell for a channel that became unreadable is dropped, loudly", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    s.replies = async () => { throw new Error("Slack error on conversations.replies: channel_not_found"); };
+    stepper({ 1: () => r.ring(1, { channel: "C00000001", ts: (now / 1000).toFixed(6) }), 4: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(err.some((l) => l.includes("relay bell for C00000001 dropped: Slack error on conversations.replies: channel_not_found"))).toBe(true);
+    expect((JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState).relay?.seq).toBe(1);
+  });
+
+  test("the real sleep drops its abort listener when the timer fires", async () => {
+    const ac = new AbortController();
+    let added = 0;
+    let removed = 0;
+    const sig = ac.signal;
+    const add = sig.addEventListener.bind(sig);
+    const rem = sig.removeEventListener.bind(sig);
+    sig.addEventListener = ((...a: Parameters<typeof add>) => { added++; add(...a); }) as typeof sig.addEventListener;
+    sig.removeEventListener = ((...a: Parameters<typeof rem>) => { removed++; rem(...a); }) as typeof sig.removeEventListener;
+    await saved.sleep(1, sig);
+    await saved.sleep(1, sig);
+    expect([added, removed]).toEqual([2, 2]);
   });
 
   test("--once ignores the relay", async () => {
