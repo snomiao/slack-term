@@ -652,6 +652,10 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
           failed = e;
         }
         bus.inflight = undefined;
+        // Slack saying the message (or its thread) does not exist is an
+        // answer, not an outage: it counts as a "not visible" try, so a
+        // deleted message is abandoned instead of retried forever.
+        if (failed !== undefined && /thread_not_found|message_not_found/.test(errText(failed))) failed = undefined;
         if (failed !== undefined && classify(failed) === "channel") {
           // The channel itself is unreadable (left, archived, no scope).
           _internals.err(`slack stream: relay bell for ${p.bell.channel} dropped: ${errText(failed)}`);

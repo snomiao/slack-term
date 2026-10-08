@@ -1364,6 +1364,18 @@ describe("runStream — relay", () => {
     expect((JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState).relay?.seq).toBe(1);
   });
 
+  test("a bell for a deleted message (thread_not_found) is abandoned, not retried forever", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    s.replies = async () => { throw new Error("Slack error on conversations.replies: thread_not_found"); };
+    stepper({ 1: () => r.ring(1, { channel: "C00000001", ts: (now / 1000).toFixed(6) }), 150: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(err.some((l) => l.includes("abandoned after 8 tries (not visible)"))).toBe(true);
+    expect(err.some((l) => l.includes("— retrying"))).toBe(false);
+    expect((JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState).relay?.seq).toBe(1);
+  });
+
   test("the real sleep drops its abort listener when the timer fires", async () => {
     const ac = new AbortController();
     let added = 0;
