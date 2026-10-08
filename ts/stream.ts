@@ -28,7 +28,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Doorbell, Subscribe } from "./relay.ts";
+import type { Cursor, Doorbell, Subscribe } from "./relay.ts";
 import { RelayAuthError } from "./relay.ts";
 import { history, RateLimitError, repliesPage, userConversations, userName, type Json } from "./slack.ts";
 
@@ -89,7 +89,7 @@ export type StreamState = {
    *  the polling path from printing the same message twice. */
   seen?: Record<string, number>;
   /** Last relay bell fully handled; a restart resumes the relay from here. */
-  relay?: { url: string; seq: number };
+  relay?: { url: string; seq: number; epoch?: string };
 };
 
 export type StreamMatch = {
@@ -499,7 +499,9 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       ring();
     };
     const relayLoop = async (r: NonNullable<typeof relay>): Promise<void> => {
-      let after = state.relay?.url === r.url ? state.relay.seq : undefined;
+      let after: Cursor | undefined = state.relay?.url === r.url
+        ? { seq: state.relay.seq, ...(state.relay.epoch ? { epoch: state.relay.epoch } : {}) }
+        : undefined;
       let attempt = 0;
       const pendingCount = (): number => bus.queue.length + bus.retry.length + (bus.inflight ? 1 : 0);
       while (!inner.signal.aborted) {
@@ -523,14 +525,14 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
               attempt = 0;
               // Bells after our resume point are gone: poll to catch up.
               if (h.gap && after !== undefined) bus.full = true;
-              if (h.gap || state.relay?.url !== r.url) {
-                state.relay = { url: r.url, seq: h.seq };
+              if (h.gap || state.relay?.url !== r.url || state.relay.epoch !== h.epoch) {
+                state.relay = { url: r.url, seq: h.seq, ...(h.epoch ? { epoch: h.epoch } : {}) };
                 // The relay's numbering may have restarted: nothing from the
                 // old numbering may push the resume point past h.seq.
                 bus.handled = Math.min(bus.handled, h.seq);
                 for (const p of [...bus.queue, ...bus.retry, ...(bus.inflight ? [bus.inflight] : [])]) p.seq = Math.min(p.seq, h.seq);
               }
-              after = h.seq;
+              after = { seq: h.seq, ...(h.epoch ? { epoch: h.epoch } : {}) };
               setLive(true);
             },
             bell: (seq, bell) => {
@@ -544,7 +546,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
                 conn.abort();
                 return;
               }
-              after = seq;
+              after = { ...after, seq };
               bus.queue.push({ seq, bell, tries: 0, dueMs: 0 });
               ring();
             },
@@ -580,7 +582,11 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         await refresh(_internals.now() / 1000);
         ch = channels.find((c) => c.id === bell.channel);
       }
-      if (!ch || skipped.has(ch.id) || !state.channels[ch.id]) return true;
+      const st = ch && state.channels[ch.id];
+      if (!ch || !st || skipped.has(ch.id)) return true;
+      // Nothing from before this channel was being watched (first run, or
+      // --since): a replayed bell must not reach behind that.
+      if (num(bell.ts) < num(st.since)) return true;
       return ringBell(ctx, ch, bell);
     };
     /** Resume point: every bell up to it is resolved. A bell still being

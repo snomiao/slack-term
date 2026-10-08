@@ -12,8 +12,12 @@ export type Doorbell = { channel: string; ts: string; thread_ts?: string };
 
 /** First frame of every connection. `seq` is the resume point the relay
  *  starts from; `gap` means bells after the requested seq are gone (expired,
- *  or the relay was reset), so the client must catch up by polling. */
-export type Hello = { seq: number; gap: boolean; retention_sec: number };
+ *  or the relay was reset), so the client must catch up by polling. `epoch`
+ *  names the relay's storage: a new one means its numbering restarted. */
+export type Hello = { seq: number; gap: boolean; retention_sec: number; epoch?: string };
+
+/** Where to resume: the last seq taken, in the numbering of `epoch`. */
+export type Cursor = { seq: number; epoch?: string };
 
 export type RelayHandlers = {
   hello(h: Hello): void;
@@ -23,7 +27,7 @@ export type RelayHandlers = {
 /** Subscribe from `after` (undefined = from now). Resolves when the server
  *  closes the stream; rejects on HTTP errors, network errors and silence
  *  longer than `idleMs` (the relay sends a keepalive every 25 s). */
-export type Subscribe = (after: number | undefined, signal: AbortSignal, on: RelayHandlers) => Promise<void>;
+export type Subscribe = (after: Cursor | undefined, signal: AbortSignal, on: RelayHandlers) => Promise<void>;
 
 export class RelayAuthError extends Error {}
 
@@ -64,7 +68,8 @@ export function relaySubscriber(baseUrl: string, token: string, idleMs = 70_000)
     };
     try {
       arm();
-      const res = await fetch(`${base}/stream${after !== undefined ? `?after=${after}` : ""}`, {
+      const q = after === undefined ? "" : `?after=${after.seq}${after.epoch ? `&epoch=${encodeURIComponent(after.epoch)}` : ""}`;
+      const res = await fetch(`${base}/stream${q}`, {
         headers: { authorization: `Bearer ${token}`, accept: "text/event-stream" },
         signal: ac.signal,
       });

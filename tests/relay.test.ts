@@ -57,10 +57,10 @@ describe("relaySubscriber (against a local SSE server)", () => {
     mode = "ok";
     const hellos: Hello[] = [];
     const bells: [number, Doorbell][] = [];
-    await relaySubscriber(base, "tok-1")(4, new AbortController().signal, {
+    await relaySubscriber(base, "tok-1")({ seq: 4, epoch: "e 1" }, new AbortController().signal, {
       hello: (h) => hellos.push(h), bell: (s, b) => bells.push([s, b]),
     });
-    expect(seen.at(-1)).toEqual({ auth: "Bearer tok-1", url: "/stream?after=4" });
+    expect(seen.at(-1)).toEqual({ auth: "Bearer tok-1", url: "/stream?after=4&epoch=e%201" });
     expect(hellos).toEqual([{ seq: 4, gap: false, retention_sec: 3600 }]);
     expect(bells).toEqual([
       [5, { channel: "C00000001", ts: "1.000001" }],

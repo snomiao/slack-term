@@ -80,6 +80,9 @@ const enc = new TextEncoder();
 
 export class Relay extends DurableObject<Env> {
   private clients = new Set<Client>();
+  /** Names this storage. A client that saved a seq under another epoch is
+   *  reading a reset relay, whose numbers mean something else now. */
+  private readonly epoch: string;
   private keepalive: ReturnType<typeof setInterval> | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -90,6 +93,9 @@ export class Relay extends DurableObject<Env> {
       at INTEGER NOT NULL,
       UNIQUE (channel, ts)
     )`);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO meta (k, v) VALUES ('epoch', ?)", crypto.randomUUID());
+    this.epoch = ctx.storage.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'epoch'").one().v;
   }
 
   /** Store a bell (once per channel+ts) and push it to every live client. */
@@ -117,7 +123,7 @@ export class Relay extends DurableObject<Env> {
     const url = new URL(req.url);
     const { oldest, latest } = this.bounds();
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, latest, oldest, clients: this.clients.size, retention_sec: RETENTION_SEC });
+      return Response.json({ ok: true, epoch: this.epoch, latest, oldest, clients: this.clients.size, retention_sec: RETENTION_SEC });
     }
 
     if (this.clients.size >= MAX_CLIENTS) return new Response("too many clients", { status: 503 });
@@ -126,14 +132,15 @@ export class Relay extends DurableObject<Env> {
     // storage was reset) is a gap — the client must catch up by polling.
     const raw = url.searchParams.get("after") ?? req.headers.get("last-event-id");
     const after = raw !== null && /^\d+$/.test(raw) ? Number(raw) : null;
+    const epoch = url.searchParams.get("epoch");
     let from = latest;
     let gap = false;
     if (after !== null) {
       // Older than what is kept, or from the future (this relay's storage was
       // reset): either way say so, and replay everything still kept.
-      const ahead = after > latest;
-      gap = ahead || (oldest !== null ? after < oldest - 1 : after < latest);
-      from = ahead ? 0 : after;
+      const reset = after > latest || (epoch !== null && epoch !== this.epoch);
+      gap = reset || (oldest !== null ? after < oldest - 1 : after < latest);
+      from = reset ? 0 : after;
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
@@ -141,7 +148,7 @@ export class Relay extends DurableObject<Env> {
     // Hello, backlog and registration all happen before the next await, so no
     // bell can slip between the backlog read and the live feed. The backlog
     // goes out as one write (at most an hour of bells, ids only).
-    let first = `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC })}\n\n`;
+    let first = `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC, epoch: this.epoch })}\n\n`;
     for (const r of this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null }>(
       "SELECT seq, channel, ts, thread_ts FROM bells WHERE seq > ? ORDER BY seq", from,
     )) {

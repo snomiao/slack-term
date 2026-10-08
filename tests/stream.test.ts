@@ -565,16 +565,17 @@ class FakeRelay {
   fail: unknown[] = [];
   gap = false;
   latest = 0;
+  epoch = "e1";
   subscribe: Subscribe = (after, signal, on) => {
-    this.afters.push(after);
+    this.afters.push(after?.seq);
     const e = this.fail.shift();
     if (e !== undefined) return Promise.reject(e);
     this.on = on;
     // Like the Worker: a resume seq past the end means storage was reset —
     // report a gap and replay everything kept.
-    const ahead = after !== undefined && after > this.latest;
-    const from = ahead ? 0 : this.gap ? this.latest : (after ?? this.latest);
-    on.hello({ seq: from, gap: this.gap || ahead, retention_sec: 3600 });
+    const reset = after !== undefined && (after.seq > this.latest || (after.epoch !== undefined && after.epoch !== this.epoch));
+    const from = reset ? 0 : this.gap ? this.latest : (after?.seq ?? this.latest);
+    on.hello({ seq: from, gap: this.gap || reset, retention_sec: 3600, epoch: this.epoch });
     // Like the Worker: replay what is kept after the resume point.
     for (const [seq, bell] of this.log) if (seq > from) on.bell(seq, bell);
     return new Promise((res) => {
@@ -633,7 +634,7 @@ describe("runStream — relay", () => {
     expect(s.calls.filter((c) => c.startsWith("replies"))).toEqual([`replies C00000001 ${emitted()[0]!.ts}`]);
     expect(err.some((l) => l.includes("relay connected — polling every 300s"))).toBe(true);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
-    expect(st.relay).toEqual({ url: "https://relay.example", seq: 1 });
+    expect(st.relay).toEqual({ url: "https://relay.example", seq: 1, epoch: "e1" });
   });
 
   test("a reply bell reads the thread, even one whose parent is outside the window", async () => {
@@ -1039,6 +1040,57 @@ describe("runStream — relay", () => {
     expect(emitted().map((m) => m.text)).toEqual(["@mybot before reset", "@mybot after reset 1", "@mybot after reset 2"]);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.relay?.seq).toBe(2);
+  });
+
+  test("a relay reset is caught by its epoch even after its numbers pass ours", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const parent = ts(-10 * 86400);
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot first" });
+        r.ring(5, { channel: "C00000001", ts: t });
+      },
+      2: () => {
+        r.end();
+        r.on = { hello: () => {}, bell: () => {} };
+        r.epoch = "e2"; // new storage, which has already counted past 5
+        r.log = [];
+        for (let i = 1; i <= 8; i++) {
+          const t = (now / 1000 + i / 10).toFixed(6);
+          s.post("C00000001", { ts: t, thread_ts: parent, user: "U00000001", text: i === 3 ? "@mybot seq 3 of e2" : "chat" });
+          r.ring(i, { channel: "C00000001", ts: t, thread_ts: parent });
+        }
+      },
+      10: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot first", "@mybot seq 3 of e2"]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay).toMatchObject({ seq: 8, epoch: "e2" });
+  });
+
+  test("bells from before --since (or before the first run) are not replayed", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const parent = ts(-10 * 86400);
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+    // Retained by the relay from a long downtime: 30 min and 2 min ago.
+    for (const [i, ago] of [[1, 1800], [2, 120]] as const) {
+      s.post("C00000001", { ts: ts(-ago), thread_ts: parent, user: "U00000001", text: `@mybot ${ago}s ago` });
+      r.log.push([i, { channel: "C00000001", ts: ts(-ago), thread_ts: parent }]);
+    }
+    r.latest = 2;
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      version: 1, identity: SELF, channels: {}, relay: { url: "https://relay.example", seq: 0, epoch: "e1" },
+    }));
+    const ac = new AbortController();
+    stepper({ 3: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { sinceSec: 300 }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot 120s ago"]);
   });
 
   test("a bell whose message is on a later page of its thread is still found", async () => {
