@@ -77,7 +77,8 @@ export function relaySubscriber(baseUrl: string, token: string, idleMs = 70_000)
         const { done, value } = await reader.read();
         if (done) return;
         arm();
-        buf = parseSse(buf + dec.decode(value, { stream: true }).replace(/\r\n/g, "\n"), (event, data, id) => {
+        // CRLF is normalised on the whole buffer: a \r\n pair can straddle chunks.
+        buf = parseSse((buf + dec.decode(value, { stream: true })).replace(/\r\n/g, "\n"), (event, data, id) => {
           const j = JSON.parse(data) as unknown;
           if (event === "hello") on.hello(j as Hello);
           else if (event === "bell" && id !== undefined) on.bell(Number(id), j as Doorbell);

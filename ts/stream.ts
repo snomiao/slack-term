@@ -384,10 +384,11 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
  *  (already in `seen`) on its next scan. Returns false when the message is not
  *  visible (yet). */
 export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promise<boolean> {
-  const oldest = fmt(num(bell.ts) - 1);
-  const msgs = bell.thread_ts
-    ? await allPages((c) => ctx.client.replies(ch.id, bell.thread_ts!, oldest, c))
-    : (await ctx.client.history(ch.id, oldest)).messages;
+  // conversations.replies on the message's own ts returns that message first
+  // even when it has no thread, and a reply read from just before its ts is
+  // on the first page — so one call finds it however much was posted since.
+  const page = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1));
+  const msgs = page.messages;
   const m = msgs.find((x) => str(x.ts) === bell.ts);
   if (!m) return false;
   const tts = str(m.thread_ts);
@@ -516,7 +517,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
               attempt = 0;
               // Bells after our resume point are gone: poll to catch up.
               if (h.gap && after !== undefined) bus.full = true;
-              if (h.gap || state.relay?.url !== r.url) state.relay = { url: r.url, seq: h.seq };
+              if (h.gap || state.relay?.url !== r.url) {
+                state.relay = { url: r.url, seq: h.seq };
+                // The relay's numbering may have restarted: nothing from the
+                // old numbering may push the resume point past h.seq.
+                bus.handled = Math.min(bus.handled, h.seq);
+                for (const p of [...bus.queue, ...bus.retry, ...(bus.inflight ? [bus.inflight] : [])]) p.seq = Math.min(p.seq, h.seq);
+              }
               after = h.seq;
               setLive(true);
             },

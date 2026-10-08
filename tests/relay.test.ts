@@ -26,7 +26,7 @@ describe("relaySubscriber (against a local SSE server)", () => {
   let server: Server;
   let base: string;
   const seen: { auth: string | undefined; url: string | undefined }[] = [];
-  let mode: "ok" | "401" | "500" | "silent" = "ok";
+  let mode: "ok" | "401" | "500" | "silent" | "crlf" = "ok";
   let res: ServerResponse | undefined;
   beforeAll(async () => {
     server = createServer((req, r) => {
@@ -35,6 +35,12 @@ describe("relaySubscriber (against a local SSE server)", () => {
       if (mode === "500") { r.writeHead(500).end(); return; }
       r.writeHead(200, { "content-type": "text/event-stream" });
       if (mode === "silent") { res = r; return; }
+      if (mode === "crlf") {
+        // A \r\n pair split across two network chunks.
+        r.write("event: hello\r\ndata: {\"seq\":1,\"gap\":false,\"retention_sec\":3600}\r\n\r");
+        setTimeout(() => r.end("\nid: 2\r\nevent: bell\r\ndata: {\"channel\":\"C00000001\",\"ts\":\"1.000001\"}\r\n\r\n"), 30);
+        return;
+      }
       r.write("event: hello\r\ndata: {\"seq\":4,\"gap\":false,\"retention_sec\":3600}\r\n\r\n: ka\n\n");
       r.write("id: 5\nevent: bell\ndata: {\"channel\":\"C00000001\",\"ts\":\"1.000001\"}\n\nid: 6\nevent: bell\n");
       r.end("data: {\"channel\":\"C00000001\",\"ts\":\"2.000001\",\"thread_ts\":\"1.000001\"}\n\n");
@@ -62,6 +68,15 @@ describe("relaySubscriber (against a local SSE server)", () => {
     ]);
     await relaySubscriber(base, "tok-1")(undefined, new AbortController().signal, { hello: () => {}, bell: () => {} });
     expect(seen.at(-1)!.url).toBe("/stream");
+  });
+
+  test("a CRLF pair split across chunks still separates frames", async () => {
+    mode = "crlf";
+    const got: string[] = [];
+    await relaySubscriber(base, "x")(undefined, new AbortController().signal, {
+      hello: (h) => got.push(`hello ${h.seq}`), bell: (sq) => got.push(`bell ${sq}`),
+    });
+    expect(got).toEqual(["hello 1", "bell 2"]);
   });
 
   test("401 is a RelayAuthError; other statuses are plain errors", async () => {

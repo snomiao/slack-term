@@ -625,8 +625,9 @@ describe("runStream — relay", () => {
     expect(emitted()[0]!.text).toBe("hi @mybot");
     // Relay up: the poll waits reconcileMs, not --interval.
     expect(sleeps[0]).toBe(300_000);
-    // The bell cost exactly one history read; the safety-net poll then ran and stayed quiet.
-    expect(historyCalls(s)).toBeGreaterThan(pollsAtBell + 1);
+    // The bell cost exactly one read; the safety-net poll then ran and stayed quiet.
+    expect(historyCalls(s)).toBeGreaterThan(pollsAtBell);
+    expect(s.calls.filter((c) => c.startsWith("replies"))).toEqual([`replies C00000001 ${emitted()[0]!.ts}`]);
     expect(err.some((l) => l.includes("relay connected — polling every 300s"))).toBe(true);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.relay).toEqual({ url: "https://relay.example", seq: 1 });
@@ -844,18 +845,15 @@ describe("runStream — relay", () => {
     const r = new FakeRelay();
     const ac = new AbortController();
     const order: string[] = [];
-    let bellOldest = "";
+    // Bells are read with conversations.replies, polls with .history.
     const realHistory = s.history.bind(s);
-    s.history = async (c, oldest, cursor) => {
-      // A bell read asks from 1 s before its message; a poll from the window start.
-      order.push(oldest === bellOldest ? "bell" : "poll");
-      return realHistory(c, oldest, cursor);
-    };
+    const realReplies = s.replies.bind(s);
+    s.history = async (c, oldest, cursor) => { order.push("poll"); return realHistory(c, oldest, cursor); };
+    s.replies = async (c, t, oldest, cursor) => { order.push("bell"); return realReplies(c, t, oldest, cursor); };
     stepper({
       1: () => {
         now += 300_000; // the safety-net poll is due as the burst arrives
         const t = (now / 1000).toFixed(6);
-        bellOldest = (now / 1000 - 1).toFixed(6);
         s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot burst" });
         for (let i = 1; i <= 60; i++) r.ring(i, { channel: "C00000001", ts: t });
       },
@@ -902,8 +900,8 @@ describe("runStream — relay", () => {
     const t1 = (T0 + 0.5).toFixed(6);
     const t2 = (T0 + 0.7).toFixed(6);
     let flooded = false;
-    const realHistory = s.history.bind(s);
-    s.history = async (c, oldest, cursor) => {
+    const realReplies = s.replies.bind(s);
+    s.replies = async (c, threadTs, oldest, cursor) => {
       if (oldest === (T0 + 0.5 - 1).toFixed(6) && !flooded) {
         flooded = true; // while bell 1 is in flight: 2000 more overflow the queue, then one more
         for (let i = 2; i <= 2001; i++) r.ring(i, { channel: "C00000001", ts: t1 });
@@ -913,7 +911,7 @@ describe("runStream — relay", () => {
         s.post("C00000001", { ts: t2, thread_ts: parent, user: "U00000002", text: "@mybot after" });
         r.ring(2002, { channel: "C00000001", ts: t2, thread_ts: parent });
       }
-      return realHistory(c, oldest, cursor);
+      return realReplies(c, threadTs, oldest, cursor);
     };
     stepper({
       1: () => {
@@ -936,13 +934,18 @@ describe("runStream — relay", () => {
     let limited = true;
     let t = "";
     const realHistory = s.history.bind(s);
+    const realReplies = s.replies.bind(s);
     s.history = async (c, oldest, cursor) => {
+      calls.push([oldest, now]);
+      return realHistory(c, oldest, cursor);
+    };
+    s.replies = async (c, threadTs, oldest, cursor) => {
       calls.push([oldest, now]);
       if (limited && oldest === (Number(t) - 1).toFixed(6)) {
         limited = false;
         throw new RateLimitError(60);
       }
-      return realHistory(c, oldest, cursor);
+      return realReplies(c, threadTs, oldest, cursor);
     };
     let limitedAt = 0;
     stepper({
@@ -999,6 +1002,48 @@ describe("runStream — relay", () => {
     const sleeps = stepper({}, ac);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(sleeps).toEqual([]);
+  });
+
+  test("a relay whose numbering restarted (gap) resets the resume point to its numbering", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot before reset" });
+        r.ring(100, { channel: "C00000001", ts: t });
+      },
+      2: () => {
+        r.gap = true; // the relay lost its storage: it now counts from 2
+        r.latest = 2;
+        r.log = [];
+        r.end();
+      },
+      8: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(r.afters).toEqual([undefined, 100]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay?.seq).toBe(2);
+  });
+
+  test("a replayed bell finds its message however many posts came after it", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot buried" });
+        for (let i = 1; i <= 9; i++) s.post("C00000001", { ts: (now / 1000 + i / 100).toFixed(6), user: "U00000002", text: `chat ${i}` });
+        r.ring(1, { channel: "C00000001", ts: t });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot buried"]);
+    expect(s.calls.filter((c) => c.startsWith("replies"))).toHaveLength(1);
   });
 
   test("--once ignores the relay", async () => {
