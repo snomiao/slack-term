@@ -1575,7 +1575,7 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
       console.error(
         `${pinlogWriteRejected(e) ? "✗ The reason was NOT posted" : "⚠ UNKNOWN whether the reason was posted"}: ${friendlySlackError(e)}\n` +
         `  The board IS posted. Retry just the reason (check the thread first):\n` +
-        `    slack pinlog note ${id} ${shQuote(escapeArg(args.log))}${bot} --code=${noteCode}`,
+        `    slack pinlog note ${id} ${shQuote(escapeArg(args.log))}${args.allowUrlAdjacent ? " --allow-url-adjacent" : ""}${bot} --code=${noteCode}`,
       );
       process.exit(1);
     }
@@ -4832,20 +4832,28 @@ async function main(): Promise<void> {
               .positional("channel", { type: "string", demandOption: true, describe: "#chan or channel ID" })
               .positional("state", { type: "string", describe: "The whole state (\\n for newlines), or use --file" })
               .positional("reason", { type: "string", describe: "Optional: why the board exists — its first thread reply" })
-              .option("file", { type: "string", describe: "Read the state from a file (- = stdin)" })
+              .option("file", { type: "string", describe: "Read the state from a file (- = stdin); then the only positional after <channel> is the reason" })
               .option("code", { type: "string", describe: "Safety hash to confirm (printed by the preview)" })
               .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
               .option("as-bot", asBotOpt)
               .example('slack pinlog new "#gtm" "販売ブロッカー\\n1. 見積テンプレ — 未"', "preview, then rerun with --code"),
             async (argv) => {
-              const state = pinlogStateArg(argv.state, argv.file);
+              // As with `set`: with --file the state comes from the file, so the
+              // one positional after <channel> is the reason.
+              const fromFile = argv.file !== undefined;
+              if (fromFile && argv.state !== undefined && argv.reason !== undefined) {
+                console.error("Error: with --file, pass only the reason after <channel> (the state comes from the file).");
+                process.exit(2);
+              }
+              const state = fromFile ? pinlogStateArg(undefined, argv.file) : pinlogStateArg(argv.state, undefined);
+              const reason = fromFile ? argv.state : argv.reason;
               if (state === undefined) {
                 console.error("Error: the state is required (positional or --file).");
                 process.exit(2);
               }
               const t = pick(argv as W & { "as-bot"?: boolean });
               const args: PinlogCreateArgs = { target: argv.channel!, state, asBot: t.asBot, allowUrlAdjacent: argv["allow-url-adjacent"] };
-              if (argv.reason !== undefined) args.log = unescapeArg(argv.reason);
+              if (reason !== undefined) args.log = unescapeArg(reason);
               if (t.cookie) args.cookie = t.cookie;
               if (typeof argv.workspace === "string") args.workspace = argv.workspace;
               if (argv.code) args.code = argv.code;

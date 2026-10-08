@@ -207,7 +207,7 @@ metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected
 ```bash
 slack pinlog ls  "#chan"                                   # boards in a channel
 slack pinlog get <board>                                   # state + log
-slack pinlog new "#chan" --file board.md ["<why>"] --as-bot  # → board id C…:ts; pins it
+slack pinlog new "#chan" --file board.md "<why>" --as-bot    # → board id C…:ts; pins it
 slack pinlog set <board> --file board.md "<what changed>" --as-bot
 slack pinlog note <board> "<progress, state unchanged>" --as-bot
 ```

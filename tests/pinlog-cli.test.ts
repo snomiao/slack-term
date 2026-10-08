@@ -223,6 +223,51 @@ describe("pinlog create", { timeout: 60_000 }, () => {
     });
   });
 
+  test("new --file takes the reason as the only positional (it is posted, not dropped)", async () => {
+    const f = join(tmpHome, "new-board.md");
+    writeFileSync(f, "状態: 青\n");
+    await withMock({ "chat.postMessage": { ok: true, ts: HEAD_TS } }, async (m) => {
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "--file", f, "10/9 リリース用"]);
+      expect(r.exitCode).toBe(0);
+      expect(writes).toEqual(["chat.postMessage", "pins.add", "chat.postMessage"]);
+      expect(body(m, "chat.postMessage")).toMatchObject({ text: "10/9 リリース用", thread_ts: HEAD_TS });
+      const both = await run(m, ["pinlog", "new", CH, "x", "y", "--file", f]);
+      expect(both.exitCode).toBe(2);
+      expect(both.stderr).toContain("with --file, pass only the reason");
+    });
+  });
+
+  test("a failed first reason prints a note retry that keeps --allow-url-adjacent and works", async () => {
+    const reason = "詳細 https://example.com/ページ";
+    let retry = "";
+    let boardId = "";
+    // The board post succeeds; only the thread reply (it carries thread_ts) fails.
+    const replyFails = { "chat.postMessage": { __whenBodyIncludes: { needle: "thread_ts", response: { ok: false, error: "fatal_error" } } } };
+    await withMock(replyFails, async (m) => {
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "x", reason, "--allow-url-adjacent"]);
+      expect(r.exitCode).toBe(1);
+      expect(writes).toEqual(["chat.postMessage", "pins.add", "chat.postMessage"]);
+      expect(r.stderr).toContain("UNKNOWN whether the reason was posted");
+      boardId = r.stdout.match(/Posted HEAD: (\S+)/)![1]!;
+      // eslint-disable-next-line no-control-regex
+      retry = r.stderr.split("\n").find((l) => l.includes("slack pinlog note"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    });
+    expect(retry).toContain(`slack pinlog note ${boardId}`);
+    expect(retry).toContain("--allow-url-adjacent");
+    const argv = (await new Promise<string[]>((resolve) => {
+      const c = spawn("bash", ["-c", `printf '%s\\0' ${retry.replace(/^slack /, "")}`]);
+      let out = "";
+      c.stdout.on("data", (d: Buffer) => { out += String(d); });
+      c.on("close", () => resolve(out.split("\0").filter(Boolean)));
+    }));
+    await withMock({}, async (m) => {
+      const r = await run(m, argv);
+      expect(r.exitCode).toBe(0);
+      expect(m.requests.filter((q) => WRITES.has(q.method)).map((q) => q.method)).toEqual(["chat.postMessage"]);
+      expect(String(body(m, "chat.postMessage").text)).toBe(reason);
+    });
+  });
+
   test("ls on a board link is refused and points at get", async () => {
     await withMock({}, async (m) => {
       const r = await run(m, ["pinlog", "ls", ID]);
