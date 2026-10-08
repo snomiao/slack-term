@@ -26,10 +26,14 @@ slack stream ◀──GET /stream (SSE, Bearer)─────┘
   A bell holds a channel id and two timestamps.
 - **Bells are deleted 1 hour after arrival** (`RETENTION_SEC`, enforced by a
   Durable Object alarm). That window exists only so a client can resume.
-  Anything older is covered by the client's catch-up poll.
+  Anything older is covered by the client's catch-up poll, except replies
+  under a thread parent older than the client's `--thread-window`: the poll
+  cannot find those, so a bell that expired before the client read it is lost.
 - **Nothing logs a request body**, and Workers Logs are off (`observability`).
-- **A forged bell costs at most one extra Web API read.** The client applies
-  its own filter to what Slack returns.
+- **A forged bell costs a few Web API reads at most:** one
+  `conversations.replies` call, a few pages if needed, and up to 8 retries
+  if the message is not found. The client applies its own filter to what
+  Slack returns, so a forged bell never prints anything.
 
 ## Deploy
 
