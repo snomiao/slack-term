@@ -570,7 +570,10 @@ class FakeRelay {
     const e = this.fail.shift();
     if (e !== undefined) return Promise.reject(e);
     this.on = on;
-    on.hello({ seq: this.gap ? this.latest : (after ?? this.latest), gap: this.gap, retention_sec: 3600 });
+    const from = this.gap ? this.latest : (after ?? this.latest);
+    on.hello({ seq: from, gap: this.gap, retention_sec: 3600 });
+    // Like the Worker: replay what is kept after the resume point.
+    for (const [seq, bell] of this.log) if (seq > from) on.bell(seq, bell);
     return new Promise((res) => {
       this.end = res;
       signal.addEventListener("abort", () => res(), { once: true });
@@ -578,8 +581,10 @@ class FakeRelay {
   };
   /** The server closes the stream. */
   end: () => void = () => {};
+  log: [number, Doorbell][] = [];
   ring(seq: number, bell: Doorbell): void {
     this.latest = seq;
+    this.log.push([seq, bell]);
     this.on!.bell(seq, bell);
   }
 }
@@ -587,13 +592,13 @@ class FakeRelay {
 describe("runStream — relay", () => {
   /** Sleeps advance the clock by 1 s (not the full interval), so a bell can be
    *  handled long before the next poll is due. `step(n)` runs at the n-th sleep. */
-  function stepper(steps: Record<number, () => void>, stop: AbortController): number[] {
+  function stepper(steps: Record<number, () => void>, stop: AbortController, cap = 200): number[] {
     const sleeps: number[] = [];
     _internals.sleep = async (ms: number) => {
       sleeps.push(ms);
       now += Math.min(ms, 1000);
       steps[sleeps.length]?.();
-      if (sleeps.length > 200) stop.abort();
+      if (sleeps.length > cap) stop.abort();
     };
     return sleeps;
   }
@@ -799,7 +804,7 @@ describe("runStream — relay", () => {
         s.failNext.push(new Error("socket hang up"));
         r.ring(2, { channel: "C00000001", ts: t });
       },
-      6: () => ac.abort(),
+      20: () => ac.abort(),
     }, ac);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(emitted().map((m) => m.text).sort()).toEqual(["@mybot flaky", "@mybot rl"]);
@@ -866,24 +871,28 @@ describe("runStream — relay", () => {
     expect(order.slice(0, firstPollAfterBells).filter((o) => o === "bell").length).toBeLessThanOrEqual(25);
   });
 
-  test("an overflowing backlog is dropped for a catch-up poll", async () => {
+  test("an overflowing backlog pauses the relay; it resumes from storage once drained", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();
     const ac = new AbortController();
+    const parent = ts(-10 * 86400); // replies under an old parent: only bells can find them
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
     stepper({
       1: () => {
-        now += 20_000;
-        const t = (now / 1000 - 10).toFixed(6);
-        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot flood" });
-        for (let i = 1; i <= 2001; i++) r.ring(i, { channel: "C00000001", ts: t });
+        for (let i = 1; i <= 2005; i++) {
+          const t = (T0 + i / 10000).toFixed(6);
+          if (i === 1 || i === 2003) s.post("C00000001", { ts: t, thread_ts: parent, user: "U00000001", text: `@mybot ${i}` });
+          r.ring(i, { channel: "C00000001", ts: t, thread_ts: parent });
+        }
       },
-      3: () => ac.abort(),
-    }, ac);
+      4000: () => ac.abort(),
+    }, ac, 5000);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
-    expect(err.some((l) => l.includes("relay backlog over 2000 — dropped it; polling to catch up"))).toBe(true);
-    expect(emitted()).toHaveLength(1); // found by the catch-up poll
+    expect(err.filter((l) => l.includes("relay backlog over 2000 — pausing the relay until it drains"))).toHaveLength(1);
+    expect(r.afters).toEqual([undefined, 2000]); // came back for the 5 it did not take
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot 1", "@mybot 2003"]);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
-    expect(st.relay?.seq).toBe(2001);
+    expect(st.relay?.seq).toBe(2005);
   });
 
   test("a backlog dropped while a bell is being read loses neither that bell nor the next one", async () => {
@@ -911,39 +920,51 @@ describe("runStream — relay", () => {
         s.post("C00000001", { ts: t1, user: "U00000001", text: "@mybot first" });
         r.ring(1, { channel: "C00000001", ts: t1 });
       },
-      3: () => ac.abort(),
-    }, ac);
+      4000: () => ac.abort(),
+    }, ac, 5000);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(emitted().map((m) => m.text)).toEqual(["@mybot first", "@mybot after"]);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.relay?.seq).toBe(2002);
   });
 
-  test("a rate-limited bell goes back to the scheduler: the due poll is not starved", async () => {
+  test("Retry-After from a bell read pauses bells and polls alike, then both resume", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();
     const ac = new AbortController();
-    let polls = 0;
-    let bellOldest = "";
+    const calls: [string, number][] = [];
+    let limited = true;
+    let t = "";
     const realHistory = s.history.bind(s);
     s.history = async (c, oldest, cursor) => {
-      if (oldest === bellOldest) throw new RateLimitError(600);
-      polls++;
+      calls.push([oldest, now]);
+      if (limited && oldest === (Number(t) - 1).toFixed(6)) {
+        limited = false;
+        throw new RateLimitError(60);
+      }
       return realHistory(c, oldest, cursor);
     };
+    let limitedAt = 0;
     stepper({
       1: () => {
-        const t = (now / 1000).toFixed(6);
-        bellOldest = (now / 1000 - 1).toFixed(6);
+        now += 300_000; // a safety-net poll is due, too
+        t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: ts(-10 * 86400), user: "U00000001", text: "@mybot later" });
+        s.post("C00000001", { ts: ts(-10 * 86400), thread_ts: ts(-10 * 86400), user: "U00000002", text: "old" });
         r.ring(1, { channel: "C00000001", ts: t });
+        r.ring(2, { channel: "C00000001", ts: t });
       },
-      2: () => { now += 300_000; }, // the safety-net poll falls due during the 600 s wait
-      4: () => ac.abort(),
+      2: () => { limitedAt = calls.length; },
+      100: () => ac.abort(),
     }, ac);
-    const before = polls;
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
-    expect(polls).toBeGreaterThan(before + 1); // startup poll + the due one
-    expect(err).toContain("slack stream: rate limited — waiting 600s");
+    expect(err).toContain("slack stream: rate limited — waiting 60s");
+    // Nothing touched the API inside the 60 s after the 429.
+    const hit = calls.findIndex(([o]) => o === (Number(t) - 1).toFixed(6));
+    const after429 = calls.slice(hit + 1);
+    expect(after429.length).toBeGreaterThan(0);
+    expect(after429.every(([, at]) => at >= calls[hit]![1] + 60_000)).toBe(true);
+    expect(limitedAt).toBeGreaterThan(0);
   });
 
   test("a bell from a channel joined seconds after a re-list waits for the next one", async () => {

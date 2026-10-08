@@ -429,6 +429,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     let failures = 0;
     let cycle = 0;
     let lastFullMs = -Infinity;
+    // Slack's Retry-After applies to every caller, not just the request that
+    // got it: while it runs, neither bells nor the poll touch the API.
+    let cooldownUntil = 0;
+    const coolDown = (e: RateLimitError): void => {
+      _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
+      cooldownUntil = Math.max(cooldownUntil, _internals.now() + e.retryAfter * 1000);
+    };
 
     const refresh = async (nowSec: number): Promise<void> => {
       const listed = await client.listChannels();
@@ -470,6 +477,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       queue: [] as Pending[], // in seq order, due now
       retry: [] as Pending[], // waiting for dueMs
       inflight: undefined as Pending | undefined, // being read right now
+      onDrain: undefined as (() => void) | undefined, // a paused relay waiting for room
       handled: 0, // highest seq resolved (emitted, filtered out, or abandoned)
       live: undefined as boolean | undefined, full: false,
     };
@@ -486,10 +494,24 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     const relayLoop = async (r: NonNullable<typeof relay>): Promise<void> => {
       let after = state.relay?.url === r.url ? state.relay.seq : undefined;
       let attempt = 0;
+      const pendingCount = (): number => bus.queue.length + bus.retry.length + (bus.inflight ? 1 : 0);
       while (!inner.signal.aborted) {
+        // Flow control: after an overflow, let the backlog drain before
+        // resubscribing; the relay replays what we did not take from storage.
+        while (pendingCount() >= MAX_QUEUED_BELLS / 2 && !inner.signal.aborted) {
+          await new Promise<void>((res) => {
+            bus.onDrain = res;
+            inner.signal.addEventListener("abort", () => res(), { once: true });
+          });
+        }
+        if (inner.signal.aborted) return;
+        const conn = new AbortController();
+        const stopConn = (): void => conn.abort();
+        inner.signal.addEventListener("abort", stopConn, { once: true });
+        let paused = false;
         let why = "stream closed";
         try {
-          await r.subscribe(after, inner.signal, {
+          await r.subscribe(after, conn.signal, {
             hello: (h) => {
               attempt = 0;
               // Bells after our resume point are gone: poll to catch up.
@@ -499,15 +521,17 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
               setLive(true);
             },
             bell: (seq, bell) => {
-              after = seq;
-              if (bus.queue.length >= MAX_QUEUED_BELLS) {
-                // Bells arrive faster than they can be read: drop the backlog
-                // and let a full poll catch up, rather than grow without bound.
-                _internals.err(`slack stream: relay backlog over ${MAX_QUEUED_BELLS} — dropped it; polling to catch up`);
-                bus.queue = [];
-                bus.handled = Math.max(bus.handled, seq - 1);
-                bus.full = true;
+              if (paused) return;
+              if (pendingCount() >= MAX_QUEUED_BELLS) {
+                // Bells arrive faster than they can be read. Rather than grow
+                // without bound — or drop bells the poll may never find —
+                // hang up and come back for this one and the rest later.
+                _internals.err(`slack stream: relay backlog over ${MAX_QUEUED_BELLS} — pausing the relay until it drains`);
+                paused = true;
+                conn.abort();
+                return;
               }
+              after = seq;
               bus.queue.push({ seq, bell, tries: 0, dueMs: 0 });
               ring();
             },
@@ -520,8 +544,11 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
             return;
           }
           why = errText(e);
+        } finally {
+          inner.signal.removeEventListener("abort", stopConn);
         }
         if (inner.signal.aborted) return;
+        if (paused) continue;
         setLive(false, why);
         attempt++;
         await _internals.sleep(phiDelay(attempt, 2000, 60_000), inner.signal);
@@ -561,7 +588,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         bus.queue = [...due, ...bus.queue].sort((a, b) => a.seq - b.seq);
       }
       let n = 0;
-      while (bus.queue.length && n < MAX_DRAIN && !opts.signal?.aborted) {
+      while (bus.queue.length && n < MAX_DRAIN && !opts.signal?.aborted && _internals.now() >= cooldownUntil) {
         // Off the queue before the await: the subscription may replace the
         // queue meanwhile (backlog overflow), and must not lose this bell.
         const p = bus.queue.shift()!;
@@ -574,8 +601,8 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         } catch (e) {
           if (e instanceof RateLimitError) {
             // Back to the scheduler, so the poll is not starved by the wait.
-            _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
-            p.dueMs = _internals.now() + e.retryAfter * 1000;
+            coolDown(e);
+            p.dueMs = cooldownUntil;
             bus.retry.push(p);
             bus.inflight = undefined;
             break;
@@ -595,14 +622,18 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
           bus.retry.push(p);
         }
       }
+      if (bus.onDrain && bus.queue.length + bus.retry.length < MAX_QUEUED_BELLS / 2) {
+        bus.onDrain();
+        bus.onDrain = undefined;
+      }
       const before = state.relay?.seq;
-      ack(); // also after a dropped backlog, when nothing was handled here
+      ack();
       if (n || state.relay?.seq !== before) saveState(opts.statePath, state);
     };
     const interval = (): number => (bus.live === true && relay ? Math.max(opts.intervalMs, relay.reconcileMs) : opts.intervalMs);
 
     while (!opts.signal?.aborted) {
-      if (_internals.now() >= lastFullMs + interval() || bus.full) {
+      if ((_internals.now() >= lastFullMs + interval() || bus.full) && _internals.now() >= cooldownUntil) {
         bus.full = false;
         const nowSec = _internals.now() / 1000;
         try {
@@ -617,8 +648,8 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
                 break;
               } catch (e) {
                 if (e instanceof RateLimitError) {
-                  _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
-                  await _internals.sleep(e.retryAfter * 1000, opts.signal);
+                  coolDown(e);
+                  await _internals.sleep(cooldownUntil - _internals.now(), opts.signal);
                   if (opts.signal?.aborted) break;
                   continue;
                 }
@@ -666,13 +697,17 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       // Sleep until the next full poll or bell retry, or until a bell (or a
       // relay up/down) wakes us.
       if (opts.signal?.aborted) break;
-      if (!bus.queue.length && !bus.full) {
-        const until = Math.min(lastFullMs + interval(), ...bus.retry.map((p) => p.dueMs));
+      const nowMs = _internals.now();
+      const until = Math.max(
+        cooldownUntil,
+        bus.queue.length || bus.full ? nowMs : Math.min(lastFullMs + interval(), ...bus.retry.map((p) => p.dueMs)),
+      );
+      if (until > nowMs) {
         wake = new AbortController();
         const w = wake;
         const stop = (): void => w.abort();
         opts.signal?.addEventListener("abort", stop, { once: true });
-        await _internals.sleep(Math.max(0, until - _internals.now()), w.signal);
+        await _internals.sleep(until - nowMs, w.signal);
         opts.signal?.removeEventListener("abort", stop);
       }
       await drainBells();
