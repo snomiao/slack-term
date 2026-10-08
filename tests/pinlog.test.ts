@@ -11,6 +11,7 @@ import {
   LockBusyError,
   PINLOG_MARKER,
   acquireLock,
+  breakStaleLock,
   composeHead,
   formatJst,
   headUpdatedAt,
@@ -153,6 +154,29 @@ describe("lock", () => {
     rmSync(p);
   });
 
+  // Codex final review: two breakers judge the same dead lock; the faster one
+  // takes a fresh lock; the slower one's unlink must not delete it.
+  test("a late breaker leaves a NEW owner's lock alone", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k6.lock");
+    const dead = "pid=2147483646 since=x nonce=dead\n";
+    writeFileSync(p, `pid=${process.pid} since=y nonce=live\n`); // the faster breaker's new lock
+    breakStaleLock(p, dead);
+    expect(readFileSync(p, "utf8")).toContain("nonce=live");
+    rmSync(p);
+  });
+
+  test("while another breaker holds the break mutex, acquire reports busy and touches nothing", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k7.lock");
+    writeFileSync(p, "pid=2147483646 since=x nonce=dead\n");
+    writeFileSync(`${p}.break`, "");
+    expect(() => acquireLock("k7", { dir: ldir })).toThrow(LockBusyError);
+    expect(readFileSync(p, "utf8")).toContain("nonce=dead");
+    rmSync(`${p}.break`);
+    acquireLock("k7", { dir: ldir })(); // mutex gone → the dead lock is broken
+  });
+
   test("an unparsable lock is broken only after staleMs", () => {
     mkdirSync(ldir, { recursive: true });
     const p = join(ldir, "k5.lock");
@@ -186,6 +210,17 @@ describe("registry", () => {
     expect(loadRegistry(p).x!.channel).toBe("C00000001");
     expect(readdirSync(join(dir, "atomic")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
     expect(existsSync(join(dir, "atomic", "locks", "registry.lock"))).toBe(false);
+  });
+
+  test("names that are Object.prototype keys are free, not 'taken'", () => {
+    const p = join(dir, "proto", "pinlogs.json");
+    for (const n of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(validPinlogName(n)).toBe(true);
+      expect(loadRegistry(p)[n]).toBeUndefined();
+    }
+    saveRegistryEntry("constructor", { channel: "C00000001", ts: "1700000000.000100", createdAt: "a" }, p);
+    expect(loadRegistry(p).constructor).toEqual({ channel: "C00000001", ts: "1700000000.000100", createdAt: "a" });
+    expect(loadRegistry(p).toString).toBeUndefined();
   });
 
   // Fail-vs-absent: "no such name" for a file we could not read would send the

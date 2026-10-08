@@ -229,6 +229,17 @@ describe("pinlog create", { timeout: 60_000 }, () => {
     }
   });
 
+  test("--name constructor (an Object.prototype key) works like any other name", async () => {
+    await withMock({}, async (m) => {
+      const { r } = await confirmed(m, ["pinlog", "create", CH, "x", "--name", "constructor"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Registered name: constructor");
+      const u = await run(m, ["pinlog", "update", "toString", "y", "--log", "y"]);
+      expect(u.exitCode).toBe(2);
+      expect(u.stderr).toContain("is not a pinlog");
+    });
+  });
+
   test("a channel:ts target is refused — create makes a NEW message", async () => {
     await withMock({}, async (m) => {
       const r = await run(m, ["pinlog", "create", `#gtm:${HEAD_TS}`, "x"]);

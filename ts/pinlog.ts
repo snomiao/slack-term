@@ -93,7 +93,7 @@ export function validPinlogName(name: string): boolean {
  *  exists in a file we could not parse would send the caller off to create a
  *  duplicate board. */
 export function loadRegistry(path = registryPath()): PinlogRegistry {
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return Object.create(null) as PinlogRegistry;
   let raw: unknown;
   try {
     raw = JSON.parse(readFileSync(path, "utf8"));
@@ -103,7 +103,8 @@ export function loadRegistry(path = registryPath()): PinlogRegistry {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`pinlog registry ${path} is not a JSON object`);
   }
-  return raw as PinlogRegistry;
+  // Null prototype: a name like `constructor` must not find Object.prototype's.
+  return Object.assign(Object.create(null) as PinlogRegistry, raw);
 }
 
 /** Add `name` → `entry`. Locked read-modify-write plus an atomic rename, so two
@@ -151,6 +152,35 @@ function holderAlive(content: string): boolean {
     return true;
   } catch (e: unknown) {
     return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, not ours
+  }
+}
+
+/** Remove `path` only if it still holds `deadContent`. Read-compare-unlink is not
+ *  atomic, so two breakers could both judge the same dead lock, and the slower
+ *  one's unlink would then delete the lock the faster one just took. Every
+ *  non-owner unlink therefore happens under a second O_EXCL file (`.break`):
+ *  the re-read and the unlink are serialised, and a breaker that comes second
+ *  re-reads the NEW owner's content and leaves it alone. (Owners unlink their
+ *  own lock without it: nobody breaks a live owner's lock.) */
+export function breakStaleLock(path: string, deadContent: string): void {
+  const mutex = `${path}.break`;
+  let fd: number;
+  try {
+    fd = openSync(mutex, "wx");
+  } catch (e: unknown) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    // Another breaker is at it. A mutex left by a breaker that died mid-break
+    // (a window of microseconds) is cleared after 10 s.
+    try {
+      if (Date.now() - statSync(mutex).mtimeMs > 10_000) unlinkSync(mutex);
+    } catch { /* gone */ }
+    return;
+  }
+  try {
+    if (readFileSync(path, "utf8") === deadContent) unlinkSync(path);
+  } catch { /* already gone */ } finally {
+    closeSync(fd);
+    try { unlinkSync(mutex); } catch { /* gone */ }
   }
 }
 
@@ -204,10 +234,7 @@ export function acquireLock(key: string, opts: { dir?: string; staleMs?: number 
       const parsable = /^pid=\d+/.test(existing);
       const dead = parsable ? !holderAlive(existing) : age > staleMs;
       if (dead) {
-        try {
-          // Break it only if it is still the lock we judged dead.
-          if (readFileSync(path, "utf8") === existing) unlinkSync(path);
-        } catch { /* raced with another breaker */ }
+        breakStaleLock(path, existing);
         continue;
       }
       throw new LockBusyError(existing.trim().replace(/ nonce=\S+/, "") || "another process");
