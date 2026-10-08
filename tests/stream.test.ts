@@ -1286,6 +1286,35 @@ describe("runStream — relay", () => {
     expect(Math.max(...gaps)).toBeLessThanOrEqual(360_000);
   });
 
+  test("scans slower than the interval still leave bells a turn between them", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const order: string[] = [];
+    const realHistory = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => {
+      order.push("poll");
+      now += 301_000; // every scan outlasts the 300 s interval
+      return realHistory(c, oldest, cursor);
+    };
+    const realReplies = s.replies.bind(s);
+    s.replies = async (c, tt, oldest, cursor) => { order.push("bell"); return realReplies(c, tt, oldest, cursor); };
+    const t = (T0 + 1).toFixed(6);
+    s.post("C00000001", { ts: t, user: "U00000001", text: "chat" });
+    for (let i = 1; i <= 60; i++) r.log.push([i, { channel: "C00000001", ts: t }]);
+    r.latest = 60;
+    _internals.sleep = async (ms: number) => { now += ms; };
+    const realNow = _internals.now;
+    let calls = 0;
+    _internals.now = () => { if (++calls > 5000) ac.abort(); return realNow(); };
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(order.filter((o) => o === "bell")).toHaveLength(60);
+    // Never two scans in a row while bells were waiting.
+    const firstBell = order.indexOf("bell");
+    expect(order.slice(0, order.lastIndexOf("bell")).join(",")).not.toContain("poll,poll");
+    expect(firstBell).toBeGreaterThan(0);
+  });
+
   test("--once ignores the relay", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

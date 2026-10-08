@@ -668,9 +668,18 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       if (n || state.relay?.seq !== before) saveState(opts.statePath, state);
     };
     const interval = (): number => (bus.live === true && relay ? Math.max(opts.intervalMs, relay.reconcileMs) : opts.intervalMs);
+    const pollDue = (): boolean => {
+      const t = _internals.now();
+      return (t >= lastFullMs + interval() || bus.full) && t >= cooldownUntil;
+    };
+    // Polls and bells take turns: a waiting bell gets one slice between two
+    // polls (however long a scan takes), and an overdue poll goes before a
+    // second slice (however many bells are waiting).
+    const bellsWaiting = (): boolean => bus.queue.length > 0 || bus.retry.some((p) => p.dueMs <= _internals.now());
+    let bellsOwed = false;
 
     while (!opts.signal?.aborted) {
-      if ((_internals.now() >= lastFullMs + interval() || bus.full) && _internals.now() >= cooldownUntil) {
+      if (pollDue() && !(bellsOwed && bellsWaiting())) {
         bus.full = false;
         const nowSec = _internals.now() / 1000;
         try {
@@ -730,6 +739,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
           return ctx.matches > 0 ? 0 : 2;
         }
         lastFullMs = nowSec * 1000;
+        bellsOwed = true;
       }
 
       // Sleep until the next full poll or bell retry, or until a bell (or a
@@ -748,11 +758,9 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         await _internals.sleep(until - nowMs, w.signal);
         opts.signal?.removeEventListener("abort", stop);
       }
-      // An overdue poll goes before more bells: a run of rate-limited bell
-      // reads must not keep pushing the safety net back.
-      const t = _internals.now();
-      if ((t >= lastFullMs + interval() || bus.full) && t >= cooldownUntil) continue;
+      if (pollDue() && !(bellsOwed && bellsWaiting())) continue;
       await drainBells();
+      bellsOwed = false;
     }
     return 0;
   } catch (e) {
