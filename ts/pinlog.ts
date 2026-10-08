@@ -142,10 +142,29 @@ export function lockDir(): string {
   return join(process.env.HOME || homedir(), ".config", "slack-cli", "locks");
 }
 
-/** Take an exclusive lock (O_EXCL file) or throw LockBusyError. A lock older
- *  than `staleMs` is from a process that died holding it and is broken. The
- *  returned release is idempotent and also runs on process exit, because the
- *  confirm gate leaves through `process.exit`.
+/** Is the process that wrote a lock still running? Unknown → assume yes. */
+function holderAlive(content: string): boolean {
+  const m = content.match(/^pid=(\d+)/);
+  if (!m) return true;
+  try {
+    process.kill(Number(m[1]), 0);
+    return true;
+  } catch (e: unknown) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, not ours
+  }
+}
+
+/** Take an exclusive lock (O_EXCL file) or throw LockBusyError.
+ *
+ *  A lock is broken only when its holder is provably DEAD (no such pid) — age
+ *  alone is not enough: a slow but live holder whose lock is broken would then
+ *  run concurrently with the breaker, which is the race this exists to stop. A
+ *  lock whose content cannot be parsed is broken after `staleMs`.
+ *
+ *  Each lock carries a unique nonce, and release unlinks only while the file
+ *  still carries OURS — so a holder whose lock was (wrongly) broken can never
+ *  delete its successor's lock on the way out. Release is idempotent and also
+ *  runs on process exit, because the confirm gate leaves via `process.exit`.
  *
  *  Slack has no compare-and-swap on chat.update, so this is the only thing that
  *  keeps two confirmed updates from interleaving fetch → edit → log. It covers
@@ -156,34 +175,42 @@ export function acquireLock(key: string, opts: { dir?: string; staleMs?: number 
   const staleMs = opts.staleMs ?? 120_000;
   mkdirSync(dir, { recursive: true });
   const path = join(dir, `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.lock`);
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const content = `pid=${process.pid} since=${new Date().toISOString()} nonce=${Math.random().toString(36).slice(2)}${Date.now()}\n`;
+  for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const fd = openSync(path, "wx");
-      writeFileSync(fd, `pid=${process.pid} since=${new Date().toISOString()}\n`);
+      writeFileSync(fd, content);
       closeSync(fd);
       let held = true;
       const release = (): void => {
         if (!held) return;
         held = false;
-        try { unlinkSync(path); } catch { /* already gone */ }
+        try {
+          if (readFileSync(path, "utf8") === content) unlinkSync(path);
+        } catch { /* already gone */ }
       };
       process.once("exit", release);
       return release;
     } catch (e: unknown) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      let age = 0;
-      let holder = "another process";
+      let existing: string;
+      let age: number;
       try {
+        existing = readFileSync(path, "utf8");
         age = Date.now() - statSync(path).mtimeMs;
-        holder = readFileSync(path, "utf8").trim() || holder;
       } catch {
-        continue; // vanished between open and stat — just retry
+        continue; // vanished between open and read — just retry
       }
-      if (age > staleMs && attempt === 0) {
-        try { unlinkSync(path); } catch { /* raced with another breaker */ }
+      const parsable = /^pid=\d+/.test(existing);
+      const dead = parsable ? !holderAlive(existing) : age > staleMs;
+      if (dead) {
+        try {
+          // Break it only if it is still the lock we judged dead.
+          if (readFileSync(path, "utf8") === existing) unlinkSync(path);
+        } catch { /* raced with another breaker */ }
         continue;
       }
-      throw new LockBusyError(holder);
+      throw new LockBusyError(existing.trim().replace(/ nonce=\S+/, "") || "another process");
     }
   }
   throw new LockBusyError("another process");

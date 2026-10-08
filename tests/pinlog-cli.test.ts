@@ -5,7 +5,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -192,6 +192,25 @@ describe("pinlog create", { timeout: 60_000 }, () => {
     });
   });
 
+  // Codex round 2: the name check ran before the post and the registry lock
+  // only after it, so two concurrent creates could both post a board.
+  test("a concurrent create with the same --name is refused before any write", async () => {
+    const ldir = join(tmpHome, ".config", "slack-cli", "locks");
+    mkdirSync(ldir, { recursive: true });
+    const lock = join(ldir, "pinlog-name-racing.lock");
+    writeFileSync(lock, `pid=${process.pid} since=now nonce=t\n`);
+    try {
+      await withMock({}, async (m) => {
+        const r = await run(m, ["pinlog", "create", CH, "x", "--name", "racing", "--code=0000"]);
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr).toContain("another `pinlog create --name racing` is running");
+        expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+      });
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
   test("a channel:ts target is refused — create makes a NEW message", async () => {
     await withMock({}, async (m) => {
       const r = await run(m, ["pinlog", "create", `#gtm:${HEAD_TS}`, "x"]);
@@ -297,22 +316,44 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
+  test("the printed retry keeps --allow-url-adjacent (else it fails the URL guard)", async () => {
+    const log = "詳細 https://example.com/ページ";
+    let retry = "";
+    await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
+      const { r } = await confirmed(m, ["pinlog", "update", ID, "s", "--log", log, "--allow-url-adjacent"]);
+      // eslint-disable-next-line no-control-regex
+      retry = r.stderr.split("\n").find((l) => l.includes("--log-only"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    });
+    expect(retry).toContain("--allow-url-adjacent");
+    const argv = (await new Promise<string[]>((resolve) => {
+      const c = spawn("bash", ["-c", `printf '%s\\0' ${retry.replace(/^slack /, "")}`]);
+      let out = "";
+      c.stdout.on("data", (d: Buffer) => { out += String(d); });
+      c.on("close", () => resolve(out.split("\0").filter(Boolean)));
+    }));
+    await withMock({}, async (m) => {
+      const r = await run(m, argv);
+      expect(r.exitCode).toBe(0);
+      expect(String(body(m, "chat.postMessage").text)).toBe(log);
+    });
+  });
+
   test("a concurrent update of the same board is refused before any write", async () => {
     const ldir = join(tmpHome, ".config", "slack-cli", "locks");
     mkdirSync(ldir, { recursive: true });
     const lock = join(ldir, `pinlog-${CH}-${HEAD_TS}.lock`);
-    writeFileSync(lock, "pid=99999 since=now\n");
+    // A LIVE holder (this test process).
+    writeFileSync(lock, `pid=${process.pid} since=now nonce=t\n`);
     try {
       await withMock({}, async (m) => {
         const r = await run(m, [...args, "--code=0000"]);
         expect(r.exitCode).toBe(1);
         expect(r.stderr).toContain("another update of");
-        expect(r.stderr).toContain("pid=99999");
+        expect(r.stderr).toContain(`pid=${process.pid}`);
         expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
       });
-      // A lock left by a dead process is broken, not obeyed forever.
-      const old = new Date(Date.now() - 10 * 60_000);
-      utimesSync(lock, old, old);
+      // A lock left by a DEAD process is broken, not obeyed forever.
+      writeFileSync(lock, "pid=2147483646 since=then nonce=d\n");
       await withMock({}, async (m) => {
         const { r } = await confirmed(m, args);
         expect(r.exitCode).toBe(0);

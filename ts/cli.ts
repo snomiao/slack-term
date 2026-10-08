@@ -1465,7 +1465,16 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
     }
     // One board per topic: a second `create --name x` is almost always a
     // caller that lost track of the first, and two pinned boards that disagree
-    // are worse than none.
+    // are worse than none. The name lock is held from this check through the
+    // registration (released on exit), so two concurrent creates cannot both
+    // see the name free and both post.
+    try {
+      acquireLock(`pinlog-name-${args.name}`);
+    } catch (e: unknown) {
+      if (!(e instanceof LockBusyError)) throw e;
+      console.error(`Error: another \`pinlog create --name ${args.name}\` is running (${e.holder}).`);
+      process.exit(1);
+    }
     const existing = loadRegistry()[args.name];
     if (existing) {
       console.error(
@@ -1614,7 +1623,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   // The retry command for a failed log post is printed with its code already
   // in it, so the hash for --log-only must be computable here without a gate.
   const logOnlyCode = safetyCode("pinlog-log", channel, ts, args.log, self?.userId ?? "");
-  const logOnlyRetry = `slack pinlog update ${id} --log-only --log ${shQuote(escapeArg(args.log))}${bot} --code=${logOnlyCode}`;
+  const logOnlyRetry = `slack pinlog update ${id} --log-only --log ${shQuote(escapeArg(args.log))}${args.allowUrlAdjacent ? " --allow-url-adjacent" : ""}${bot} --code=${logOnlyCode}`;
 
   const quiet = pinlogQuietWarning(now, "the log reply notified everyone following this thread — hold non-urgent updates until 08:00");
   if (args.logOnly) {

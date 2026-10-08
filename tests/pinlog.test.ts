@@ -3,7 +3,7 @@
 // name registry. The commands themselves are covered in pinlog-cli.test.ts.
 
 import { describe, test, expect, afterAll } from "./harness.ts";
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { escapeArg, unescapeArg } from "../ts/escapes.ts";
@@ -124,14 +124,43 @@ describe("lock", () => {
     again();
     again(); // idempotent
   });
-  test("a stale lock (dead holder) is broken", () => {
-    const release = acquireLock("k2", { dir: ldir });
-    const p = join(ldir, "k2.lock");
+  test("a lock whose holder is DEAD is broken", () => {
+    mkdirSync(ldir, { recursive: true });
+    writeFileSync(join(ldir, "k2.lock"), "pid=2147483646 since=x nonce=n\n");
+    const mine = acquireLock("k2", { dir: ldir });
+    mine();
+  });
+
+  // Codex round 2: breaking by AGE let a slow but live holder run alongside
+  // the breaker. A live holder is never broken, however old the file.
+  test("a lock whose holder is ALIVE is not broken, however old", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k3.lock");
+    writeFileSync(p, `pid=${process.pid} since=x nonce=n\n`);
+    const old = new Date(Date.now() - 60 * 60_000);
+    utimesSync(p, old, old);
+    expect(() => acquireLock("k3", { dir: ldir, staleMs: 1 })).toThrow(LockBusyError);
+    rmSync(p);
+  });
+
+  test("release never deletes a SUCCESSOR's lock", () => {
+    const a = acquireLock("k4", { dir: ldir });
+    const p = join(ldir, "k4.lock");
+    // Someone (wrongly) broke A's lock and B took it.
+    writeFileSync(p, `pid=${process.pid} since=y nonce=b\n`);
+    a();
+    expect(readFileSync(p, "utf8")).toContain("nonce=b");
+    rmSync(p);
+  });
+
+  test("an unparsable lock is broken only after staleMs", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k5.lock");
+    writeFileSync(p, "garbage");
+    expect(() => acquireLock("k5", { dir: ldir, staleMs: 60_000 })).toThrow(LockBusyError);
     const old = new Date(Date.now() - 10 * 60_000);
     utimesSync(p, old, old);
-    const mine = acquireLock("k2", { dir: ldir, staleMs: 60_000 });
-    mine();
-    release(); // the original holder's release must not throw
+    acquireLock("k5", { dir: ldir, staleMs: 60_000 })();
   });
 });
 
