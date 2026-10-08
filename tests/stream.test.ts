@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   _internals, acquireLock, humanLine, loadState, matchText, permalink, phiDelay, runStream, webClient,
-  type ChannelRef, type Page, type StreamClient, type StreamOpts, type StreamMatch,
+  type ChannelRef, type Page, type StreamClient, type StreamOpts, type StreamMatch, type StreamState,
 } from "../ts/stream.ts";
+import { RelayAuthError, type Doorbell, type RelayHandlers, type Subscribe } from "../ts/relay.ts";
 import { RateLimitError, type Json } from "../ts/slack.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 
@@ -549,5 +550,266 @@ describe("webClient (against the mock Slack API)", () => {
     expect((await c.replies("C00000001", "2.000000", "1.000000")).messages).toHaveLength(2);
     expect((await c.replies("C00000001", "2.000000", "1.000000", "c2")).messages).toHaveLength(1);
     expect(await c.userName("U00000001")).toBe("Alice");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Relay: doorbells from the Cloudflare Worker (worker/).
+
+/** A relay the test drives: connect() records the resume point and says
+ *  hello; ring() delivers a bell; the subscription lives until aborted. */
+class FakeRelay {
+  afters: (number | undefined)[] = [];
+  on: RelayHandlers | undefined;
+  /** Reject the next connections with these errors. */
+  fail: unknown[] = [];
+  gap = false;
+  latest = 0;
+  subscribe: Subscribe = (after, signal, on) => {
+    this.afters.push(after);
+    const e = this.fail.shift();
+    if (e !== undefined) return Promise.reject(e);
+    this.on = on;
+    on.hello({ seq: this.gap ? this.latest : (after ?? this.latest), gap: this.gap, retention_sec: 3600 });
+    return new Promise((res) => {
+      this.end = res;
+      signal.addEventListener("abort", () => res(), { once: true });
+    });
+  };
+  /** The server closes the stream. */
+  end: () => void = () => {};
+  ring(seq: number, bell: Doorbell): void {
+    this.latest = seq;
+    this.on!.bell(seq, bell);
+  }
+}
+
+describe("runStream — relay", () => {
+  /** Sleeps advance the clock by 1 s (not the full interval), so a bell can be
+   *  handled long before the next poll is due. `step(n)` runs at the n-th sleep. */
+  function stepper(steps: Record<number, () => void>, stop: AbortController): number[] {
+    const sleeps: number[] = [];
+    _internals.sleep = async (ms: number) => {
+      sleeps.push(ms);
+      now += Math.min(ms, 1000);
+      steps[sleeps.length]?.();
+      if (sleeps.length > 50) stop.abort();
+    };
+    return sleeps;
+  }
+  const relayOpts = (r: FakeRelay, ac: AbortController, extra: Partial<StreamOpts> = {}): StreamOpts =>
+    opts({ once: false, signal: ac.signal, relay: { url: "https://relay.example", subscribe: r.subscribe, reconcileMs: 300_000 }, ...extra });
+  const historyCalls = (s: FakeSlack): number => s.calls.filter((c) => c.startsWith("history")).length;
+
+  test("a bell emits the message at once; the next poll does not repeat it", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let pollsAtBell = 0;
+    const sleeps = stepper({
+      1: () => {
+        s.post("C00000001", { ts: (now / 1000 - 0.5).toFixed(6), user: "U00000001", text: "hi @mybot" });
+        pollsAtBell = historyCalls(s);
+        r.ring(1, { channel: "C00000001", ts: (now / 1000 - 0.5).toFixed(6) });
+      },
+      2: () => { now += 300_000; }, // jump to the safety-net poll
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted()).toHaveLength(1);
+    expect(emitted()[0]!.text).toBe("hi @mybot");
+    // Relay up: the poll waits reconcileMs, not --interval.
+    expect(sleeps[0]).toBe(300_000);
+    // The bell cost exactly one history read; the safety-net poll then ran and stayed quiet.
+    expect(historyCalls(s)).toBeGreaterThan(pollsAtBell + 1);
+    expect(err.some((l) => l.includes("relay connected — polling every 300s"))).toBe(true);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay).toEqual({ url: "https://relay.example", seq: 1 });
+  });
+
+  test("a reply bell reads the thread, even one whose parent is outside the window", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const parent = ts(-10 * 86400);
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: parent, user: "U00000001", text: "<@U00000099> ping" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: parent });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => [m.type, m.thread_ts])).toEqual([["reply", parent]]);
+  });
+
+  test("bells for other channels, own posts and non-matches print nothing", async () => {
+    const s = new FakeSlack();
+    s.channels.push({ id: "C00000002", name: "random", isIm: false });
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (n: number): string => (now / 1000 - n).toFixed(6);
+        s.post("C00000002", { ts: t(1), user: "U00000001", text: "@mybot elsewhere" });
+        s.post("C00000001", { ts: t(2), user: SELF, text: "@mybot self" });
+        s.post("C00000001", { ts: t(3), user: "U00000001", text: "nothing" });
+        r.ring(1, { channel: "C00000002", ts: t(1) });
+        r.ring(2, { channel: "C00000001", ts: t(2) });
+        r.ring(3, { channel: "C00000001", ts: t(3) });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { channels: ["C00000001"] }))).toBe(0);
+    expect(out).toEqual([]);
+  });
+
+  test("a bell for a message not visible yet is retried once, then left to the poll", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let t = "";
+    const sleeps = stepper({
+      1: () => {
+        t = (now / 1000).toFixed(6);
+        r.ring(1, { channel: "C00000001", ts: t });
+      },
+      2: () => s.post("C00000001", { ts: t, user: "U00000001", text: "late @mybot" }), // during the 1.5 s retry wait
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(sleeps[1]).toBe(1500);
+    expect(emitted()).toHaveLength(1);
+  });
+
+  test("a bell from an unknown channel re-lists channels and polls", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        now += 60_000; // re-listing is throttled to once a minute
+        s.channels.push({ id: "C00000003", name: "new", isIm: false });
+        const t = (now / 1000 - 10).toFixed(6);
+        s.post("C00000003", { ts: t, user: "U00000001", text: "@mybot welcome" });
+        r.ring(1, { channel: "C00000003", ts: t });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(s.calls.filter((c) => c === "list")).toHaveLength(2);
+    expect(emitted().map((m) => m.channel.id)).toEqual(["C00000003"]);
+  });
+
+  test("relay down: --interval polling, one stderr line, then it reconnects", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    r.fail.push(new Error("relay: HTTP 502"));
+    const ac = new AbortController();
+    const sleeps = stepper({ 6: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(err.filter((l) => l.includes("relay unavailable (relay: HTTP 502) — polling every 30s"))).toHaveLength(1);
+    expect(sleeps).toContain(2000); // the relay's own reconnect backoff
+    expect(err.some((l) => l.includes("relay connected"))).toBe(true);
+    expect(r.afters).toEqual([undefined, undefined]); // never connected: still "from now"
+  });
+
+  test("a restart resumes the relay from the saved seq; on a gap it takes the relay's seq", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    let ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot one" });
+        r.ring(7, { channel: "C00000001", ts: t });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    await runStream(s, relayOpts(r, ac));
+    expect(emitted()).toHaveLength(1);
+
+    ac = new AbortController();
+    r.gap = true;
+    r.latest = 9;
+    const before = historyCalls(s);
+    stepper({ 2: () => ac.abort() }, ac);
+    await runStream(s, relayOpts(r, ac));
+    expect(r.afters.at(-1)).toBe(7);
+    // The startup poll is the catch-up for bells lost in the gap.
+    expect(historyCalls(s)).toBeGreaterThan(before);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay?.seq).toBe(9);
+    expect(emitted()).toHaveLength(1);
+  });
+
+  test("a dropped stream reconnects from the last seq; a gap there forces a catch-up poll", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let polls = 0;
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot one" });
+        r.ring(3, { channel: "C00000001", ts: t });
+      },
+      2: () => {
+        r.gap = true;
+        r.latest = 8;
+        polls = historyCalls(s);
+        r.end();
+      },
+      6: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(r.afters).toEqual([undefined, 3]);
+    expect(historyCalls(s)).toBeGreaterThan(polls); // caught up long before reconcileMs
+    expect(err.filter((l) => l.includes("relay unavailable (stream closed)"))).toHaveLength(1);
+  });
+
+  test("a rejected token disables the relay for the run; polling carries on", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    r.fail.push(new RelayAuthError("relay rejected the token (401)"));
+    const ac = new AbortController();
+    const sleeps = stepper({ 3: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(r.afters).toHaveLength(1);
+    expect(sleeps[0]).toBe(30_000);
+    expect(err.some((l) => l.includes("relay disabled for this run"))).toBe(true);
+  });
+
+  test("a failing bell read is left to the poll; a rate limit waits and retries it", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let t = "";
+    stepper({
+      1: () => {
+        t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000001", text: "@mybot rl" });
+        s.failNext.push(new RateLimitError(3));
+        r.ring(1, { channel: "C00000001", ts: t });
+      },
+      2: () => {
+        s.failNext.push(new Error("socket hang up"));
+        r.ring(2, { channel: "C00000001", ts: t });
+      },
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted()).toHaveLength(1);
+    expect(err).toContain("slack stream: rate limited — waiting 3s");
+    expect(err.some((l) => l.includes("relay bell for C00000001 failed (socket hang up)"))).toBe(true);
+  });
+
+  test("--once ignores the relay", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    expect(await runStream(s, opts({ relay: { url: "https://relay.example", subscribe: r.subscribe, reconcileMs: 1 } }))).toBe(2);
+    expect(r.afters).toHaveLength(0);
   });
 });

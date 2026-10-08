@@ -14,6 +14,7 @@ import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { runStream, webClient } from "./stream.ts";
+import { relaySubscriber } from "./relay.ts";
 import { agentCommands } from "./agent.ts";
 
 import {
@@ -5751,9 +5752,12 @@ async function main(): Promise<void> {
         .option("interval", { type: "string", default: "45s", describe: "Poll interval (e.g. 30s, 2m)" })
         .option("thread-window", { type: "string", default: "3d", describe: "Watch replies in threads whose parent is at most this old" })
         .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
-        .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" }),
+        .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
+        .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (worker/) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
+        .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" }),
       async (argv) => {
         let re: RegExp;
+        let reconcileMs: number;
         let intervalMs: number;
         let windowSec: number;
         let sinceSec: number | undefined;
@@ -5762,6 +5766,7 @@ async function main(): Promise<void> {
           intervalMs = parseDuration(argv.interval) * 1000;
           windowSec = parseDuration(argv["thread-window"]);
           sinceSec = argv.since !== undefined ? parseDuration(argv.since) : undefined;
+          reconcileMs = parseDuration(argv.reconcile) * 1000;
         } catch (e) {
           console.error(`slack stream: ${e instanceof Error ? e.message : String(e)}`);
           process.exit(1);
@@ -5809,6 +5814,14 @@ async function main(): Promise<void> {
         const stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
         const statePath = argv.state ?? join(stateHome, "slack-term", "stream", `${key}.json`);
         console.error(`slack stream: as ${asUser ? "user" : "bot"} @${me.user} (${me.userId}); state ${statePath}`);
+        // The relay rings for what the Slack app's bot can see, so it only
+        // stands in for polling when streaming as that bot.
+        const relayUrl = process.env.SLACK_RELAY_URL;
+        const relayToken = process.env.SLACK_RELAY_TOKEN;
+        const relay = argv.relay && !asUser && !argv.once && relayUrl && relayToken
+          ? { url: relayUrl, subscribe: relaySubscriber(relayUrl, relayToken), reconcileMs }
+          : undefined;
+        if (argv.relay && asUser && relayUrl) console.error("slack stream: relay not used with --as-user (it only sees the bot's channels)");
         const ac = new AbortController();
         process.on("SIGINT", () => ac.abort());
         process.on("SIGTERM", () => ac.abort());
@@ -5826,6 +5839,7 @@ async function main(): Promise<void> {
           teamUrl: me.url,
           identity: me.userId,
           signal: ac.signal,
+          ...(relay ? { relay } : {}),
         });
         process.exit(code);
       },

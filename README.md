@@ -354,8 +354,18 @@ slack stream --grep '<@U00000001>' --since 2h --json          # replay the last 
   shows new posts and which threads gained replies, and only those threads are read.
   A message is held back until it is 5 s old, so a cursor never skips one Slack has
   not made visible yet. Rate limits honour `Retry-After`.
-- **Not covered:** edits (a message edited *into* matching is not re-emitted), and
-  replies in a thread whose parent is older than `--thread-window`.
+- **Real time, optionally: the relay.** Set `SLACK_RELAY_URL` and `SLACK_RELAY_TOKEN`
+  to a deployed [`worker/`](worker/) (a Cloudflare Worker on Slack's Events API) and
+  the stream hears a *doorbell* — `{channel, ts, thread_ts}`, no text — within a
+  second of each post, then reads that one message through the Web API with its own
+  token and runs it through the same `--grep`. While the relay is connected the poll
+  still runs, every `--reconcile` (default `5m`), as the safety net; when the relay
+  is down it goes back to `--interval`. Both paths share one record of what was
+  printed, so a message is never printed twice. The relay is used only when
+  streaming as the bot (it rings for the bot's channels) and never with `--once`;
+  `--no-relay` turns it off.
+- **Not covered:** edits (a message edited *into* matching is not re-emitted), and —
+  without the relay — replies in a thread whose parent is older than `--thread-window`.
 - **Failures are loud and distinguishable.** A network/API error retries the cycle
   with φ backoff (`2s·1.618ⁿ`, capped at 5 min), one stderr line per attempt; after
   12 consecutive failures (≈16 min) it exits. A channel it cannot read is skipped with
