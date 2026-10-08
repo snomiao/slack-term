@@ -87,6 +87,8 @@ type Client = {
 const MAX_PENDING = 64;
 /** Backlog rows read and written per step of a replay. */
 const REPLAY_BATCH = 100;
+/** A replay write the reader has not taken by then frees its slot. */
+const REPLAY_WRITE_MS = 30_000;
 const enc = new TextEncoder();
 
 export class Relay extends DurableObject<Env> {
@@ -190,10 +192,16 @@ export class Relay extends DurableObject<Env> {
       }
       if (!rows.length) c.replaying = false;
       if (chunk) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
         try {
-          await c.writer.write(enc.encode(chunk));
+          await Promise.race([
+            c.writer.write(enc.encode(chunk)),
+            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("stalled")), REPLAY_WRITE_MS); }),
+          ]);
         } catch {
           return this.drop(c);
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
         }
       }
       if (!c.replaying || !this.clients.has(c)) return;

@@ -1101,6 +1101,24 @@ describe("runStream — relay", () => {
     }
   });
 
+  test("--since forgets the saved relay position, so an interrupted replay resumes from 0", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    r.fail.push(new Error("relay: HTTP 502")); // the --since run never connects
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      version: 1, identity: SELF, channels: {}, relay: { url: "https://relay.example", seq: 100, epoch: "e1" },
+    }));
+    let ac = new AbortController();
+    stepper({ 1: () => ac.abort() }, ac);
+    await runStream(s, relayOpts(r, ac, { sinceSec: 300 }));
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay).toBeUndefined();
+    ac = new AbortController();
+    stepper({ 2: () => ac.abort() }, ac);
+    await runStream(s, relayOpts(r, ac));
+    expect(r.afters).toEqual([0, 0]);
+  });
+
   test("bells from before --since (or before the first run) are not replayed", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

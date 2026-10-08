@@ -482,6 +482,9 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       // and the record of what was printed, so it is printed again.
       state.channels = {};
       delete state.seen;
+      // ...and the relay position, so the replay of what the relay keeps
+      // survives an interruption (a restart then resumes it from 0, too).
+      delete state.relay;
     }
 
     // --- relay: a background subscription that only queues bells; the loop
