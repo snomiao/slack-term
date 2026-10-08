@@ -129,8 +129,11 @@ export class Relay extends DurableObject<Env> {
     let from = latest;
     let gap = false;
     if (after !== null) {
-      gap = after > latest || (oldest !== null && after < oldest - 1) || (oldest === null && after < latest);
-      from = gap ? latest : after;
+      // A seq from the future (storage reset): start from now. A seq older
+      // than what is kept: say so, but still replay everything that is kept.
+      const ahead = after > latest;
+      gap = ahead || (oldest !== null ? after < oldest - 1 : after < latest);
+      from = ahead ? latest : after;
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();

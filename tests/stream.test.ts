@@ -886,6 +886,100 @@ describe("runStream — relay", () => {
     expect(st.relay?.seq).toBe(2001);
   });
 
+  test("a backlog dropped while a bell is being read loses neither that bell nor the next one", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const t1 = (T0 + 0.5).toFixed(6);
+    const t2 = (T0 + 0.7).toFixed(6);
+    let flooded = false;
+    const realHistory = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => {
+      if (oldest === (T0 + 0.5 - 1).toFixed(6) && !flooded) {
+        flooded = true; // while bell 1 is in flight: 2000 more overflow the queue, then one more
+        for (let i = 2; i <= 2001; i++) r.ring(i, { channel: "C00000001", ts: t1 });
+        // A reply under an old parent: only its bell can find it.
+        const parent = ts(-10 * 86400);
+        s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+        s.post("C00000001", { ts: t2, thread_ts: parent, user: "U00000002", text: "@mybot after" });
+        r.ring(2002, { channel: "C00000001", ts: t2, thread_ts: parent });
+      }
+      return realHistory(c, oldest, cursor);
+    };
+    stepper({
+      1: () => {
+        s.post("C00000001", { ts: t1, user: "U00000001", text: "@mybot first" });
+        r.ring(1, { channel: "C00000001", ts: t1 });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot first", "@mybot after"]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay?.seq).toBe(2002);
+  });
+
+  test("a rate-limited bell goes back to the scheduler: the due poll is not starved", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let polls = 0;
+    let bellOldest = "";
+    const realHistory = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => {
+      if (oldest === bellOldest) throw new RateLimitError(600);
+      polls++;
+      return realHistory(c, oldest, cursor);
+    };
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        bellOldest = (now / 1000 - 1).toFixed(6);
+        r.ring(1, { channel: "C00000001", ts: t });
+      },
+      2: () => { now += 300_000; }, // the safety-net poll falls due during the 600 s wait
+      4: () => ac.abort(),
+    }, ac);
+    const before = polls;
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(polls).toBeGreaterThan(before + 1); // startup poll + the due one
+    expect(err).toContain("slack stream: rate limited — waiting 600s");
+  });
+
+  test("a bell from a channel joined seconds after a re-list waits for the next one", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let t = "";
+    stepper({
+      1: () => {
+        s.channels.push({ id: "C00000003", name: "new", isIm: false });
+        t = (now / 1000).toFixed(6);
+        const parent = ts(-10 * 86400); // a reply only the bell can find
+        s.post("C00000003", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+        s.post("C00000003", { ts: t, thread_ts: parent, user: "U00000001", text: "@mybot in new" });
+        r.ring(1, { channel: "C00000003", ts: t, thread_ts: parent });
+      },
+      120: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot in new"]);
+  });
+
+  test("an abort during a scan stops at once, not after another full interval", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const realHistory = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => {
+      ac.abort();
+      return realHistory(c, oldest, cursor);
+    };
+    const sleeps = stepper({}, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(sleeps).toEqual([]);
+  });
+
   test("--once ignores the relay", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

@@ -469,6 +469,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     const bus = {
       queue: [] as Pending[], // in seq order, due now
       retry: [] as Pending[], // waiting for dueMs
+      inflight: undefined as Pending | undefined, // being read right now
       handled: 0, // highest seq resolved (emitted, filtered out, or abandoned)
       live: undefined as boolean | undefined, full: false,
     };
@@ -504,11 +505,10 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
                 // and let a full poll catch up, rather than grow without bound.
                 _internals.err(`slack stream: relay backlog over ${MAX_QUEUED_BELLS} — dropped it; polling to catch up`);
                 bus.queue = [];
-                bus.handled = Math.max(bus.handled, seq);
+                bus.handled = Math.max(bus.handled, seq - 1);
                 bus.full = true;
-              } else {
-                bus.queue.push({ seq, bell, tries: 0, dueMs: 0 });
               }
+              bus.queue.push({ seq, bell, tries: 0, dueMs: 0 });
               ring();
             },
           });
@@ -533,8 +533,10 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     const handleBell = async (bell: Doorbell): Promise<boolean> => {
       if (opts.channels && !opts.channels.includes(bell.channel)) return true;
       let ch = channels.find((c) => c.id === bell.channel);
-      if (!ch && _internals.now() / 1000 - lastRefreshSec >= 60) {
-        // A channel joined since the last refresh (at most one re-list a minute).
+      if (!ch) {
+        // A channel joined since the last refresh. Re-list at most once a
+        // minute; until then the bell waits rather than being written off.
+        if (_internals.now() / 1000 - lastRefreshSec < 60) return false;
         await refresh(_internals.now() / 1000);
         ch = channels.find((c) => c.id === bell.channel);
       }
@@ -545,7 +547,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
      *  retried holds it back, so a restart gets that bell again. */
     const ack = (): void => {
       if (!state.relay || state.relay.url !== relay?.url) return;
-      const pending = [...bus.queue, ...bus.retry].map((p) => p.seq);
+      const pending = [...bus.queue, ...bus.retry, ...(bus.inflight ? [bus.inflight] : [])].map((p) => p.seq);
       state.relay.seq = pending.length ? Math.min(...pending) - 1 : Math.max(state.relay.seq, bus.handled);
     };
     /** Handle due bells — at most MAX_DRAIN per call, so a flood cannot starve
@@ -560,22 +562,28 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       }
       let n = 0;
       while (bus.queue.length && n < MAX_DRAIN && !opts.signal?.aborted) {
-        const p = bus.queue[0]!;
+        // Off the queue before the await: the subscription may replace the
+        // queue meanwhile (backlog overflow), and must not lose this bell.
+        const p = bus.queue.shift()!;
+        bus.inflight = p;
+        n++;
         let done: boolean;
         let why = "not visible yet";
         try {
           done = await handleBell(p.bell);
         } catch (e) {
           if (e instanceof RateLimitError) {
+            // Back to the scheduler, so the poll is not starved by the wait.
             _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
-            await _internals.sleep(e.retryAfter * 1000, opts.signal);
-            continue;
+            p.dueMs = _internals.now() + e.retryAfter * 1000;
+            bus.retry.push(p);
+            bus.inflight = undefined;
+            break;
           }
           done = false;
           why = errText(e);
         }
-        bus.queue.shift();
-        n++;
+        bus.inflight = undefined;
         if (done) {
           bus.handled = Math.max(bus.handled, p.seq);
         } else if (++p.tries >= BELL_TRIES) {
@@ -657,6 +665,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
 
       // Sleep until the next full poll or bell retry, or until a bell (or a
       // relay up/down) wakes us.
+      if (opts.signal?.aborted) break;
       if (!bus.queue.length && !bus.full) {
         const until = Math.min(lastFullMs + interval(), ...bus.retry.map((p) => p.dueMs));
         wake = new AbortController();
