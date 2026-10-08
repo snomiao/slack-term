@@ -868,10 +868,11 @@ describe("runStream — relay", () => {
     expect(emitted()).toHaveLength(1);
     const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.relay?.seq).toBe(60);
-    // The due poll runs after the first slice of 25, not after all 60.
-    const firstPollAfterBells = order.indexOf("poll", order.indexOf("bell"));
-    expect(firstPollAfterBells).toBeGreaterThan(0);
-    expect(order.slice(0, firstPollAfterBells).filter((o) => o === "bell").length).toBeLessThanOrEqual(25);
+    // The due poll (the second one) runs after at most one slice of 25, not after all 60.
+    const duePoll = order.indexOf("poll", order.indexOf("poll") + 1);
+    expect(duePoll).toBeGreaterThan(0);
+    expect(order.slice(0, duePoll).filter((o) => o === "bell").length).toBeLessThanOrEqual(25);
+    expect(order.filter((o) => o === "bell")).toHaveLength(60);
   });
 
   test("an overflowing backlog pauses the relay; it resumes from storage once drained", async () => {
@@ -1255,6 +1256,34 @@ describe("runStream — relay", () => {
     expect(await runStream(s, opts())).toBe(2);
     st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
     expect(st.seen).toEqual({ [`C00000001:${ts(-5)}`]: T0 - 5 });
+  });
+
+  test("successive rate limits on bell reads do not starve the safety-net poll", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let n = 0;
+    const realReplies = s.replies.bind(s);
+    s.replies = async (c, tt, oldest, cursor) => {
+      if (n++ % 2 === 1) throw new RateLimitError(60); // every other bell read is limited
+      return realReplies(c, tt, oldest, cursor);
+    };
+    const pollTimes: number[] = [];
+    const realHistory = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => { pollTimes.push(now); return realHistory(c, oldest, cursor); };
+    _internals.sleep = async (ms: number) => {
+      now += ms; // real time: the cooldowns pass
+      if (now - T0 * 1000 > 20 * 60_000) ac.abort();
+    };
+    const t = (T0 + 1).toFixed(6);
+    s.post("C00000001", { ts: t, user: "U00000001", text: "chat" });
+    for (let i = 1; i <= 100; i++) r.log.push([i, { channel: "C00000001", ts: t }]);
+    r.latest = 100;
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    // Over 20 minutes of backlog, the 5-minute poll kept its schedule.
+    const gaps = pollTimes.slice(1).map((p, i) => p - pollTimes[i]!);
+    expect(pollTimes.length).toBeGreaterThanOrEqual(4);
+    expect(Math.max(...gaps)).toBeLessThanOrEqual(360_000);
   });
 
   test("--once ignores the relay", async () => {

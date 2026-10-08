@@ -748,6 +748,10 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         await _internals.sleep(until - nowMs, w.signal);
         opts.signal?.removeEventListener("abort", stop);
       }
+      // An overdue poll goes before more bells: a run of rate-limited bell
+      // reads must not keep pushing the safety net back.
+      const t = _internals.now();
+      if ((t >= lastFullMs + interval() || bus.full) && t >= cooldownUntil) continue;
       await drainBells();
     }
     return 0;
