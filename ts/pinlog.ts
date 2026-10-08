@@ -7,13 +7,14 @@
 //     change, and the board itself never adds noise.
 //
 // This module is the part that needs no Slack: the footer marker that makes a
-// message recognisable as a pinlog HEAD, the JST stamp in it, and the local
-// name → id registry. The commands themselves live in cli.ts beside send/edit,
+// message recognisable as a pinlog HEAD, and the JST stamp in it. Stateless by
+// design: a board IS its message — addressed by permalink / C…:ts, found by
+// its footer — so nothing about boards is kept on this machine. The commands themselves live in cli.ts beside send/edit,
 // because they share its confirm gate.
 
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 /** The words every HEAD ends with. `list` finds boards by this, and `update`
  *  refuses a message without it — editing an arbitrary message into a "board"
@@ -72,62 +73,6 @@ export function composeHead(state: string, now: Date): string {
 export function headUpdatedAt(text: string): string | null {
   const m = text.match(new RegExp(`${PINLOG_MARKER} (\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} JST)`));
   return m ? m[1]! : null;
-}
-
-// --- registry: --name → channel:ts -------------------------------------------
-
-export type PinlogEntry = { channel: string; ts: string; team?: string; createdAt: string };
-export type PinlogRegistry = Record<string, PinlogEntry>;
-
-export function registryPath(): string {
-  return join(process.env.HOME || homedir(), ".config", "slack-cli", "pinlogs.json");
-}
-
-/** Names are typed on a command line and used as the key of a JSON file. */
-export function validPinlogName(name: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name);
-}
-
-/** Load the registry. A missing file is an empty registry; an UNREADABLE one is
- *  an error, not an empty registry — answering "no such board" for a name that
- *  exists in a file we could not parse would send the caller off to create a
- *  duplicate board. */
-export function loadRegistry(path = registryPath()): PinlogRegistry {
-  if (!existsSync(path)) return Object.create(null) as PinlogRegistry;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e: unknown) {
-    throw new Error(`pinlog registry ${path} is unreadable: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`pinlog registry ${path} is not a JSON object`);
-  }
-  // Null prototype: a name like `constructor` must not find Object.prototype's.
-  return Object.assign(Object.create(null) as PinlogRegistry, raw);
-}
-
-/** Add `name` → `entry`. Locked read-modify-write plus an atomic rename, so two
- *  processes registering different names cannot drop each other's, and a
- *  reader never sees a half-written file. A name already bound to a DIFFERENT
- *  board is refused here too, not only in the caller's earlier check — two
- *  concurrent `create --name x` both pass that check. */
-export function saveRegistryEntry(name: string, entry: PinlogEntry, path = registryPath()): void {
-  const release = acquireLock("registry", { dir: join(dirname(path), "locks") });
-  try {
-    const reg = loadRegistry(path);
-    const prev = reg[name];
-    if (prev && (prev.channel !== entry.channel || prev.ts !== entry.ts)) {
-      throw new Error(`name "${name}" already points at ${pinlogId(prev.channel, prev.ts)}`);
-    }
-    reg[name] = entry;
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, `${JSON.stringify(reg, null, 2)}\n`);
-    renameSync(tmp, path);
-  } finally {
-    release();
-  }
 }
 
 // --- lock: one writer per board on this machine -------------------------------
@@ -249,7 +194,7 @@ export function pinlogId(channel: string, ts: string): string {
 }
 
 /** `C00000001:1700000000.000100` → parts; anything else → null (the caller then
- *  tries a registry name, then a #chan:ts / permalink). */
+ *  tries #chan:ts / permalink). */
 export function parsePinlogId(s: string): { channel: string; ts: string } | null {
   const m = s.match(/^([CDG][A-Z0-9]{8,}):(\d{10}\.\d{6})$/);
   return m ? { channel: m[1]!, ts: m[2]! } : null;

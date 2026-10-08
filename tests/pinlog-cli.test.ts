@@ -116,7 +116,7 @@ function body(m: MockHandle, method: string): Record<string, unknown> {
 describe("pinlog create", { timeout: 60_000 }, () => {
   test("preview writes nothing and shows the HEAD with its footer", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "create", CH, "状態: 青"]);
+      const r = await run(m, ["pinlog", "new", CH, "状態: 青"]);
       expect(r.exitCode).toBe(1);
       expect(r.stdout).toContain("状態: 青");
       expect(r.stdout).toContain("Pinlog · 最終更新");
@@ -127,7 +127,7 @@ describe("pinlog create", { timeout: 60_000 }, () => {
 
   test("confirmed: posts a plain top-level HEAD, pins it, prints the id", async () => {
     await withMock({}, async (m) => {
-      const { r, writes } = await confirmed(m, ["pinlog", "create", CH, "状態: 青"]);
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "状態: 青"]);
       expect(r.exitCode).toBe(0);
       expect(writes).toEqual(["chat.postMessage", "pins.add"]);
       const post = body(m, "chat.postMessage");
@@ -144,7 +144,7 @@ describe("pinlog create", { timeout: 60_000 }, () => {
 
   test("missing pins:write: board still created, says NOT pinned, gives the pin command, exit 0", async () => {
     await withMock({ "pins.add": { ok: false, error: "missing_scope" } }, async (m) => {
-      const { r, writes } = await confirmed(m, ["pinlog", "create", CH, "状態: 青", "--as-bot"], { SLACK_BOT_TOKEN: "xoxb-fake" });
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "状態: 青", "--as-bot"], { SLACK_BOT_TOKEN: "xoxb-fake" });
       expect(r.exitCode).toBe(0);
       expect(writes).toEqual(["chat.postMessage", "pins.add"]);
       expect(r.stdout).toContain(`✓ Posted HEAD: ${ID}`);
@@ -156,14 +156,14 @@ describe("pinlog create", { timeout: 60_000 }, () => {
 
   test("--as-bot posts and pins with the BOT token; without it, the user token", async () => {
     await withMock({}, async (m) => {
-      await confirmed(m, ["pinlog", "create", CH, "x", "--as-bot"], { SLACK_BOT_TOKEN: "xoxb-fake" });
+      await confirmed(m, ["pinlog", "new", CH, "x", "--as-bot"], { SLACK_BOT_TOKEN: "xoxb-fake" });
       const auths = m.requests.filter((q) => WRITES.has(q.method)).map((q) => q.headers.authorization);
       expect(auths).toEqual(["Bearer xoxb-fake", "Bearer xoxb-fake"]);
     });
     await withMock({}, async (m) => {
       // (No SLACK_BOT_TOKEN here: with no profiles, the legacy env path makes it
       // the DEFAULT token — pre-existing behaviour, not pinlog's to test.)
-      await confirmed(m, ["pinlog", "create", CH, "x"]);
+      await confirmed(m, ["pinlog", "new", CH, "x"]);
       const auths = m.requests.filter((q) => WRITES.has(q.method)).map((q) => q.headers.authorization);
       expect(auths).toEqual(["Bearer xoxp-fake", "Bearer xoxp-fake"]);
     });
@@ -171,7 +171,7 @@ describe("pinlog create", { timeout: 60_000 }, () => {
 
   test("a failed post is reported as a failure, and nothing is pinned", async () => {
     await withMock({ "chat.postMessage": { ok: false, error: "not_in_channel" } }, async (m) => {
-      const { r, writes } = await confirmed(m, ["pinlog", "create", CH, "x"]);
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "x"]);
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("HEAD was NOT posted");
       expect(r.stdout).not.toContain("✓");
@@ -181,76 +181,76 @@ describe("pinlog create", { timeout: 60_000 }, () => {
 
   test("an ambiguous create failure says UNKNOWN and to list before retrying", async () => {
     await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
-      const { r, writes } = await confirmed(m, ["pinlog", "create", CH, "x"]);
+      const { r, writes } = await confirmed(m, ["pinlog", "new", CH, "x"]);
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("UNKNOWN whether the HEAD was posted");
-      expect(r.stderr).toContain(`slack pinlog list '${CH}'`);
+      expect(r.stderr).toContain(`slack pinlog ls '${CH}'`);
       expect(writes).toEqual(["chat.postMessage"]);
+    });
+  });
+
+  test("the preview shows the situation: boards already in the channel (set is probably meant)", async () => {
+    await withMock({}, async (m) => {
+      const r = await run(m, ["pinlog", "new", CH, "x"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout + r.stderr).toContain("1 board(s) already in this channel");
+      expect(r.stdout + r.stderr).toContain(`${ID}  状態: 青`);
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+    });
+    await withMock({ "conversations.history": { ok: true, messages: [{ ts: "1700000300.000300", user: "U00000002", text: "chatter" }] } }, async (m) => {
+      const r = await run(m, ["pinlog", "new", CH, "x"]);
+      expect(r.stdout + r.stderr).toContain("no other boards in the last 200 messages");
+    });
+  });
+
+  test("new with a reason posts it as the first thread reply, after the pin", async () => {
+    await withMock({ "chat.postMessage": { ok: true, ts: HEAD_TS } }, async (m) => {
+      const { dry, r, writes } = await confirmed(m, ["pinlog", "new", CH, "状態: 青", "10/9 リリース用に作成"]);
+      expect(dry.stdout + dry.stderr).toContain("Reason (first thread reply");
+      expect(r.exitCode).toBe(0);
+      expect(writes).toEqual(["chat.postMessage", "pins.add", "chat.postMessage"]);
+      expect(body(m, "chat.postMessage")).toMatchObject({ text: "10/9 リリース用に作成", thread_ts: HEAD_TS });
+      expect(r.stdout).toContain("✓ Reason posted in the thread");
+    });
+  });
+
+  test("show is an alias of get", async () => {
+    await withMock({}, async (m) => {
+      const a = await run(m, ["pinlog", "get", ID, "--json"]);
+      const b = await run(m, ["pinlog", "show", ID, "--json"]);
+      expect(b.exitCode).toBe(0);
+      expect(b.stdout).toBe(a.stdout);
+    });
+  });
+
+  test("ls on a board link is refused and points at get", async () => {
+    await withMock({}, async (m) => {
+      const r = await run(m, ["pinlog", "ls", ID]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain(`slack pinlog get '${ID}'`);
     });
   });
 
   test("an oversized initial state is refused before any write", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "create", CH, "y".repeat(40_001)]);
+      const r = await run(m, ["pinlog", "new", CH, "y".repeat(40_001)]);
       expect(r.exitCode).toBe(2);
       expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
     });
   });
 
-  test("--name registers the id; a second create with the same name is refused before any write", async () => {
+  test("a channel:ts target is refused — new makes a NEW board, and the error points at set", async () => {
     await withMock({}, async (m) => {
-      const { r } = await confirmed(m, ["pinlog", "create", CH, "x", "--name", "dup-test"]);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain("✓ Registered name: dup-test");
-      const before = m.requests.length;
-      const again = await run(m, ["pinlog", "create", CH, "y", "--name", "dup-test"]);
-      expect(again.exitCode).toBe(1);
-      expect(again.stderr).toContain(`already exists → ${ID}`);
-      expect(m.requests.slice(before).filter((q) => WRITES.has(q.method))).toEqual([]);
-    });
-  });
-
-  // Codex round 2: the name check ran before the post and the registry lock
-  // only after it, so two concurrent creates could both post a board.
-  test("a concurrent create with the same --name is refused before any write", async () => {
-    const ldir = join(tmpHome, ".config", "slack-cli", "locks");
-    mkdirSync(ldir, { recursive: true });
-    const lock = join(ldir, "pinlog-name-racing.lock");
-    writeFileSync(lock, `pid=${process.pid} since=now nonce=t\n`);
-    try {
-      await withMock({}, async (m) => {
-        const r = await run(m, ["pinlog", "create", CH, "x", "--name", "racing", "--code=0000"]);
-        expect(r.exitCode).toBe(1);
-        expect(r.stderr).toContain("another `pinlog create --name racing` is running");
-        expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
-      });
-    } finally {
-      rmSync(lock, { force: true });
-    }
-  });
-
-  test("--name constructor (an Object.prototype key) works like any other name", async () => {
-    await withMock({}, async (m) => {
-      const { r } = await confirmed(m, ["pinlog", "create", CH, "x", "--name", "constructor"]);
-      expect(r.exitCode).toBe(0);
-      expect(r.stdout).toContain("✓ Registered name: constructor");
-      const u = await run(m, ["pinlog", "update", "toString", "y", "--log", "y"]);
-      expect(u.exitCode).toBe(2);
-      expect(u.stderr).toContain("is not a pinlog");
-    });
-  });
-
-  test("a channel:ts target is refused — create makes a NEW message", async () => {
-    await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "create", `#gtm:${HEAD_TS}`, "x"]);
+      const r = await run(m, ["pinlog", "new", `#gtm:${HEAD_TS}`, "x"]);
       expect(r.exitCode).toBe(2);
-      expect(r.stderr).toContain("NEW top-level message");
+      expect(r.stderr).toContain("posts a NEW board");
+      expect(r.stderr).toContain("slack pinlog set");
     });
   });
 });
 
 describe("pinlog update", { timeout: 60_000 }, () => {
-  const args = ["pinlog", "update", ID, "状態: 黄\n- 見積: 済\n- 契約: 法務確認待ち", "--log", "契約: 法務確認待ちを追加"];
+  const args = ["pinlog", "set", ID, "状態: 黄\n- 見積: 済\n- 契約: 法務確認待ち", "契約: 法務確認待ちを追加"];
 
   test("preview shows current HEAD, new HEAD and the log line, and writes nothing", async () => {
     await withMock({}, async (m) => {
@@ -301,15 +301,15 @@ describe("pinlog update", { timeout: 60_000 }, () => {
       expect(r.stdout).toContain("✓ HEAD updated");
       expect(r.stderr).toContain("Log reply was NOT posted");
       expect(r.stderr).toContain("The HEAD IS updated");
-      const line = r.stderr.split("\n").find((l) => l.includes("--log-only"));
+      const line = r.stderr.split("\n").find((l) => l.includes("slack pinlog note"));
       expect(line).toBeDefined();
       // eslint-disable-next-line no-control-regex
       retry = line!.replace(/\x1b\[[0-9;]*m/g, "").trim();
     });
-    expect(retry).toMatch(/^slack pinlog update C00000001:1700000000\.000100 --log-only --log '契約: 法務確認待ちを追加' --code=[0-9a-f]{4}$/);
+    expect(retry).toMatch(/^slack pinlog note C00000001:1700000000\.000100 '契約: 法務確認待ちを追加' --code=[0-9a-f]{4}$/);
     await withMock({}, async (m) => {
       const code = retry.match(/--code=([0-9a-f]{4})/)![1]!;
-      const r = await run(m, ["pinlog", "update", ID, "--log-only", "--log", "契約: 法務確認待ちを追加", `--code=${code}`]);
+      const r = await run(m, ["pinlog", "note", ID, "契約: 法務確認待ちを追加", `--code=${code}`]);
       expect(r.exitCode).toBe(0);
       expect(m.requests.filter((q) => WRITES.has(q.method)).map((q) => q.method)).toEqual(["chat.postMessage"]);
       expect(body(m, "chat.postMessage")).toMatchObject({ thread_ts: HEAD_TS });
@@ -325,11 +325,11 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     let retry = "";
     let posted = "";
     await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
-      const { r } = await confirmed(m, ["pinlog", "update", ID, "s", "--log", tricky]);
+      const { r } = await confirmed(m, ["pinlog", "set", ID, "s", tricky]);
       posted = String(body(m, "chat.postMessage").text);
       expect(posted).toBe("C:\\new ¥1000 \\n literal, \n real");
       // eslint-disable-next-line no-control-regex
-      retry = r.stderr.split("\n").find((l) => l.includes("--log-only"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+      retry = r.stderr.split("\n").find((l) => l.includes("slack pinlog note"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
     });
     // Run the printed command exactly as a shell would parse it.
     const argv = (await new Promise<string[]>((resolve) => {
@@ -349,9 +349,9 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     const log = "詳細 https://example.com/ページ";
     let retry = "";
     await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
-      const { r } = await confirmed(m, ["pinlog", "update", ID, "s", "--log", log, "--allow-url-adjacent"]);
+      const { r } = await confirmed(m, ["pinlog", "set", ID, "s", log, "--allow-url-adjacent"]);
       // eslint-disable-next-line no-control-regex
-      retry = r.stderr.split("\n").find((l) => l.includes("--log-only"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+      retry = r.stderr.split("\n").find((l) => l.includes("slack pinlog note"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
     });
     expect(retry).toContain("--allow-url-adjacent");
     const argv = (await new Promise<string[]>((resolve) => {
@@ -376,7 +376,7 @@ describe("pinlog update", { timeout: 60_000 }, () => {
       expect(r.exitCode).toBe(1);
       expect(r.stderr).toContain("UNKNOWN whether the log reply was posted");
       expect(r.stderr).not.toContain("Log reply was NOT posted");
-      expect(r.stderr).toContain(`slack pinlog show ${ID}`);
+      expect(r.stderr).toContain(`slack pinlog get ${ID}`);
       expect(r.stderr).toContain("only if it is not there");
     });
   });
@@ -391,7 +391,7 @@ describe("pinlog update", { timeout: 60_000 }, () => {
 
   test("a state that would push the footer past Slack's 40k truncation is refused before any write", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "update", ID, "x".repeat(40_000), "--log", "big", "--code=0000"]);
+      const r = await run(m, ["pinlog", "set", ID, "x".repeat(40_000), "big", "--code=0000"]);
       expect(r.exitCode).toBe(2);
       expect(r.stderr).toContain("Slack truncates past 40000");
       expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
@@ -408,23 +408,6 @@ describe("pinlog update", { timeout: 60_000 }, () => {
       expect(r.stdout).not.toContain("\x1b[2J");
       expect(r.stdout).toContain("okfake");
     });
-  });
-
-  test("update --name waits on the same name reservation create holds", async () => {
-    const ldir = join(tmpHome, ".config", "slack-cli", "locks");
-    mkdirSync(ldir, { recursive: true });
-    const lock = join(ldir, "pinlog-name-reserved.lock");
-    writeFileSync(lock, `pid=${process.pid} since=now nonce=t\n`);
-    try {
-      await withMock({}, async (m) => {
-        const r = await run(m, [...args, "--name", "reserved", "--code=0000"]);
-        expect(r.exitCode).toBe(1);
-        expect(r.stderr).toContain(`registering "reserved" is running`);
-        expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
-      });
-    } finally {
-      rmSync(lock, { force: true });
-    }
   });
 
   test("a concurrent update of the same board is refused before any write", async () => {
@@ -463,29 +446,14 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
-  test("--adopt turns a hand-run board into a pinlog (footer added) and can register a name", async () => {
+  test("--adopt turns a hand-run board into a pinlog (footer added)", async () => {
     const handRun = { "conversations.replies": { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: "販売ブロッカー（随時更新）\n1. 見積" }] } };
     await withMock(handRun, async (m) => {
-      const { dry, r, writes } = await confirmed(m, [...args, "--adopt", "--name", "adopted"]);
+      const { dry, r, writes } = await confirmed(m, [...args, "--adopt"]);
       expect(dry.stdout).toContain("Adopting: this message has no pinlog footer yet");
       expect(r.exitCode).toBe(0);
       expect(writes).toEqual(["chat.update", "chat.postMessage"]);
       expect(String(body(m, "chat.update").text)).toContain("Pinlog · 最終更新");
-      expect(r.stdout).toContain("✓ Registered name: adopted");
-    });
-  });
-
-  test("--name on update refuses a name that already points at another board", async () => {
-    await withMock({}, async (m) => {
-      await confirmed(m, ["pinlog", "create", CH, "x", "--name", "taken"]);
-      const other = "C00000002:1700000000.000999";
-      const otherHead = { "conversations.replies": { ok: true, messages: [{ ts: "1700000000.000999", user: "U00000001", text: HEAD_TEXT }] } };
-      await withMock(otherHead, async (m2) => {
-        const r = await run(m2, ["pinlog", "update", other, "y", "--log", "y", "--name", "taken"]);
-        expect(r.exitCode).toBe(1);
-        expect(r.stderr).toContain("already points at another board");
-        expect(m2.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
-      });
     });
   });
 
@@ -501,11 +469,11 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
-  test("--log is required", async () => {
+  test("the reason is required", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "update", ID, "new"]);
+      const r = await run(m, ["pinlog", "set", ID, "new"]);
       expect(r.exitCode).not.toBe(0);
-      expect(r.stderr).toContain("log");
+      expect(r.stderr).toContain("reason");
       expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
     });
   });
@@ -526,20 +494,55 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
-  test("a registered name resolves to its board", async () => {
+  test("a bare word is not a board: there are no names, only links (stateless)", async () => {
     await withMock({}, async (m) => {
-      await confirmed(m, ["pinlog", "create", CH, "x", "--name", "by-name"]);
-      const { r } = await confirmed(m, ["pinlog", "update", "by-name", "y", "--log", "y"]);
-      expect(r.exitCode).toBe(0);
-      expect(body(m, "chat.update")).toMatchObject({ channel: CH, ts: HEAD_TS });
+      const r = await run(m, ["pinlog", "set", "gtm-blockers", "y", "y"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("is a channel, not a board");
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
     });
   });
 
-  test("an unknown name is an error, not a guess", async () => {
+  test("set on a channel is refused with the ls hint — never a write of the wrong kind", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "update", "no-such-board", "y", "--log", "y"]);
+      const r = await run(m, ["pinlog", "set", "#gtm", "y", "y"]);
       expect(r.exitCode).toBe(2);
-      expect(r.stderr).toContain("is not a pinlog");
+      expect(r.stderr).toContain("slack pinlog ls '#gtm'");
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+    });
+  });
+
+  test("set without a reason is refused and points at note for reason-only", async () => {
+    await withMock({}, async (m) => {
+      const r = await run(m, ["pinlog", "set", ID, "only state"]);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("slack pinlog note <board>");
+      expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+    });
+  });
+
+  test("set --file takes the reason as the only positional", async () => {
+    const f = join(tmpHome, "board.md");
+    writeFileSync(f, "状態: 緑\n");
+    await withMock({}, async (m) => {
+      const { r, writes } = await confirmed(m, ["pinlog", "set", ID, "--file", f, "法務: 済"]);
+      expect(r.exitCode).toBe(0);
+      expect(writes).toEqual(["chat.update", "chat.postMessage"]);
+      expect(String(body(m, "chat.update").text)).toMatch(/^状態: 緑\n\n_Pinlog/);
+      expect(body(m, "chat.postMessage")).toMatchObject({ text: "法務: 済", thread_ts: HEAD_TS });
+      const both = await run(m, ["pinlog", "set", ID, "x", "y", "--file", f]);
+      expect(both.exitCode).toBe(2);
+      expect(both.stderr).toContain("with --file, pass only the reason");
+    });
+  });
+
+  test("note posts only the reason; the state is untouched", async () => {
+    await withMock({}, async (m) => {
+      const { dry, r, writes } = await confirmed(m, ["pinlog", "note", ID, "まだ法務待ち — 再送済"]);
+      expect(dry.stdout + dry.stderr).toContain("HEAD unchanged");
+      expect(r.exitCode).toBe(0);
+      expect(writes).toEqual(["chat.postMessage"]);
+      expect(body(m, "chat.postMessage")).toMatchObject({ text: "まだ法務待ち — 再送済", thread_ts: HEAD_TS });
     });
   });
 });
@@ -547,7 +550,7 @@ describe("pinlog update", { timeout: 60_000 }, () => {
 describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
   test("show prints HEAD then the log", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "show", ID]);
+      const r = await run(m, ["pinlog", "get", ID]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain(`=== HEAD ${ID} ===`);
       expect(r.stdout).toContain("状態: 青");
@@ -566,12 +569,12 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
       [p2]: { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: HEAD_TEXT }, { ts: "1700000200.000300", user: "U00000002", text: "NEWEST entry" }] },
     };
     await withMock(paged, async (m) => {
-      const r = await run(m, ["pinlog", "show", ID]);
+      const r = await run(m, ["pinlog", "get", ID]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("=== log (2) ===");
       expect(r.stdout).toContain("NEWEST entry");
       expect(r.stdout.split("=== HEAD").length).toBe(2);
-      const j = JSON.parse((await run(m, ["pinlog", "show", ID, "--json"])).stdout) as { complete: boolean; log: unknown[] };
+      const j = JSON.parse((await run(m, ["pinlog", "get", ID, "--json"])).stdout) as { complete: boolean; log: unknown[] };
       expect(j.complete).toBe(true);
       expect(j.log.length).toBe(2);
     });
@@ -583,7 +586,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
       ...[1, 2, 3, 4, 5].map((i) => ({ ts: `170000010${i}.000200`, user: "U00000002", text: `entry ${i}` })),
     ] } };
     await withMock(many, async (m) => {
-      const r = await run(m, ["pinlog", "show", ID]);
+      const r = await run(m, ["pinlog", "get", ID]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("=== log (5) ===");
       expect(m.requests.filter((q) => q.method === "users.info").length).toBeLessThanOrEqual(1);
@@ -592,7 +595,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
 
   test("show --json", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "show", ID, "--json"]);
+      const r = await run(m, ["pinlog", "get", ID, "--json"]);
       const j = JSON.parse(r.stdout) as { isPinlog: boolean; updated: string; log: unknown[] };
       expect(j.isPinlog).toBe(true);
       expect(j.updated).toBe("2026-10-08 15:00 JST");
@@ -602,7 +605,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
 
   test("show: an API failure is a failure, not an empty board", async () => {
     await withMock({ "conversations.replies": { ok: false, error: "channel_not_found" } }, async (m) => {
-      const r = await run(m, ["pinlog", "show", ID]);
+      const r = await run(m, ["pinlog", "get", ID]);
       expect(r.exitCode).toBe(1);
       expect(r.stdout).not.toContain("=== log");
     });
@@ -610,7 +613,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
 
   test("list finds boards by marker only, with pin state and log count", async () => {
     await withMock({}, async (m) => {
-      const r = await run(m, ["pinlog", "list", CH]);
+      const r = await run(m, ["pinlog", "ls", CH]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain(`📌 ${ID}`);
       expect(r.stdout).toContain("updated 2026-10-08 15:00 JST  log 3");
@@ -621,7 +624,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
 
   test("list with no boards says how far it looked", async () => {
     await withMock({ "conversations.history": { ok: true, messages: [{ ts: "1700000300.000300", text: "hi" }] } }, async (m) => {
-      const r = await run(m, ["pinlog", "list", CH]);
+      const r = await run(m, ["pinlog", "ls", CH]);
       expect(r.exitCode).toBe(0);
       expect(r.stdout).toContain("No pinlogs in the last 1 messages");
     });
@@ -629,7 +632,7 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
 
   test("list: an API failure is a failure, not \"no pinlogs\"", async () => {
     await withMock({ "conversations.history": { ok: false, error: "not_in_channel" } }, async (m) => {
-      const r = await run(m, ["pinlog", "list", CH]);
+      const r = await run(m, ["pinlog", "ls", CH]);
       expect(r.exitCode).toBe(1);
       expect(r.stdout).not.toContain("No pinlogs");
     });

@@ -287,36 +287,39 @@ anything people come back to: blocker boards, release readiness, incidents — o
 per topic.
 
 ```bash
-# Create: post HEAD, pin it, print its id (C…:ts). --name keeps a local alias.
-slack pinlog create "#gtm" "販売ブロッカー\n1. 見積テンプレ — 未" --name gtm-blockers
-slack pinlog create "#gtm" --file board.md --name gtm-blockers   # or from a file (- = stdin)
-
-# Update: the FULL new state (not a diff) + one line for the log
-slack pinlog update gtm-blockers --file board.md --log "見積テンプレ: 未 → 済"
-
-slack pinlog show gtm-blockers          # HEAD + log (--json for one object)
-slack pinlog list "#gtm"                # boards in a channel, found by their footer
-slack pinlog pin gtm-blockers           # pin later (e.g. create lacked pins:write)
+slack pinlog ls  "#gtm"                     # boards in a channel (found by their footer)
+slack pinlog get <board>                    # state + log   (--json for one object)
+slack pinlog new "#gtm" "販売ブロッカー\n1. 見積テンプレ — 未" ["why this board exists"]
+slack pinlog set <board> "<the WHOLE new state>" "見積テンプレ: 未 → 済"
+slack pinlog set <board> --file board.md "見積テンプレ: 未 → 済"   # state from a file (- = stdin)
+slack pinlog note <board> "まだ法務待ち — 再送済"                   # reason only, state unchanged
 ```
 
+`<board>` is the board's permalink, `#chan:ts`, or the `C…:ts` id `new` prints. There
+are no names and nothing is stored locally: a board *is* its Slack message, so the same
+command works from any machine. Each verb takes only its own kind of target — `new` and
+`ls` a channel, the rest a board — so a pasted channel can never turn an intended update
+into a second board.
+
 - Every HEAD ends with a footer, `_Pinlog · 最終更新 2026-10-08 15:10 JST · 更新はスレッドに_`,
-  refreshed on each update. `list` finds boards by it, and `update` **refuses** a message
-  without it, so a wrong id cannot overwrite an ordinary message.
-  To turn an existing hand-run board into a pinlog on purpose, pass `--adopt` once
-  (optionally with `--name`).
-- `create` and `update` use the same two-step `--code` gate as `send`/`edit`. The update
-  code covers the current HEAD text, so if someone else updated the board after your
-  preview, your code stops matching and you re-read first.
-- **Update order:** the HEAD edit first, then the log reply. If the edit fails, **no** log
-  reply is posted. If the reply fails, the command exits 1, says the HEAD *is* updated, and
-  prints the exact retry (`slack pinlog update <id> --log-only --log '…' --code=…`).
+  refreshed on each update. `ls` finds boards by it, and `set` **refuses** a message
+  without it, so a wrong link cannot overwrite an ordinary message.
+  To turn an existing hand-run board into a pinlog on purpose, pass `set --adopt` once.
+- `new`, `set` and `note` use the same two-step `--code` gate as `send`/`edit`, and the
+  preview shows the situation, not just your text: `new` lists boards already in the
+  channel (usually a sign you meant `set`), and `set` shows the current state next to
+  the new one. The `set` code covers the current state, so if someone else changed the
+  board after your preview, your code stops matching and you re-read first.
+- **`set` order:** the state edit first, then the reason reply. If the edit fails, **no**
+  reason is posted. If the reply fails, the command exits 1, says the state *is* updated,
+  and prints the exact retry (`slack pinlog note <board> '…' --code=…`).
   A failure that *may* have landed (network error, Slack `internal_error`/`fatal_error`)
-  is reported as `UNKNOWN`, not `NOT posted`, with the `show`/`list` command to check
+  is reported as `UNKNOWN`, not `NOT posted`, with the `get`/`ls` command to check
   first, because a blind retry would post a second board or a second notifying reply.
   A HEAD over Slack's 40,000-character limit is refused before posting, because Slack
   would truncate the footer.
-- `create` without the pin scope still creates the board: it says `NOT pinned`, prints
-  the `slack pinlog pin` command, and exits 0, because retrying `create` would make a
+- `new` without the pin scope still creates the board: it says `NOT pinned`, prints
+  the `slack pinlog pin <board>` command, and exits 0, because retrying `new` would make a
   second board. Pinning needs `pins:write` on the token you act with.
 - `--as-bot` acts as the bot for reads and writes. Slack lets a token edit only its own
   messages, so a board the bot created must be updated `--as-bot`.
@@ -324,8 +327,8 @@ slack pinlog pin gtm-blockers           # pin later (e.g. create lacked pins:wri
   confirmed run warns that the reply notified. It warns but does not block.
 - Text is posted as-is (plain mrkdwn, no blocks) so the footer reads back verbatim;
   `@handle`s are **not** converted — write `<@U…>` if you need a real mention.
-- Names live in `~/.config/slack-cli/pinlogs.json`. An unreadable registry is an error,
-  never "no such board".
+- Stateless: the only local files are short-lived per-board locks, held while a `set` runs,
+  so two writers on one machine cannot interleave.
 
 ### tail — real-time message stream
 

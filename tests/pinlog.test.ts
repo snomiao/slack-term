@@ -1,9 +1,9 @@
 // Unit tests for the Slack-free half of `slack pinlog` (ts/pinlog.ts): the
-// footer marker that makes a message a board, its JST stamp, and the local
-// name registry. The commands themselves are covered in pinlog-cli.test.ts.
+// footer marker that makes a message a board, its JST stamp, and the per-board
+// lock. The commands themselves are covered in pinlog-cli.test.ts.
 
 import { describe, test, expect, afterAll } from "./harness.ts";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { escapeArg, unescapeArg } from "../ts/escapes.ts";
@@ -16,13 +16,10 @@ import {
   formatJst,
   headUpdatedAt,
   isPinlogHead,
-  loadRegistry,
   parsePinlogId,
   pinlogFooter,
   pinlogId,
-  saveRegistryEntry,
   stripPinlogFooter,
-  validPinlogName,
 } from "../ts/pinlog.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "slack-pinlog-"));
@@ -86,7 +83,7 @@ describe("footer marker", () => {
   });
 });
 
-describe("ids and names", () => {
+describe("ids", () => {
   test("parsePinlogId round-trips pinlogId", () => {
     expect(parsePinlogId(pinlogId("C00000001", "1700000000.000100"))).toEqual({ channel: "C00000001", ts: "1700000000.000100" });
   });
@@ -94,13 +91,6 @@ describe("ids and names", () => {
     expect(parsePinlogId("gtm-blockers")).toBeNull();
     expect(parsePinlogId("#gtm:1700000000.000100")).toBeNull();
     expect(parsePinlogId("C00000001:1700000000")).toBeNull();
-  });
-  test("validPinlogName", () => {
-    expect(validPinlogName("gtm-blockers")).toBe(true);
-    expect(validPinlogName("release.v2_1")).toBe(true);
-    expect(validPinlogName("-x")).toBe(false);
-    expect(validPinlogName("has space")).toBe(false);
-    expect(validPinlogName("")).toBe(false);
   });
 });
 
@@ -185,51 +175,5 @@ describe("lock", () => {
     const old = new Date(Date.now() - 10 * 60_000);
     utimesSync(p, old, old);
     acquireLock("k5", { dir: ldir, staleMs: 60_000 })();
-  });
-});
-
-describe("registry", () => {
-  test("a missing file is an empty registry", () => {
-    expect(loadRegistry(join(dir, "none.json"))).toEqual({});
-  });
-
-  test("save then load", () => {
-    const p = join(dir, "sub", "pinlogs.json");
-    saveRegistryEntry("a", { channel: "C00000001", ts: "1700000000.000100", createdAt: "x" }, p);
-    saveRegistryEntry("b", { channel: "C00000002", ts: "1700000000.000200", createdAt: "y" }, p);
-    expect(Object.keys(loadRegistry(p)).sort()).toEqual(["a", "b"]);
-    expect(loadRegistry(p).b!.channel).toBe("C00000002");
-  });
-
-  test("writes atomically (no temp file left) and refuses rebinding a name to another board", () => {
-    const p = join(dir, "atomic", "pinlogs.json");
-    saveRegistryEntry("x", { channel: "C00000001", ts: "1700000000.000100", createdAt: "a" }, p);
-    // same board again is fine
-    saveRegistryEntry("x", { channel: "C00000001", ts: "1700000000.000100", createdAt: "b" }, p);
-    expect(() => saveRegistryEntry("x", { channel: "C00000002", ts: "1700000000.000200", createdAt: "c" }, p)).toThrow(/already points at/);
-    expect(loadRegistry(p).x!.channel).toBe("C00000001");
-    expect(readdirSync(join(dir, "atomic")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
-    expect(existsSync(join(dir, "atomic", "locks", "registry.lock"))).toBe(false);
-  });
-
-  test("names that are Object.prototype keys are free, not 'taken'", () => {
-    const p = join(dir, "proto", "pinlogs.json");
-    for (const n of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
-      expect(validPinlogName(n)).toBe(true);
-      expect(loadRegistry(p)[n]).toBeUndefined();
-    }
-    saveRegistryEntry("constructor", { channel: "C00000001", ts: "1700000000.000100", createdAt: "a" }, p);
-    expect(loadRegistry(p).constructor).toEqual({ channel: "C00000001", ts: "1700000000.000100", createdAt: "a" });
-    expect(loadRegistry(p).toString).toBeUndefined();
-  });
-
-  // Fail-vs-absent: "no such name" for a file we could not read would send the
-  // caller off to create a duplicate board.
-  test("an unreadable file is an ERROR, not an empty registry", () => {
-    const p = join(dir, "bad.json");
-    writeFileSync(p, "{not json");
-    expect(() => loadRegistry(p)).toThrow(/unreadable/);
-    writeFileSync(p, "[1,2]");
-    expect(() => loadRegistry(p)).toThrow(/not a JSON object/);
   });
 });
