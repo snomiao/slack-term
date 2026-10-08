@@ -317,6 +317,8 @@ slack pinlog pin gtm-blockers           # pin later (e.g. create lacked pins:wri
   messages, so a board the bot created must be updated `--as-bot`.
 - During quiet hours (JST 23:00–08:00) the preview shows the quiet-hours line, and the
   confirmed run warns that the reply notified. It warns but does not block.
+- Text is posted as-is (plain mrkdwn, no blocks) so the footer reads back verbatim;
+  `@handle`s are **not** converted — write `<@U…>` if you need a real mention.
 - Names live in `~/.config/slack-cli/pinlogs.json`. An unreadable registry is an error,
   never "no such board".
 

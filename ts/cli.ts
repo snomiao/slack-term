@@ -1684,6 +1684,11 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   if (quiet) console.error(quiet);
 }
 
+/** Slack stores `&`, `<`, `>` escaped; `show` is for reading, so undo that. */
+function slackUnescape(s: string): string {
+  return s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+}
+
 /** `2026-10-08 15:10 JST` for a Slack ts. */
 function tsJst(ts: string): string {
   return formatJst(new Date(Number(ts.split(".")[0]) * 1000));
@@ -1727,12 +1732,15 @@ async function cmdPinlogShow(token: string, target: string, cookie?: string, jso
     console.error(`⚠ ${pinlogId(channel, ts)} has no "${PINLOG_MARKER}" footer — showing it anyway, but it is not a pinlog HEAD.`);
   }
   console.log(`=== HEAD ${pinlogId(channel, ts)} ===`);
-  for (const l of text.split("\n")) console.log(stripTerminalControls(l));
-  console.log(`=== log (${log.length}) ===`);
+  for (const l of slackUnescape(text).split("\n")) console.log(stripTerminalControls(l));
+  // One page of conversations.replies (1000). Say so rather than present a
+  // partial log as the whole one.
+  const more = resp.has_more === true ? " — first page only, older entries not shown" : "";
+  console.log(`=== log (${log.length}${more}) ===`);
   for (const m of log) {
     const body = typeof m.text === "string" ? m.text : "";
     const author = stripTerminalControls(await pinlogAuthor(token, m, cookie));
-    const lines = body.split("\n").map((l) => stripTerminalControls(l));
+    const lines = slackUnescape(body).split("\n").map((l) => stripTerminalControls(l));
     console.log(`${tsJst(String(m.ts))}  @${author}: ${lines[0] ?? ""}`);
     for (const l of lines.slice(1)) console.log(`    ${l}`);
   }
