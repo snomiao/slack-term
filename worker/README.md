@@ -17,7 +17,7 @@ slack stream ◀──GET /stream (SSE, Bearer)─────┘
 | Path | Auth | What |
 |---|---|---|
 | `POST /slack/events` | Slack signing secret (`X-Slack-Signature`, ±5 min) | Answers `url_verification`; stores one bell per `message` / `app_mention` event. Acks with a single SQLite insert, well inside Slack's 3 s. Retries collapse on `(channel, ts)`. |
-| `GET /stream?after=<seq>` | `Authorization: Bearer $RELAY_TOKEN` | SSE. First an `event: hello` frame `{seq, gap, retention_sec}`, then the backlog after `seq`, then live `event: bell` frames (`id:` = seq). A keepalive comment goes out every 25 s. `Last-Event-ID` works as well as `?after`. If `after` is omitted, the stream starts from now. `gap: true` means bells after `after` have expired: catch up by polling. |
+| `GET /stream?after=<seq>` | `Authorization: Bearer $RELAY_TOKEN` | SSE. First an `event: hello` frame `{seq, gap, retention_sec}`, then the backlog after `seq`, then live `event: bell` frames (`id:` = seq). A keepalive comment goes out every 25 s. `Last-Event-ID` works as well as `?after`. If `after` is omitted, the stream starts from now. `gap: true` means some bells after `after` are gone (expired, or the relay was reset): everything still kept is replayed, and the client should also catch up by polling. |
 | `GET /health` | Bearer | `{latest, oldest, clients, retention_sec}` |
 
 ## Privacy

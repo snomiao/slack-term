@@ -385,11 +385,17 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
  *  visible (yet). */
 export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promise<boolean> {
   // conversations.replies on the message's own ts returns that message first
-  // even when it has no thread, and a reply read from just before its ts is
-  // on the first page — so one call finds it however much was posted since.
-  const page = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1));
-  const msgs = page.messages;
-  const m = msgs.find((x) => str(x.ts) === bell.ts);
+  // even when it has no thread; a reply is read from just before its ts. Either
+  // way it is near the start, however much was posted since — but follow the
+  // cursor (a few pages at most) in case that second was busy.
+  let m: Record<string, Json> | undefined;
+  let cursor: string | undefined;
+  for (let i = 0; i < 5 && !m; i++) {
+    const p = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1), cursor);
+    m = p.messages.find((x) => str(x.ts) === bell.ts);
+    cursor = p.nextCursor;
+    if (!cursor) break;
+  }
   if (!m) return false;
   const tts = str(m.thread_ts);
   if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts)) saveState(ctx.opts.statePath, ctx.state);
@@ -582,7 +588,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     const ack = (): void => {
       if (!state.relay || state.relay.url !== relay?.url) return;
       const pending = [...bus.queue, ...bus.retry, ...(bus.inflight ? [bus.inflight] : [])].map((p) => p.seq);
-      state.relay.seq = pending.length ? Math.min(...pending) - 1 : Math.max(state.relay.seq, bus.handled);
+      state.relay.seq = Math.max(0, pending.length ? Math.min(...pending) - 1 : Math.max(state.relay.seq, bus.handled));
     };
     /** Handle due bells — at most MAX_DRAIN per call, so a flood cannot starve
      *  the poll. A bell whose message is not readable yet is retried with φ
