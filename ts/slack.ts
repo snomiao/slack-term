@@ -460,6 +460,13 @@ export async function deleteMessage(
   await post(token, "chat.delete", { channel, ts }, cookie);
 }
 
+/** Pin a message to its channel (pins.add, scope pins:write). Slack answers
+ *  `already_pinned` when it already is — surfaced as an error like any other;
+ *  the caller decides whether that counts. */
+export async function pinsAdd(token: string, channel: string, ts: string, cookie?: string): Promise<void> {
+  await post(token, "pins.add", { channel, timestamp: ts }, cookie);
+}
+
 // Add or remove an emoji reaction on a message. `name` is the emoji shortcode
 // without colons (e.g. "eyes", "white_check_mark"). Slack's reactions.add
 // returns already_reacted when the reaction exists; reactions.remove returns

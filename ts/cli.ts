@@ -76,6 +76,7 @@ import {
   search,
   searchAll,
   send as slackSend,
+  pinsAdd,
   type MessageMetadata,
   getPermalink,
   scheduleMessage,
@@ -107,6 +108,7 @@ import { setCacheEnabled } from "./cache.ts";
 import { unescapeArg } from "./escapes.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
+import { PINLOG_MARKER, composeHead, formatJst, headUpdatedAt, isPinlogHead, loadRegistry, parsePinlogId, pinlogId, registryPath, saveRegistryEntry, stripPinlogFooter, validPinlogName } from "./pinlog.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -876,6 +878,7 @@ const SCOPE_FOR_METHOD: Record<string, string> = {
   "chat.postMessage": "chat:write",
   "chat.update": "chat:write",
   "chat.delete": "chat:write",
+  "pins.add": "pins:write",
   "conversations.replies": "channels:history (or groups:history)",
   "conversations.history": "channels:history (or groups:history)",
 };
@@ -1362,6 +1365,430 @@ async function cmdDelete(token: string, args: DeleteArgs): Promise<void> {
 
   await deleteMessage(token, channelId, ts, args.cookie);
   console.log(`✓ Deleted (ts: ${ts})`);
+}
+
+// --- pinlog ---
+// A pinned status board: the pinned top-level message is the CURRENT state
+// (HEAD, edited in place — silent), and each change is one short thread reply
+// under it (the log — notifies). Pure helpers live in pinlog.ts; the commands
+// live here because they share the confirm gate with send/edit.
+
+/** Single-quote `s` for a POSIX shell, for the retry commands we print. */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+/** What a pinlog subcommand was pointed at. Tried in order: `C…:ts` (what
+ *  `create` prints), a `--name` from the local registry, then the usual
+ *  `#chan:ts` / permalink forms. */
+async function resolvePinlogTarget(
+  token: string, target: string, cookie?: string,
+): Promise<{ channel: string; ts: string; ref: string }> {
+  const id = parsePinlogId(target);
+  if (id) return { ...id, ref: id.channel };
+  if (validPinlogName(target)) {
+    const entry = loadRegistry()[target];
+    if (entry) return { channel: entry.channel, ts: entry.ts, ref: entry.channel };
+  }
+  const { ref, ts } = splitRefTs(target);
+  if (!ts) {
+    console.error(
+      `Error: ${stripTerminalControls(target)} is not a pinlog — pass the id \`create\` printed (C…:ts), ` +
+      `a name registered with --name (see ${registryPath()}), #chan:ts, or the HEAD's permalink.`,
+    );
+    process.exit(2);
+  }
+  return { channel: await resolveChannel(token, ref, cookie), ts, ref };
+}
+
+/** The HEAD message itself, or a clean exit when there is none. */
+async function fetchPinlogHead(
+  token: string, channel: string, ts: string, cookie?: string,
+): Promise<Record<string, Json>> {
+  const resp = asRecord((await replies(token, channel, ts, 1, cookie)) as Json);
+  const head = asArray(resp.messages).map(asRecord).find((m) => String(m.ts) === ts);
+  if (!head) {
+    console.error(`Error: no message at ts=${ts} in ${channel}.`);
+    process.exit(1);
+  }
+  return head;
+}
+
+/** The state text for create/update: positional, or `--file` (`-` = stdin).
+ *  A board is many lines, and an agent quoting twenty lines into one argv
+ *  string is where a stray quote eats half of it. */
+function pinlogStateArg(positional: string | undefined, file: string | undefined): string | undefined {
+  if (file !== undefined) {
+    try {
+      return readFileSync(file === "-" ? 0 : file, "utf8").replace(/\n+$/, "");
+    } catch (e: unknown) {
+      console.error(`Error: cannot read --file ${file}: ${e instanceof Error ? e.message : String(e)}`);
+      process.exit(2);
+    }
+  }
+  return positional === undefined ? undefined : unescapeArg(positional);
+}
+
+/** The quiet-hours line as a warning, or null outside them. The confirm gate
+ *  already prints the clock; this repeats it on the CONFIRMED run too, because
+ *  that is the run whose output an agent actually reads. */
+function pinlogQuietWarning(now: Date, what: string): string | null {
+  const n = quietHoursNotice(now);
+  return n && n.includes("QUIET HOURS") ? `⚠ Quiet hours (JST): ${what}.` : null;
+}
+
+interface PinlogCreateArgs {
+  target: string;
+  state: string;
+  name?: string;
+  code?: string;
+  cookie?: string;
+  asBot?: boolean;
+  allowUrlAdjacent?: boolean;
+}
+
+async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<void> {
+  const { ref, ts } = splitRefTs(args.target);
+  if (ts) {
+    console.error("Error: `pinlog create` posts a NEW top-level message — pass a channel (#chan or C…), not a message.");
+    process.exit(2);
+  }
+  if (!args.state.trim()) {
+    console.error("Error: the initial state is empty — a board has to say something.");
+    process.exit(2);
+  }
+  if (args.name !== undefined) {
+    if (!validPinlogName(args.name)) {
+      console.error(`Error: --name must be 1-64 of [A-Za-z0-9._-], starting with a letter or digit.`);
+      process.exit(2);
+    }
+    // One board per topic: a second `create --name x` is almost always a
+    // caller that lost track of the first, and two pinned boards that disagree
+    // are worse than none.
+    const existing = loadRegistry()[args.name];
+    if (existing) {
+      console.error(
+        `Error: pinlog "${args.name}" already exists → ${pinlogId(existing.channel, existing.ts)}\n` +
+        `  Update it instead:  slack pinlog update ${args.name} '<new state>' --log '<what changed>'`,
+      );
+      process.exit(1);
+    }
+  }
+  guardUrlBoundaries(args.state, args.allowUrlAdjacent);
+
+  const getSelf = selfLookup(token, args.cookie);
+  const channelId = await resolveChannel(token, ref, args.cookie);
+  const self = await getSelf();
+  // The clock is NOT in the hash: the footer's minute moves between preview and
+  // confirm, and a code that expires every minute is a code people stop reading.
+  const code = safetyCode("pinlog-create", channelId, args.state, args.name ?? "", self?.userId ?? "");
+  const now = new Date();
+  const head = composeHead(args.state, now);
+  if (args.code !== code) {
+    const dest = await destLabel(token, channelId, ref, args.cookie);
+    requireCode(args.code, code, [
+      `--- Creating pinlog --------------------------`,
+      fromLine(self, { asBot: args.asBot }),
+      `  → ${dest} — NEW top-level message, then pinned`,
+      ...(args.name ? [`  Name: ${args.name}`] : []),
+      `--- HEAD ------------------------------------`,
+      ...head.split("\n").map((l) => `  ${l}`),
+      `---------------------------------------------`,
+    ]);
+  }
+
+  const attr = sentAttribution("send");
+  let headTs: string;
+  try {
+    // plain: the HEAD must read back verbatim — `update` and `list` find the
+    // footer in the stored text, which Slack rewrites when blocks are attached.
+    headTs = await slackSend(token, channelId, head, undefined, false, args.cookie, true, attr.metadata);
+  } catch (e: unknown) {
+    console.error(`✗ HEAD was NOT posted: ${friendlySlackError(e)}`);
+    process.exit(1);
+  }
+  if (!headTs) {
+    console.error("✗ Slack accepted the post but returned no ts — check the channel before retrying, it may have landed.");
+    process.exit(1);
+  }
+  attr.record({ team: self?.team, channel: channelId, target: args.target, ts: headTs, text: head, asBot: args.asBot });
+  const id = pinlogId(channelId, headTs);
+  console.log(`✓ Posted HEAD: ${id}`);
+  const quiet = pinlogQuietWarning(now, "this new top-level post notified everyone who follows the channel");
+  if (quiet) console.error(quiet);
+
+  if (args.name) {
+    try {
+      saveRegistryEntry(args.name, { channel: channelId, ts: headTs, ...(self?.team ? { team: self.team } : {}), createdAt: new Date().toISOString() });
+      console.log(`✓ Registered name: ${args.name}`);
+    } catch (e: unknown) {
+      console.error(`✗ Name "${args.name}" was NOT registered (${e instanceof Error ? e.message : String(e)}) — use the id ${id}.`);
+    }
+  }
+
+  const bot = args.asBot ? " --as-bot" : "";
+  try {
+    await pinsAdd(token, channelId, headTs, args.cookie);
+    console.log("✓ Pinned");
+  } catch (e: unknown) {
+    // The board EXISTS now. Failing the command here would invite a retry of
+    // `create`, i.e. a second board — so this is reported loudly, but the exit
+    // code stays 0 and the id is already on stdout.
+    const raw = e instanceof Error ? e.message : String(e);
+    const why = /missing_scope/.test(raw)
+      ? `the ${args.asBot ? "bot" : "user"} token lacks the pins:write scope`
+      : friendlySlackError(e);
+    console.error(`⚠ NOT pinned: ${why}.`);
+    console.error(`  The board works unpinned; pin it later with:  slack pinlog pin ${id}${bot}`);
+  }
+}
+
+interface PinlogUpdateArgs {
+  target: string;
+  state?: string;
+  log: string;
+  logOnly?: boolean;
+  /** Turn an existing message (no footer yet) into a board: the explicit
+   *  opt-out of the marker check, for a board people already ran by hand. */
+  adopt?: boolean;
+  name?: string;
+  code?: string;
+  cookie?: string;
+  asBot?: boolean;
+  allowUrlAdjacent?: boolean;
+}
+
+async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<void> {
+  if (!args.log.trim()) {
+    console.error("Error: --log is required — one short line saying what changed. The log is the point of a pinlog.");
+    process.exit(2);
+  }
+  if (!args.logOnly && (args.state === undefined || !args.state.trim())) {
+    console.error("Error: the new state is required (positional or --file). To only post a log line, use --log-only.");
+    process.exit(2);
+  }
+  guardUrlBoundaries(args.log, args.allowUrlAdjacent);
+  if (args.state !== undefined) guardUrlBoundaries(args.state, args.allowUrlAdjacent);
+
+  const getSelf = selfLookup(token, args.cookie);
+  const { channel, ts, ref } = await resolvePinlogTarget(token, args.target, args.cookie);
+  const head = await fetchPinlogHead(token, channel, ts, args.cookie);
+  const currentText = typeof head.text === "string" ? head.text : "";
+  if (args.adopt && args.logOnly) {
+    console.error("Error: --adopt rewrites HEAD with a footer — it cannot be combined with --log-only.");
+    process.exit(2);
+  }
+  if (args.name !== undefined) {
+    if (!validPinlogName(args.name)) {
+      console.error(`Error: --name must be 1-64 of [A-Za-z0-9._-], starting with a letter or digit.`);
+      process.exit(2);
+    }
+    const existing = loadRegistry()[args.name];
+    if (existing && pinlogId(existing.channel, existing.ts) !== pinlogId(channel, ts)) {
+      console.error(`Error: name "${args.name}" already points at another board → ${pinlogId(existing.channel, existing.ts)}`);
+      process.exit(1);
+    }
+  }
+  if (!isPinlogHead(currentText) && !args.adopt) {
+    console.error(
+      `Error: the message at ${pinlogId(channel, ts)} is not a pinlog HEAD (no "${PINLOG_MARKER}" footer).\n` +
+      `  Refusing to overwrite it — check the id. To turn this message into a board on purpose, add --adopt.`,
+    );
+    process.exit(1);
+  }
+  const self = await getSelf();
+  const id = pinlogId(channel, ts);
+  const now = new Date();
+  const bot = args.asBot ? " --as-bot" : "";
+  // The retry command for a failed log post is printed with its code already
+  // in it, so the hash for --log-only must be computable here without a gate.
+  const logOnlyCode = safetyCode("pinlog-log", channel, ts, args.log, self?.userId ?? "");
+  const logOnlyRetry = `slack pinlog update ${id} --log-only --log ${shQuote(args.log)}${bot} --code=${logOnlyCode}`;
+
+  const quiet = pinlogQuietWarning(now, "the log reply notified everyone following this thread — hold non-urgent updates until 08:00");
+  if (args.logOnly) {
+    if (args.code !== logOnlyCode) {
+      const dest = await destLabel(token, channel, ref, args.cookie);
+      requireCode(args.code, logOnlyCode, [
+        `--- Pinlog log reply (HEAD unchanged) --------`,
+        fromLine(self, { asBot: args.asBot }),
+        `  → ${dest}, thread of ${id}`,
+        ...args.log.split("\n").map((l) => `  ${l}`),
+        `---------------------------------------------`,
+      ]);
+    }
+  } else {
+    const newHead = composeHead(args.state!, now);
+    // The CURRENT text is in the hash: if someone else updated the board
+    // between your preview and your confirm, the code you were shown no longer
+    // matches, and you re-read before overwriting their change.
+    const adopting = !isPinlogHead(currentText);
+    const code = safetyCode("pinlog-update", channel, ts, currentText, args.state!, args.log, args.name ?? "", self?.userId ?? "");
+    if (args.code !== code) {
+      const dest = await destLabel(token, channel, ref, args.cookie);
+      const unchanged = stripPinlogFooter(currentText).trim() === stripPinlogFooter(args.state!).trim();
+      requireCode(args.code, code, [
+        `--- Updating pinlog --------------------------`,
+        fromLine(self, { asBot: args.asBot }),
+        `  → ${dest}, ${id}`,
+        `--- Current HEAD -----------------------------`,
+        ...currentText.split("\n").map((l) => `  ${l}`),
+        `--- New HEAD (edited in place — silent) ------`,
+        ...newHead.split("\n").map((l) => `  ${l}`),
+        `--- Log reply (in the thread — notifies) -----`,
+        ...args.log.split("\n").map((l) => `  ${l}`),
+        `---------------------------------------------`,
+        ...(unchanged ? [`⚠ The state text is unchanged — only the footer time moves. Replies are for real changes.`] : []),
+        ...(adopting ? [`⚠ Adopting: this message has no pinlog footer yet — it becomes a board now.`] : []),
+        ...(args.name ? [`  Name: ${args.name}`] : []),
+      ]);
+    }
+
+    const attrEdit = sentAttribution("edit");
+    try {
+      await editMessage(token, channel, ts, newHead, args.cookie, true, attrEdit.metadata);
+    } catch (e: unknown) {
+      const raw = e instanceof Error ? e.message : String(e);
+      const hint = /cant_update_message/.test(raw)
+        ? `\n  Only the HEAD's author can edit it${args.asBot ? "" : " — if the bot created this board, add --as-bot"}.`
+        : "";
+      console.error(`✗ HEAD was NOT updated: ${friendlySlackError(e)}${hint}\n  The log reply was NOT posted either (a log line for a change the board does not show would be a lie).`);
+      process.exit(1);
+    }
+    attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
+    console.log(`✓ HEAD updated: ${id}`);
+    if (args.name) {
+      try {
+        saveRegistryEntry(args.name, { channel, ts, ...(self?.team ? { team: self.team } : {}), createdAt: new Date().toISOString() });
+        console.log(`✓ Registered name: ${args.name}`);
+      } catch (e: unknown) {
+        console.error(`✗ Name "${args.name}" was NOT registered (${e instanceof Error ? e.message : String(e)}) — use the id ${id}.`);
+      }
+    }
+  }
+
+  const attrLog = sentAttribution("send");
+  let logTs: string;
+  try {
+    logTs = await slackSend(token, channel, args.log, ts, false, args.cookie, true, attrLog.metadata);
+  } catch (e: unknown) {
+    console.error(
+      `✗ Log reply was NOT posted: ${friendlySlackError(e)}\n` +
+      (args.logOnly ? "" : `  The HEAD IS updated — only the log line is missing.\n`) +
+      `  Retry just the log line:\n    ${logOnlyRetry}`,
+    );
+    process.exit(1);
+  }
+  attrLog.record({ team: self?.team, channel, target: args.target, ts: logTs, text: args.log, asBot: args.asBot });
+  console.log(`✓ Logged (ts: ${logTs})`);
+  if (quiet) console.error(quiet);
+}
+
+/** `2026-10-08 15:10 JST` for a Slack ts. */
+function tsJst(ts: string): string {
+  return formatJst(new Date(Number(ts.split(".")[0]) * 1000));
+}
+
+async function pinlogAuthor(token: string, m: Record<string, Json>, cookie?: string): Promise<string> {
+  if (typeof m.user === "string") {
+    try {
+      return await userName(token, m.user, cookie);
+    } catch {
+      return m.user;
+    }
+  }
+  const prof = asRecord(m.bot_profile);
+  if (typeof prof.name === "string") return prof.name;
+  return typeof m.username === "string" ? m.username : "bot";
+}
+
+async function cmdPinlogShow(token: string, target: string, cookie?: string, json?: boolean): Promise<void> {
+  const { channel, ts } = await resolvePinlogTarget(token, target, cookie);
+  const resp = asRecord((await replies(token, channel, ts, 1000, cookie)) as Json);
+  const msgs = asArray(resp.messages).map(asRecord);
+  const head = msgs.find((m) => String(m.ts) === ts);
+  if (!head) {
+    console.error(`Error: no message at ts=${ts} in ${channel}.`);
+    process.exit(1);
+  }
+  const text = typeof head.text === "string" ? head.text : "";
+  const log = msgs.filter((m) => String(m.ts) !== ts);
+  if (json) {
+    console.log(JSON.stringify({
+      id: pinlogId(channel, ts),
+      isPinlog: isPinlogHead(text),
+      updated: headUpdatedAt(text),
+      head: text,
+      log: log.map((m) => ({ ts: String(m.ts), user: m.user ?? null, text: typeof m.text === "string" ? m.text : "" })),
+    }));
+    return;
+  }
+  if (!isPinlogHead(text)) {
+    console.error(`⚠ ${pinlogId(channel, ts)} has no "${PINLOG_MARKER}" footer — showing it anyway, but it is not a pinlog HEAD.`);
+  }
+  console.log(`=== HEAD ${pinlogId(channel, ts)} ===`);
+  for (const l of text.split("\n")) console.log(stripTerminalControls(l));
+  console.log(`=== log (${log.length}) ===`);
+  for (const m of log) {
+    const body = typeof m.text === "string" ? m.text : "";
+    const author = stripTerminalControls(await pinlogAuthor(token, m, cookie));
+    const lines = body.split("\n").map((l) => stripTerminalControls(l));
+    console.log(`${tsJst(String(m.ts))}  @${author}: ${lines[0] ?? ""}`);
+    for (const l of lines.slice(1)) console.log(`    ${l}`);
+  }
+}
+
+async function cmdPinlogList(token: string, target: string, limit: number, cookie?: string): Promise<void> {
+  const { ref } = splitRefTs(target);
+  const channelId = await resolveChannel(token, ref, cookie);
+  const names = new Map<string, string>();
+  for (const [name, e] of Object.entries(loadRegistry())) names.set(pinlogId(e.channel, e.ts), name);
+
+  let scanned = 0;
+  let cursor: string | undefined;
+  const found: Record<string, Json>[] = [];
+  do {
+    const page = asRecord((await history(token, channelId, Math.min(200, limit - scanned), undefined, cursor, cookie)) as Json);
+    const msgs = asArray(page.messages).map(asRecord);
+    scanned += msgs.length;
+    for (const m of msgs) if (typeof m.text === "string" && isPinlogHead(m.text)) found.push(m);
+    const next = asRecord(page.response_metadata).next_cursor;
+    cursor = typeof next === "string" && next ? next : undefined;
+  } while (cursor && scanned < limit);
+
+  const dest = await destLabel(token, channelId, ref, cookie);
+  if (found.length === 0) {
+    // "None in what we looked at" — not "none exist". Say how far we looked.
+    console.log(`No pinlogs in the last ${scanned} messages of ${dest}.${scanned >= limit ? ` (Older ones: --limit ${limit * 2})` : ""}`);
+    return;
+  }
+  for (const m of found) {
+    const ts = String(m.ts);
+    const id = pinlogId(channelId, ts);
+    const text = String(m.text);
+    const pinned = asArray(m.pinned_to).some((c) => c === channelId) ? "📌" : "  ";
+    const first = stripTerminalControls(stripPinlogFooter(text).split("\n").find((l) => l.trim()) ?? "").slice(0, 80);
+    const name = names.get(id);
+    const replies = typeof m.reply_count === "number" ? m.reply_count : 0;
+    console.log(`${pinned} ${id}${name ? `  [${name}]` : ""}  updated ${headUpdatedAt(text) ?? "?"}  log ${replies}`);
+    console.log(`     ${first}`);
+  }
+}
+
+async function cmdPinlogPin(token: string, target: string, cookie?: string): Promise<void> {
+  const { channel, ts } = await resolvePinlogTarget(token, target, cookie);
+  try {
+    await pinsAdd(token, channel, ts, cookie);
+    console.log(`✓ Pinned ${pinlogId(channel, ts)}`);
+  } catch (e: unknown) {
+    const raw = e instanceof Error ? e.message : String(e);
+    if (/already_pinned/.test(raw)) {
+      console.log(`✓ Already pinned: ${pinlogId(channel, ts)}`);
+      return;
+    }
+    console.error(`✗ NOT pinned: ${friendlySlackError(e)}`);
+    process.exit(1);
+  }
 }
 
 // --- react ---
@@ -4293,6 +4720,123 @@ async function main(): Promise<void> {
         }
         await cmdDelete(deleteToken, args);
       },
+    )
+    .command(
+      "pinlog",
+      "Pinned status board: the pinned top-level message is the current state (edited in place, silent); each change is one thread reply (the log, notifies)",
+      (y) => {
+        // Every pinlog subcommand acts as ONE identity for both reads and
+        // writes: the bot can only edit what the bot posted, and reading with a
+        // different token than the one that will write is how a preview shows
+        // a message the write then cannot touch.
+        const asBotOpt = { type: "boolean", default: false, describe: "Act via the bot token (xoxb / SLACK_BOT_TOKEN). A board the bot created can only be updated --as-bot: Slack lets a token edit only its own messages." } as const;
+        const pick = (argv: W & { "as-bot"?: boolean }): { token: string; cookie?: string; asBot: boolean } => {
+          if (argv["as-bot"]) return { token: requireBotToken(), asBot: true };
+          const cookie = ck(argv);
+          return { token: tok(argv), ...(cookie ? { cookie } : {}), asBot: false };
+        };
+        const fail = (e: unknown): never => {
+          console.error(friendlySlackError(e));
+          process.exit(1);
+        };
+        return y
+          .command(
+            "create <channel> [state]",
+            "Post a new board (HEAD) to a channel and pin it; prints its id (C…:ts)",
+            (y2) => y2
+              .positional("channel", { type: "string", demandOption: true, describe: "#chan or channel ID" })
+              .positional("state", { type: "string", describe: "Initial state (\\n for newlines), or use --file" })
+              .option("file", { type: "string", describe: "Read the state from a file (- = stdin)" })
+              .option("name", { type: "string", describe: "Register a local name for the id (~/.config/slack-cli/pinlogs.json)" })
+              .option("code", { type: "string", describe: "Safety hash to confirm" })
+              .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+              .option("as-bot", asBotOpt),
+            async (argv) => {
+              const state = pinlogStateArg(argv.state, argv.file);
+              if (state === undefined) {
+                console.error("Error: the initial state is required (positional or --file).");
+                process.exit(2);
+              }
+              const t = pick(argv as W & { "as-bot"?: boolean });
+              const args: PinlogCreateArgs = { target: argv.channel!, state, asBot: t.asBot, allowUrlAdjacent: argv["allow-url-adjacent"] };
+              if (t.cookie) args.cookie = t.cookie;
+              if (argv.name !== undefined) args.name = argv.name;
+              if (argv.code) args.code = argv.code;
+              await cmdPinlogCreate(t.token, args).catch(fail);
+            },
+          )
+          .command(
+            "update <pinlog> [state]",
+            "Replace HEAD with the full new state (silent edit) AND post one thread reply with the change (--log)",
+            (y2) => y2
+              .positional("pinlog", { type: "string", demandOption: true, describe: "id from create (C…:ts), a --name, #chan:ts, or the HEAD permalink" })
+              .positional("state", { type: "string", describe: "The FULL new state (not a diff), or use --file" })
+              .option("file", { type: "string", describe: "Read the state from a file (- = stdin)" })
+              .option("log", { type: "string", demandOption: true, describe: "One short line: what changed. Posted as a thread reply (notifies)" })
+              .option("log-only", { type: "boolean", default: false, describe: "Post only the log reply, leave HEAD as is (the retry after a failed log post)" })
+              .option("adopt", { type: "boolean", default: false, describe: "Allow a target WITHOUT the pinlog footer: turns an existing (e.g. hand-run) board into a pinlog" })
+              .option("name", { type: "string", describe: "Also register a local name for this board" })
+              .option("code", { type: "string", describe: "Safety hash to confirm" })
+              .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+              .option("as-bot", asBotOpt),
+            async (argv) => {
+              const state = pinlogStateArg(argv.state, argv.file);
+              const t = pick(argv as W & { "as-bot"?: boolean });
+              const args: PinlogUpdateArgs = {
+                target: argv.pinlog!, log: unescapeArg(argv.log!), logOnly: argv["log-only"], adopt: argv.adopt, asBot: t.asBot,
+                allowUrlAdjacent: argv["allow-url-adjacent"],
+              };
+              if (argv.name !== undefined) args.name = argv.name;
+              if (state !== undefined) {
+                if (args.logOnly) {
+                  console.error("Error: --log-only leaves HEAD as is — drop the state argument, or drop --log-only.");
+                  process.exit(2);
+                }
+                args.state = state;
+              }
+              if (t.cookie) args.cookie = t.cookie;
+              if (argv.code) args.code = argv.code;
+              await cmdPinlogUpdate(t.token, args).catch(fail);
+            },
+          )
+          .command(
+            "show <pinlog>",
+            "Print HEAD and its log (read-only)",
+            (y2) => y2
+              .positional("pinlog", { type: "string", demandOption: true })
+              .option("json", { type: "boolean", default: false, describe: "One JSON object: {id, isPinlog, updated, head, log[]}" })
+              .option("as-bot", asBotOpt),
+            async (argv) => {
+              const t = pick(argv as W & { "as-bot"?: boolean });
+              await cmdPinlogShow(t.token, argv.pinlog!, t.cookie, argv.json).catch(fail);
+            },
+          )
+          .command(
+            ["list <channel>", "ls <channel>"],
+            "List the pinlog boards in a channel, found by their footer marker (read-only)",
+            (y2) => y2
+              .positional("channel", { type: "string", demandOption: true })
+              .option("limit", { alias: "n", type: "number", default: 500, describe: "How many recent channel messages to scan" })
+              .option("as-bot", asBotOpt),
+            async (argv) => {
+              const t = pick(argv as W & { "as-bot"?: boolean });
+              await cmdPinlogList(t.token, argv.channel!, argv.limit, t.cookie).catch(fail);
+            },
+          )
+          .command(
+            "pin <pinlog>",
+            "Pin a board's HEAD (e.g. after create could not: missing pins:write)",
+            (y2) => y2
+              .positional("pinlog", { type: "string", demandOption: true })
+              .option("as-bot", asBotOpt),
+            async (argv) => {
+              const t = pick(argv as W & { "as-bot"?: boolean });
+              await cmdPinlogPin(t.token, argv.pinlog!, t.cookie).catch(fail);
+            },
+          )
+          .demandCommand(1, "Pick a subcommand: create | update | show | list | pin");
+      },
+      () => {},
     )
     .command(
       "react <target> <emoji>",

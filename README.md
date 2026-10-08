@@ -277,6 +277,49 @@ Notes:
   are **never** cached — they are exactly the values that change, and Slack's search index
   already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
+### pinlog — a pinned status board that keeps a log
+
+A **pinlog** is one pinned top-level message that always holds the *current* state
+(HEAD), plus a thread under it with one short reply per change (the log). The HEAD is
+**edited in place, which is silent**; each log reply **notifies**. People who want the
+state read the pin; people who want to know what changed follow the thread. Good for
+anything people come back to: blocker boards, release readiness, incidents — one board
+per topic.
+
+```bash
+# Create: post HEAD, pin it, print its id (C…:ts). --name keeps a local alias.
+slack pinlog create "#gtm" "販売ブロッカー\n1. 見積テンプレ — 未" --name gtm-blockers
+slack pinlog create "#gtm" --file board.md --name gtm-blockers   # or from a file (- = stdin)
+
+# Update: the FULL new state (not a diff) + one line for the log
+slack pinlog update gtm-blockers --file board.md --log "見積テンプレ: 未 → 済"
+
+slack pinlog show gtm-blockers          # HEAD + log (--json for one object)
+slack pinlog list "#gtm"                # boards in a channel, found by their footer
+slack pinlog pin gtm-blockers           # pin later (e.g. create lacked pins:write)
+```
+
+- Every HEAD ends with a footer, `_Pinlog · 最終更新 2026-10-08 15:10 JST · 更新はスレッドに_`,
+  refreshed on each update. `list` finds boards by it, and `update` **refuses** a message
+  without it, so a wrong id cannot overwrite an ordinary message.
+  To turn an existing hand-run board into a pinlog on purpose, pass `--adopt` once
+  (optionally with `--name`).
+- `create` and `update` use the same two-step `--code` gate as `send`/`edit`. The update
+  code covers the current HEAD text, so if someone else updated the board after your
+  preview, your code stops matching and you re-read first.
+- **Update order:** the HEAD edit first, then the log reply. If the edit fails, **no** log
+  reply is posted. If the reply fails, the command exits 1, says the HEAD *is* updated, and
+  prints the exact retry (`slack pinlog update <id> --log-only --log '…' --code=…`).
+- `create` without the pin scope still creates the board: it says `NOT pinned`, prints
+  the `slack pinlog pin` command, and exits 0, because retrying `create` would make a
+  second board. Pinning needs `pins:write` on the token you act with.
+- `--as-bot` acts as the bot for reads and writes. Slack lets a token edit only its own
+  messages, so a board the bot created must be updated `--as-bot`.
+- During quiet hours (JST 23:00–08:00) the preview shows the quiet-hours line, and the
+  confirmed run warns that the reply notified. It warns but does not block.
+- Names live in `~/.config/slack-cli/pinlogs.json`. An unreadable registry is an error,
+  never "no such board".
+
 ### tail — real-time message stream
 
 `slack tail` polls a channel every 3 seconds (configurable via `--interval`) and

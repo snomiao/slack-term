@@ -202,6 +202,20 @@ slack sent --cwd . --json                    # everything posted from this repo,
 Read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
 metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
 
+### pinlog — a pinned board: HEAD = current state, thread = log
+
+```bash
+slack pinlog create "#chan" --file board.md --name <topic> --as-bot   # → id C…:ts; pins it
+slack pinlog update <topic> --file board.md --log "<what changed>" --as-bot
+slack pinlog show <topic>        # HEAD + log
+slack pinlog list "#chan"        # boards in a channel
+```
+
+HEAD is edited in place (silent); each `update` also posts ONE thread reply (notifies).
+Always pass the FULL new state, and keep the HEAD true. Post replies only for real
+changes. If the edit fails, no reply is posted. If the reply fails, the command prints the
+`--log-only` retry. A board the bot created must be updated `--as-bot`.
+
 ### todo — tasks as reactions
 
 A task is any message carrying the marker reaction 📌 `:pushpin:`. Progress lives in a
@@ -280,6 +294,7 @@ Under **User Token Scopes**:
 - `users:read` — resolve display names
 - `chat:write` — send messages
 - `reactions:write` — add/remove reactions (`react`)
+- `pins:write` — pin a board (`pinlog create` / `pinlog pin`)
 
 > **Token-type gotcha:** the CLI uses the **user token** (`xoxp-`) by default, so scopes
 > must be under **User Token Scopes**. Adding `reactions:write` only to *Bot* Token Scopes
