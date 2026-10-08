@@ -499,9 +499,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       ring();
     };
     const relayLoop = async (r: NonNullable<typeof relay>): Promise<void> => {
-      let after: Cursor | undefined = state.relay?.url === r.url
-        ? { seq: state.relay.seq, ...(state.relay.epoch ? { epoch: state.relay.epoch } : {}) }
-        : undefined;
+      // --since asks for everything the relay still keeps (handleBell drops
+      // what is older than --since); otherwise resume where we stopped.
+      let after: Cursor | undefined = opts.sinceSec !== undefined
+        ? { seq: 0 }
+        : state.relay?.url === r.url
+          ? { seq: state.relay.seq, ...(state.relay.epoch ? { epoch: state.relay.epoch } : {}) }
+          : undefined;
       let attempt = 0;
       const pendingCount = (): number => bus.queue.length + bus.retry.length + (bus.inflight ? 1 : 0);
       while (!inner.signal.aborted) {

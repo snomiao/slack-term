@@ -42,6 +42,9 @@ export async function verifySlack(
 const SKIP_SUBTYPES = new Set([
   "message_changed", "message_deleted", "channel_join", "channel_leave", "group_join", "group_leave",
   "channel_topic", "channel_purpose", "channel_name", "pinned_item", "unpinned_item",
+  // A hidden update to a thread parent: its outer ts names the update, not a
+  // message — the reply itself arrives as its own event.
+  "message_replied",
 ]);
 
 const TS = /^\d{6,}\.\d{1,9}$/;
@@ -57,6 +60,7 @@ export function doorbellOf(payload: unknown, teamId?: string): Doorbell | null {
   const e = p.event;
   if (e.type !== "message" && e.type !== "app_mention") return null;
   if (typeof e.subtype === "string" && SKIP_SUBTYPES.has(e.subtype)) return null;
+  if (e.hidden === true) return null;
   const { channel, ts, thread_ts } = e;
   if (typeof channel !== "string" || !CHANNEL.test(channel)) return null;
   if (typeof ts !== "string" || !TS.test(ts)) return null;

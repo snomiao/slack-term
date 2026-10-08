@@ -139,6 +139,11 @@ describe("worker: doorbellOf keeps ids and timestamps only", () => {
     expect(doorbellOf(null)).toBeNull();
     expect(doorbellOf({ type: "event_callback" })).toBeNull();
   });
+  test("a hidden message_replied update rings nothing (the reply has its own event)", () => {
+    expect(doorbellOf(cb({ type: "message", subtype: "message_replied", hidden: true, channel: "C00000001", ts: "1700000000.000300",
+      message: { ts: "1700000000.000100", thread_ts: "1700000000.000100" } }))).toBeNull();
+    expect(doorbellOf(cb({ type: "message", hidden: true, channel: "C00000001", ts: "1700000000.000300" }))).toBeNull();
+  });
   test("thread_broadcast still rings (it is a reply shown in the channel)", () => {
     expect(doorbellOf(cb({ type: "message", subtype: "thread_broadcast", channel: "C00000001", ts: "1700000000.000200", thread_ts: "1700000000.000100" })))
       .toEqual({ channel: "C00000001", ts: "1700000000.000200", thread_ts: "1700000000.000100" });

@@ -1073,6 +1073,33 @@ describe("runStream — relay", () => {
     expect(st.relay).toMatchObject({ seq: 8, epoch: "e2" });
   });
 
+  test("--since replays the relay's kept bells inside the window, consumed or not, with or without state", async () => {
+    for (const saved of [true, false]) {
+      rmSync(join(dir, "state.json"), { force: true });
+      out = [];
+      const s = new FakeSlack();
+      const r = new FakeRelay();
+      const parent = ts(-10 * 86400); // only a bell can find these replies
+      s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "old" });
+      for (const [i, ago] of [[1, 1800], [2, 120]] as const) {
+        s.post("C00000001", { ts: ts(-ago), thread_ts: parent, user: "U00000001", text: `@mybot ${ago}s ago` });
+        r.log.push([i, { channel: "C00000001", ts: ts(-ago), thread_ts: parent }]);
+      }
+      r.latest = 2;
+      if (saved) {
+        // Both bells were already consumed by an earlier run.
+        writeFileSync(join(dir, "state.json"), JSON.stringify({
+          version: 1, identity: SELF, channels: {}, relay: { url: "https://relay.example", seq: 2, epoch: "e1" },
+        }));
+      }
+      const ac = new AbortController();
+      stepper({ 3: () => ac.abort() }, ac);
+      expect(await runStream(s, relayOpts(r, ac, { sinceSec: 300 }))).toBe(0);
+      expect(r.afters).toEqual([0]);
+      expect(emitted().map((m) => m.text)).toEqual(["@mybot 120s ago"]);
+    }
+  });
+
   test("bells from before --since (or before the first run) are not replayed", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();
