@@ -460,6 +460,21 @@ export async function deleteMessage(
   await post(token, "chat.delete", { channel, ts }, cookie);
 }
 
+/** One page of a thread, with Slack's cursor — for callers that must see the
+ *  WHOLE thread (or say that they did not). */
+export async function repliesCursor(
+  token: string,
+  channel: string,
+  ts: string,
+  cursor?: string,
+  limit = 200,
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = { channel, ts, limit: String(limit) };
+  if (cursor !== undefined) params.cursor = cursor;
+  return get(token, "conversations.replies", params, cookie);
+}
+
 /** Pin a message to its channel (pins.add, scope pins:write). Slack answers
  *  `already_pinned` when it already is — surfaced as an error like any other;
  *  the caller decides whether that counts. */

@@ -11,7 +11,7 @@
 // name → id registry. The commands themselves live in cli.ts beside send/edit,
 // because they share its confirm gate.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -43,10 +43,14 @@ export function pinlogFooter(now: Date): string {
   return `_${PINLOG_MARKER} ${formatJst(now)} · 更新はスレッドに_`;
 }
 
-// The footer is the LAST line, italic or not (a human hand-editing the board in
-// the Slack client may drop the underscores). Anchored to the end so a body
-// that merely quotes the marker text is not mistaken for one.
-const FOOTER_RE = new RegExp(`\\n*_?${PINLOG_MARKER} [^\\n]*_?\\s*$`);
+// The footer is the whole LAST line, exactly as `pinlogFooter` writes it — the
+// underscores optional, since a human hand-editing the board in the Slack
+// client may drop them. Anything looser (no line start, no timestamp) matches
+// ordinary text that merely mentions the marker, and `stripPinlogFooter` would
+// then cut that text off mid-sentence.
+const FOOTER_RE = new RegExp(
+  `(^|\\n+)_?${PINLOG_MARKER} \\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} JST · 更新はスレッドに_?[ \\t]*\\n*$`,
+);
 
 /** True when `text` is a pinlog HEAD (carries the footer marker). */
 export function isPinlogHead(text: string): boolean {
@@ -102,11 +106,87 @@ export function loadRegistry(path = registryPath()): PinlogRegistry {
   return raw as PinlogRegistry;
 }
 
+/** Add `name` → `entry`. Locked read-modify-write plus an atomic rename, so two
+ *  processes registering different names cannot drop each other's, and a
+ *  reader never sees a half-written file. A name already bound to a DIFFERENT
+ *  board is refused here too, not only in the caller's earlier check — two
+ *  concurrent `create --name x` both pass that check. */
 export function saveRegistryEntry(name: string, entry: PinlogEntry, path = registryPath()): void {
-  const reg = loadRegistry(path);
-  reg[name] = entry;
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(reg, null, 2)}\n`);
+  const release = acquireLock("registry", { dir: join(dirname(path), "locks") });
+  try {
+    const reg = loadRegistry(path);
+    const prev = reg[name];
+    if (prev && (prev.channel !== entry.channel || prev.ts !== entry.ts)) {
+      throw new Error(`name "${name}" already points at ${pinlogId(prev.channel, prev.ts)}`);
+    }
+    reg[name] = entry;
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(reg, null, 2)}\n`);
+    renameSync(tmp, path);
+  } finally {
+    release();
+  }
+}
+
+// --- lock: one writer per board on this machine -------------------------------
+
+export class LockBusyError extends Error {
+  constructor(public holder: string) {
+    super(`locked by ${holder}`);
+    this.name = "LockBusyError";
+  }
+}
+
+export function lockDir(): string {
+  return join(process.env.HOME || homedir(), ".config", "slack-cli", "locks");
+}
+
+/** Take an exclusive lock (O_EXCL file) or throw LockBusyError. A lock older
+ *  than `staleMs` is from a process that died holding it and is broken. The
+ *  returned release is idempotent and also runs on process exit, because the
+ *  confirm gate leaves through `process.exit`.
+ *
+ *  Slack has no compare-and-swap on chat.update, so this is the only thing that
+ *  keeps two confirmed updates from interleaving fetch → edit → log. It covers
+ *  writers on THIS machine (the fleet runs on one); writers elsewhere are not
+ *  serialised. */
+export function acquireLock(key: string, opts: { dir?: string; staleMs?: number } = {}): () => void {
+  const dir = opts.dir ?? lockDir();
+  const staleMs = opts.staleMs ?? 120_000;
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${key.replace(/[^A-Za-z0-9._-]/g, "_")}.lock`);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, "wx");
+      writeFileSync(fd, `pid=${process.pid} since=${new Date().toISOString()}\n`);
+      closeSync(fd);
+      let held = true;
+      const release = (): void => {
+        if (!held) return;
+        held = false;
+        try { unlinkSync(path); } catch { /* already gone */ }
+      };
+      process.once("exit", release);
+      return release;
+    } catch (e: unknown) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      let age = 0;
+      let holder = "another process";
+      try {
+        age = Date.now() - statSync(path).mtimeMs;
+        holder = readFileSync(path, "utf8").trim() || holder;
+      } catch {
+        continue; // vanished between open and stat — just retry
+      }
+      if (age > staleMs && attempt === 0) {
+        try { unlinkSync(path); } catch { /* raced with another breaker */ }
+        continue;
+      }
+      throw new LockBusyError(holder);
+    }
+  }
+  throw new LockBusyError("another process");
 }
 
 /** The id `create` prints and every other subcommand accepts. */

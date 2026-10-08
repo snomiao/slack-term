@@ -5,7 +5,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -268,6 +268,60 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
+  // Codex review: the retry shell-quoted the DECODED log, and the retry run
+  // decodes again — so a literal `\n` turned into a newline and the code broke.
+  test("the printed retry round-trips literal backslash escapes and yen", async () => {
+    // As typed: `\\n` = a literal backslash-n, `¥¥` = one yen, `\n` = a newline.
+    // (Not String.raw: bun turns non-ASCII inside it into \u escapes.)
+    const tricky = "C:\\\\new ¥¥1000 \\\\n literal, \\n real";
+    let retry = "";
+    let posted = "";
+    await withMock({ "chat.postMessage": { ok: false, error: "fatal_error" } }, async (m) => {
+      const { r } = await confirmed(m, ["pinlog", "update", ID, "s", "--log", tricky]);
+      posted = String(body(m, "chat.postMessage").text);
+      expect(posted).toBe("C:\\new ¥1000 \\n literal, \n real");
+      // eslint-disable-next-line no-control-regex
+      retry = r.stderr.split("\n").find((l) => l.includes("--log-only"))!.replace(/\x1b\[[0-9;]*m/g, "").trim();
+    });
+    // Run the printed command exactly as a shell would parse it.
+    const argv = (await new Promise<string[]>((resolve) => {
+      const c = spawn("bash", ["-c", `printf '%s\\0' ${retry.replace(/^slack /, "")}`]);
+      let out = "";
+      c.stdout.on("data", (d: Buffer) => { out += String(d); });
+      c.on("close", () => resolve(out.split("\0").filter(Boolean)));
+    }));
+    await withMock({}, async (m) => {
+      const r = await run(m, argv);
+      expect(r.exitCode).toBe(0);
+      expect(String(body(m, "chat.postMessage").text)).toBe(posted);
+    });
+  });
+
+  test("a concurrent update of the same board is refused before any write", async () => {
+    const ldir = join(tmpHome, ".config", "slack-cli", "locks");
+    mkdirSync(ldir, { recursive: true });
+    const lock = join(ldir, `pinlog-${CH}-${HEAD_TS}.lock`);
+    writeFileSync(lock, "pid=99999 since=now\n");
+    try {
+      await withMock({}, async (m) => {
+        const r = await run(m, [...args, "--code=0000"]);
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr).toContain("another update of");
+        expect(r.stderr).toContain("pid=99999");
+        expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+      });
+      // A lock left by a dead process is broken, not obeyed forever.
+      const old = new Date(Date.now() - 10 * 60_000);
+      utimesSync(lock, old, old);
+      await withMock({}, async (m) => {
+        const { r } = await confirmed(m, args);
+        expect(r.exitCode).toBe(0);
+      });
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
   test("a message without the footer is refused before any write", async () => {
     const notBoard = { "conversations.replies": { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: "just a message" }] } };
     await withMock(notBoard, async (m) => {
@@ -369,6 +423,27 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
       expect(r.stdout).toContain("状態: 青");
       expect(r.stdout).toContain("=== log (1) ===");
       expect(r.stdout).toMatch(/2023-11-15 \d{2}:\d{2} JST {2}@bob: 見積: 未 → 済/);
+    });
+  });
+
+  // Codex review: Slack returns the OLDEST replies first, so one page drops the
+  // newest entries — the ones a reader came for.
+  test("show pages through the whole thread (newest entries included)", async () => {
+    const p1 = `conversations.replies__channel=${CH}&limit=200&ts=${HEAD_TS}`;
+    const p2 = `conversations.replies__channel=${CH}&cursor=c2&limit=200&ts=${HEAD_TS}`;
+    const paged = {
+      [p1]: { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: HEAD_TEXT }, { ts: "1700000100.000200", user: "U00000002", text: "old entry" }], response_metadata: { next_cursor: "c2" } },
+      [p2]: { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: HEAD_TEXT }, { ts: "1700000200.000300", user: "U00000002", text: "NEWEST entry" }] },
+    };
+    await withMock(paged, async (m) => {
+      const r = await run(m, ["pinlog", "show", ID]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("=== log (2) ===");
+      expect(r.stdout).toContain("NEWEST entry");
+      expect(r.stdout.split("=== HEAD").length).toBe(2);
+      const j = JSON.parse((await run(m, ["pinlog", "show", ID, "--json"])).stdout) as { complete: boolean; log: unknown[] };
+      expect(j.complete).toBe(true);
+      expect(j.log.length).toBe(2);
     });
   });
 

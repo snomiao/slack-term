@@ -77,6 +77,7 @@ import {
   searchAll,
   send as slackSend,
   pinsAdd,
+  repliesCursor,
   type MessageMetadata,
   getPermalink,
   scheduleMessage,
@@ -105,10 +106,10 @@ import {
   type ProgressState,
 } from "./todo.ts";
 import { setCacheEnabled } from "./cache.ts";
-import { unescapeArg } from "./escapes.ts";
+import { escapeArg, unescapeArg } from "./escapes.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
-import { PINLOG_MARKER, composeHead, formatJst, headUpdatedAt, isPinlogHead, loadRegistry, parsePinlogId, pinlogId, registryPath, saveRegistryEntry, stripPinlogFooter, validPinlogName } from "./pinlog.ts";
+import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, loadRegistry, parsePinlogId, pinlogId, registryPath, saveRegistryEntry, stripPinlogFooter, validPinlogName } from "./pinlog.ts";
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -1572,6 +1573,16 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
 
   const getSelf = selfLookup(token, args.cookie);
   const { channel, ts, ref } = await resolvePinlogTarget(token, args.target, args.cookie);
+  // Held from the HEAD fetch through the log post (released on exit): Slack has
+  // no compare-and-swap on chat.update, so without it two confirmed updates can
+  // both read the same HEAD and the second silently erases the first's change.
+  try {
+    acquireLock(`pinlog-${channel}-${ts}`);
+  } catch (e: unknown) {
+    if (!(e instanceof LockBusyError)) throw e;
+    console.error(`Error: another update of ${pinlogId(channel, ts)} is running (${e.holder}). Re-run when it has finished — then re-read the board, it has changed.`);
+    process.exit(1);
+  }
   const head = await fetchPinlogHead(token, channel, ts, args.cookie);
   const currentText = typeof head.text === "string" ? head.text : "";
   if (args.adopt && args.logOnly) {
@@ -1603,7 +1614,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
   // The retry command for a failed log post is printed with its code already
   // in it, so the hash for --log-only must be computable here without a gate.
   const logOnlyCode = safetyCode("pinlog-log", channel, ts, args.log, self?.userId ?? "");
-  const logOnlyRetry = `slack pinlog update ${id} --log-only --log ${shQuote(args.log)}${bot} --code=${logOnlyCode}`;
+  const logOnlyRetry = `slack pinlog update ${id} --log-only --log ${shQuote(escapeArg(args.log))}${bot} --code=${logOnlyCode}`;
 
   const quiet = pinlogQuietWarning(now, "the log reply notified everyone following this thread — hold non-urgent updates until 08:00");
   if (args.logOnly) {
@@ -1709,8 +1720,24 @@ async function pinlogAuthor(token: string, m: Record<string, Json>, cookie?: str
 
 async function cmdPinlogShow(token: string, target: string, cookie?: string, json?: boolean): Promise<void> {
   const { channel, ts } = await resolvePinlogTarget(token, target, cookie);
-  const resp = asRecord((await replies(token, channel, ts, 1000, cookie)) as Json);
-  const msgs = asArray(resp.messages).map(asRecord);
+  // Page through the whole thread. Slack returns the oldest replies first, so a
+  // single page silently drops the NEWEST log entries — the ones a reader came
+  // for. Bounded; past the bound, `complete` says so.
+  const msgs: Record<string, Json>[] = [];
+  let cursor: string | undefined;
+  let pages = 0;
+  do {
+    const page = asRecord((await repliesCursor(token, channel, ts, cursor, 200, cookie)) as Json);
+    for (const m of asArray(page.messages).map(asRecord)) {
+      // Every page repeats the parent; keep it once.
+      if (String(m.ts) === ts && msgs.some((x) => String(x.ts) === ts)) continue;
+      msgs.push(m);
+    }
+    const next = asRecord(page.response_metadata).next_cursor;
+    cursor = typeof next === "string" && next ? next : undefined;
+    pages++;
+  } while (cursor && pages < 50);
+  const complete = cursor === undefined;
   const head = msgs.find((m) => String(m.ts) === ts);
   if (!head) {
     console.error(`Error: no message at ts=${ts} in ${channel}.`);
@@ -1723,6 +1750,7 @@ async function cmdPinlogShow(token: string, target: string, cookie?: string, jso
       id: pinlogId(channel, ts),
       isPinlog: isPinlogHead(text),
       updated: headUpdatedAt(text),
+      complete,
       head: text,
       log: log.map((m) => ({ ts: String(m.ts), user: m.user ?? null, text: typeof m.text === "string" ? m.text : "" })),
     }));
@@ -1733,9 +1761,7 @@ async function cmdPinlogShow(token: string, target: string, cookie?: string, jso
   }
   console.log(`=== HEAD ${pinlogId(channel, ts)} ===`);
   for (const l of slackUnescape(text).split("\n")) console.log(stripTerminalControls(l));
-  // One page of conversations.replies (1000). Say so rather than present a
-  // partial log as the whole one.
-  const more = resp.has_more === true ? " — first page only, older entries not shown" : "";
+  const more = complete ? "" : " — INCOMPLETE: the newest entries are not shown";
   console.log(`=== log (${log.length}${more}) ===`);
   for (const m of log) {
     const body = typeof m.text === "string" ? m.text : "";

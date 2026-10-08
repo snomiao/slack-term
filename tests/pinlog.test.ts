@@ -3,11 +3,14 @@
 // name registry. The commands themselves are covered in pinlog-cli.test.ts.
 
 import { describe, test, expect, afterAll } from "./harness.ts";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { escapeArg, unescapeArg } from "../ts/escapes.ts";
 import {
+  LockBusyError,
   PINLOG_MARKER,
+  acquireLock,
   composeHead,
   formatJst,
   headUpdatedAt,
@@ -64,6 +67,19 @@ describe("footer marker", () => {
     expect(isPinlogHead(`${pinlogFooter(now)}\nand then more text below`)).toBe(false);
   });
 
+  // Codex review: the first regex needed neither a line start nor the
+  // timestamp, so ordinary text mentioning the marker counted as a board and
+  // strip() cut it off mid-sentence.
+  test("text that merely MENTIONS the marker is neither a HEAD nor truncated", () => {
+    const s = `Please explain ${PINLOG_MARKER} tomorrow`;
+    expect(isPinlogHead(s)).toBe(false);
+    expect(stripPinlogFooter(s)).toBe(s);
+    const s2 = `a\n${PINLOG_MARKER} soon`;
+    expect(isPinlogHead(s2)).toBe(false);
+    expect(stripPinlogFooter(s2)).toBe(s2);
+    expect(composeHead(s, now).startsWith(s)).toBe(true);
+  });
+
   test("a footer whose italics a human removed still counts", () => {
     expect(isPinlogHead(`state\n\n${PINLOG_MARKER} 2026-10-08 15:10 JST · 更新はスレッドに`)).toBe(true);
   });
@@ -87,6 +103,38 @@ describe("ids and names", () => {
   });
 });
 
+describe("escapeArg (for printed retry commands)", () => {
+  test("unescapeArg(escapeArg(x)) === x, including literal escapes and yen", () => {
+    for (const x of ["plain", "a\\nb", "real\nnewline", "tab\there", "¥1000", "¥n literal", "\\\\", "mix \\t ¥¥ \n end"]) {
+      expect(unescapeArg(escapeArg(x))).toBe(x);
+    }
+  });
+  test("the escaped form is one line", () => {
+    expect(escapeArg("a\nb")).not.toContain("\n");
+  });
+});
+
+describe("lock", () => {
+  const ldir = join(dir, "locks");
+  test("a second acquire is refused while the first holds it; release frees it", () => {
+    const release = acquireLock("k1", { dir: ldir });
+    expect(() => acquireLock("k1", { dir: ldir })).toThrow(LockBusyError);
+    release();
+    const again = acquireLock("k1", { dir: ldir });
+    again();
+    again(); // idempotent
+  });
+  test("a stale lock (dead holder) is broken", () => {
+    const release = acquireLock("k2", { dir: ldir });
+    const p = join(ldir, "k2.lock");
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(p, old, old);
+    const mine = acquireLock("k2", { dir: ldir, staleMs: 60_000 });
+    mine();
+    release(); // the original holder's release must not throw
+  });
+});
+
 describe("registry", () => {
   test("a missing file is an empty registry", () => {
     expect(loadRegistry(join(dir, "none.json"))).toEqual({});
@@ -98,6 +146,17 @@ describe("registry", () => {
     saveRegistryEntry("b", { channel: "C00000002", ts: "1700000000.000200", createdAt: "y" }, p);
     expect(Object.keys(loadRegistry(p)).sort()).toEqual(["a", "b"]);
     expect(loadRegistry(p).b!.channel).toBe("C00000002");
+  });
+
+  test("writes atomically (no temp file left) and refuses rebinding a name to another board", () => {
+    const p = join(dir, "atomic", "pinlogs.json");
+    saveRegistryEntry("x", { channel: "C00000001", ts: "1700000000.000100", createdAt: "a" }, p);
+    // same board again is fine
+    saveRegistryEntry("x", { channel: "C00000001", ts: "1700000000.000100", createdAt: "b" }, p);
+    expect(() => saveRegistryEntry("x", { channel: "C00000002", ts: "1700000000.000200", createdAt: "c" }, p)).toThrow(/already points at/);
+    expect(loadRegistry(p).x!.channel).toBe("C00000001");
+    expect(readdirSync(join(dir, "atomic")).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+    expect(existsSync(join(dir, "atomic", "locks", "registry.lock"))).toBe(false);
   });
 
   // Fail-vs-absent: "no such name" for a file we could not read would send the
