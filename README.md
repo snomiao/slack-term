@@ -318,6 +318,52 @@ slack tail "@alice" --exit-on-message --timeout 30m --interval 15000
 **Note:** Cross-channel mention streaming (`--me` without a target) is not yet
 supported — a target channel is required.
 
+### stream — every matching message, across all channels
+
+`slack stream --grep <regex>` watches **every** conversation the identity is in —
+new top-level posts *and* thread replies — and prints each message whose text
+matches. It is the cross-channel counterpart of `tail`, built for a long-running
+consumer (e.g. "wake an agent whenever someone @mentions the bot"):
+
+```sh
+slack stream --grep '<@U00000001>|@mybot' --json            # runs until stopped
+slack stream --grep 'deploy' -i --channel '#dev' --once       # one scan, then exit
+slack stream --grep '<@U00000001>' --since 2h --json          # replay the last 2 hours
+```
+
+- **One JSON line per match** with `--json`:
+  `{type: "message"|"reply", channel: {id, name}, ts, thread_ts, user: {id, name}, text, permalink}`.
+  `--grep` runs on the raw text (mentions look like `<@U…>`), plus legacy attachment
+  text; the emitted `text` has `&lt; &gt; &amp;` decoded.
+- **Privacy-safe defaults.** With a bot token (`SLACK_BOT_TOKEN`) it streams **as the
+  bot**, so it sees only channels the bot was invited to — never the user's DMs.
+  `--as-user` opts into the user identity. Matching happens before anything is
+  printed: a non-matching message is never printed, logged, or even name-resolved.
+- **No self-echo.** Posts by the streaming identity are excluded by sender id (its user
+  id and bot id; with `--as-user`, the bot's posts too) — the same text from anyone
+  else still matches.
+- **Resumable.** A per-channel cursor (plus one per active thread) is saved under
+  `$XDG_STATE_HOME/slack-term/stream/` (one file per identity + grep + channels;
+  override with `--state`). A restart continues where it stopped: nothing lost,
+  nothing repeated. The first run starts *now*; `--since` replays from a point,
+  ignoring the saved cursor. Delivery is at-least-once only in one corner — a crash
+  between printing a match and saving the cursor repeats that line, so dedupe on
+  `channel.id + ts`. A lock file keeps two streams off the same state.
+- **Transport: polling** (`--interval`, default `45s`). Each cycle reads every
+  channel's history over a sliding `--thread-window` (default `3d`): that one scan
+  shows new posts and which threads gained replies, and only those threads are read.
+  A message is held back until it is 5 s old, so a cursor never skips one Slack has
+  not made visible yet. Rate limits honour `Retry-After`.
+- **Not covered:** edits (a message edited *into* matching is not re-emitted), and
+  replies in a thread whose parent is older than `--thread-window`.
+- **Failures are loud and distinguishable.** A network/API error retries the cycle
+  with φ backoff (`2s·1.618ⁿ`, capped at 5 min), one stderr line per attempt; after
+  12 consecutive failures (≈16 min) it exits. A channel it cannot read is skipped with
+  one stderr line; if *every* channel fails, that is a failure, not "no matches".
+- **Exit codes** (same contract as `ask`): `0` matches printed (`--once`) or stopped by
+  SIGINT/SIGTERM; `2` `--once` found nothing; `3` transport/auth failure (stderr says
+  which); `1` bad arguments (e.g. an invalid regex).
+
 ## Configuration
 
 Requires a Slack user token (`xoxp-...`) with the following scopes:

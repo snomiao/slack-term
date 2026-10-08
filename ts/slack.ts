@@ -258,6 +258,39 @@ export async function replies(
   return repairMessages(await get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie));
 }
 
+// One page of a thread's replies newer than `oldest` (exclusive). Slack returns
+// the parent first on every page regardless of `oldest`; callers drop it.
+export async function repliesPage(
+  token: string,
+  channel: string,
+  ts: string,
+  opts: { oldest?: string; cursor?: string; limit?: number } = {},
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = { channel, ts, limit: String(opts.limit ?? 200) };
+  if (opts.oldest !== undefined) params.oldest = opts.oldest;
+  if (opts.cursor !== undefined) params.cursor = opts.cursor;
+  return repairMessages(await get(token, "conversations.replies", params, cookie));
+}
+
+// Conversations the token's OWN identity is a member of (users.conversations),
+// unlike conversations.list, which also returns public channels it is not in.
+export async function userConversations(token: string, types: string, cookie?: string): Promise<Json[]> {
+  const out: Json[] = [];
+  let cursor = "";
+  do {
+    const params: Record<string, string> = { limit: "200", types, exclude_archived: "true" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.conversations", params, cookie)) as {
+      channels?: Json[];
+      response_metadata?: { next_cursor?: string };
+    };
+    out.push(...(resp.channels ?? []));
+    cursor = resp.response_metadata?.next_cursor ?? "";
+  } while (cursor);
+  return out;
+}
+
 // Metadata for a single uploaded file (files.info). Carries url_private_download,
 // which requires an Authorization: Bearer token (+ xoxd cookie for session tokens)
 // to actually fetch the bytes.

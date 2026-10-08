@@ -1,0 +1,450 @@
+// `slack stream` — every new message the identity can see that matches --grep,
+// one line per match, across all of its channels (top-level posts AND thread
+// replies), resumable from a persisted per-channel cursor.
+//
+// Transport: polling. Slack's real-time paths need either a desktop session
+// (RTM, user identity only) or Socket Mode (an app-level xapp- token). The bot
+// identity — the privacy-safe default — has neither, so this polls
+// conversations.history over a sliding "thread window": one history scan per
+// channel yields both new top-level messages (ts past the cursor) and every
+// thread whose `latest_reply` moved past that thread's cursor, and only those
+// threads cost a conversations.replies call.
+//
+// Delivery is at-least-once: the cursor is saved right after each match is
+// written, so a crash between the write and the save can repeat that one line.
+// Consumers dedupe on channel.id + ts.
+//
+// Not covered (documented in README): edits (a message edited INTO matching is
+// not re-emitted), and replies to a thread whose parent is older than the
+// thread window.
+
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { history, RateLimitError, repliesPage, userConversations, userName, type Json } from "./slack.ts";
+
+export type ChannelRef = { id: string; name: string; isIm: boolean; user?: string };
+
+export type Page = { messages: Record<string, Json>[]; nextCursor?: string };
+
+/** The Slack surface the stream needs — injected so tests run without HTTP. */
+export type StreamClient = {
+  listChannels(): Promise<ChannelRef[]>;
+  history(channel: string, oldest: string, cursor?: string): Promise<Page>;
+  replies(channel: string, threadTs: string, oldest: string, cursor?: string): Promise<Page>;
+  userName(id: string): Promise<string>;
+};
+
+function page(resp: Json): Page {
+  const r = resp as { messages?: Json; has_more?: Json; response_metadata?: { next_cursor?: Json } };
+  const messages = (Array.isArray(r.messages) ? r.messages : [])
+    .filter((m): m is Record<string, Json> => !!m && typeof m === "object" && !Array.isArray(m));
+  const next = r.has_more === true ? r.response_metadata?.next_cursor : undefined;
+  return typeof next === "string" && next ? { messages, nextCursor: next } : { messages };
+}
+
+/** The real client: Slack Web API calls as the given identity. */
+export function webClient(token: string, cookie?: string): StreamClient {
+  return {
+    async listChannels() {
+      const raw = await userConversations(token, "public_channel,private_channel,im,mpim", cookie);
+      return raw.flatMap((c): ChannelRef[] => {
+        if (!c || typeof c !== "object" || Array.isArray(c) || typeof c.id !== "string") return [];
+        const isIm = c.is_im === true;
+        return [{ id: c.id, name: str(c.name) || c.id, isIm, ...(isIm && typeof c.user === "string" ? { user: c.user } : {}) }];
+      });
+    },
+    history: async (channel, oldest, cursor) => page(await history(token, channel, 200, oldest, cursor, cookie)),
+    replies: async (channel, threadTs, oldest, cursor) =>
+      page(await repliesPage(token, channel, threadTs, { oldest, ...(cursor ? { cursor } : {}) }, cookie)),
+    userName: (id) => userName(token, id, cookie),
+  };
+}
+
+export type ChanState = {
+  /** When this channel started being watched: a thread first seen gets this as its cursor. */
+  since: string;
+  /** Every top-level message with ts ≤ cursor has been matched (or skipped). */
+  cursor: string;
+  /** Per thread (parent ts): every reply with ts ≤ value has been matched. */
+  threads: Record<string, string>;
+};
+
+export type StreamState = { version: 1; identity: string; channels: Record<string, ChanState> };
+
+export type StreamMatch = {
+  type: "message" | "reply";
+  channel: { id: string; name: string };
+  ts: string;
+  thread_ts: string | null;
+  user: { id: string; name: string };
+  text: string;
+  permalink: string;
+};
+
+export type StreamOpts = {
+  grep: RegExp;
+  /** Restrict to these channel ids; otherwise every conversation the identity is in. */
+  channels?: string[];
+  /** Sender ids whose posts are never emitted: the identity itself (user id / bot id). */
+  selfUsers: Set<string>;
+  selfBots: Set<string>;
+  json: boolean;
+  once: boolean;
+  /** Seconds back to (re)start every channel from, overriding the saved cursor. */
+  sinceSec?: number;
+  intervalMs: number;
+  threadWindowSec: number;
+  statePath: string;
+  /** Workspace URL ("https://acme.slack.com/") for permalinks. */
+  teamUrl: string;
+  /** auth.test user id — a state file written by another identity is refused. */
+  identity: string;
+  /** Messages younger than this are left for the next cycle, so a message Slack
+   *  has not made visible yet cannot be skipped by a cursor that jumped past it. */
+  settleSec?: number;
+  /** Consecutive failed cycles before giving up (exit 3). */
+  maxFailures?: number;
+  backoffBaseMs?: number;
+  backoffCapMs?: number;
+  /** Re-list the identity's channels every N cycles (new invites / DMs). */
+  refreshEvery?: number;
+  signal?: AbortSignal;
+};
+
+export const PHI = 1.618;
+
+export const _internals = {
+  now: (): number => Date.now(),
+  sleep: (ms: number, signal?: AbortSignal): Promise<void> => new Promise((res) => {
+    if (signal?.aborted) return res();
+    const t = setTimeout(res, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); res(); }, { once: true });
+  }),
+  out: (line: string): void => { process.stdout.write(line + "\n"); },
+  err: (line: string): void => { process.stderr.write(line + "\n"); },
+  pidAlive: (pid: number): boolean => {
+    try { process.kill(pid, 0); return true; } catch (e) { return (e as { code?: string }).code === "EPERM"; }
+  },
+};
+
+/** φ backoff: min(cap, base·φ^(attempt-1)). With the defaults (2 s, cap 300 s,
+ *  12 attempts) the worst-case total wait before giving up is ~16 min. */
+export function phiDelay(attempt: number, baseMs: number, capMs: number): number {
+  return Math.min(capMs, Math.round(baseMs * Math.pow(PHI, Math.max(0, attempt - 1))));
+}
+
+/** Errors that no retry can fix — the whole stream stops (exit 3). */
+const FATAL = ["invalid_auth", "not_authed", "token_revoked", "token_expired", "account_inactive", "no_permission"];
+/** Errors confined to one channel — that channel is skipped, loudly, the rest go on. */
+const CHANNEL = ["channel_not_found", "not_in_channel", "missing_scope", "is_archived"];
+
+export class StreamFatal extends Error {}
+
+function errText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+function classify(e: unknown): "fatal" | "channel" | "transient" {
+  const m = errText(e);
+  if (FATAL.some((c) => m.includes(c))) return "fatal";
+  if (CHANNEL.some((c) => m.includes(c))) return "channel";
+  return "transient";
+}
+
+const str = (v: Json | undefined): string => (typeof v === "string" ? v : "");
+const num = (ts: string): number => Number(ts) || 0;
+const fmt = (sec: number): string => sec.toFixed(6);
+
+// Housekeeping subtypes: never a person talking.
+const SKIP_SUBTYPES = new Set([
+  "message_changed", "message_deleted", "channel_join", "channel_leave", "group_join", "group_leave",
+]);
+
+/** The text --grep runs against: the message body plus legacy attachment text
+ *  (bots and integrations often put everything there). */
+export function matchText(m: Record<string, Json>): string {
+  const parts = [str(m.text)];
+  if (Array.isArray(m.attachments)) {
+    for (const a of m.attachments) {
+      if (a && typeof a === "object" && !Array.isArray(a)) {
+        parts.push(str(a.pretext), str(a.text), str(a.fallback));
+      }
+    }
+  }
+  return parts.filter(Boolean).join("\n");
+}
+
+export function permalink(teamUrl: string, channel: string, ts: string, threadTs?: string): string {
+  const base = teamUrl.endsWith("/") ? teamUrl : teamUrl + "/";
+  const p = `${base}archives/${channel}/p${ts.replace(".", "")}`;
+  return threadTs && threadTs !== ts ? `${p}?thread_ts=${threadTs}&cid=${channel}` : p;
+}
+
+export function loadState(path: string, identity: string): StreamState {
+  if (!existsSync(path)) return { version: 1, identity, channels: {} };
+  let parsed: StreamState;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8")) as StreamState;
+  } catch (e) {
+    // A corrupt cursor must not silently restart from "now" (that would drop
+    // whatever arrived while we were down) — refuse and let a human decide.
+    throw new StreamFatal(`state file ${path} is unreadable (${errText(e)}); move it aside to start fresh`);
+  }
+  if (parsed.identity !== identity) {
+    throw new StreamFatal(`state file ${path} belongs to identity ${parsed.identity}, not ${identity}; pass a different --state`);
+  }
+  return parsed;
+}
+
+export function saveState(path: string, st: StreamState): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, JSON.stringify(st));
+  renameSync(tmp, path);
+}
+
+/** One stream per state file: a second one would emit every match twice. */
+export function acquireLock(path: string): () => void {
+  const lock = `${path}.lock`;
+  mkdirSync(dirname(lock), { recursive: true });
+  const release = (): void => { try { unlinkSync(lock); } catch { /* already gone */ } };
+  try {
+    writeFileSync(lock, String(process.pid), { flag: "wx" });
+  } catch {
+    const pid = Number(readFileSync(lock, "utf8").trim());
+    if (pid && _internals.pidAlive(pid)) {
+      throw new StreamFatal(`another slack stream (pid ${pid}) already uses ${path}`);
+    }
+    unlinkSync(lock); // stale: its owner is gone
+    writeFileSync(lock, String(process.pid), { flag: "wx" }); // throws if another stream won the race
+  }
+  return release;
+}
+
+type Ctx = {
+  opts: StreamOpts;
+  client: StreamClient;
+  state: StreamState;
+  names: Map<string, string>;
+  matches: number;
+};
+
+async function nameOf(ctx: Ctx, id: string): Promise<string> {
+  let n = ctx.names.get(id);
+  if (n === undefined) {
+    n = await ctx.client.userName(id);
+    ctx.names.set(id, n);
+  }
+  return n;
+}
+
+/** Match one message and, only if it matches, resolve names and emit it.
+ *  Nothing about a non-matching message is printed or logged. */
+async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isReply: boolean): Promise<boolean> {
+  if (SKIP_SUBTYPES.has(str(m.subtype))) return false;
+  const uid = str(m.user);
+  const bid = str(m.bot_id);
+  if ((uid && ctx.opts.selfUsers.has(uid)) || (bid && ctx.opts.selfBots.has(bid))) return false;
+  ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
+  if (!ctx.opts.grep.test(matchText(m))) return false;
+
+  const ts = str(m.ts);
+  const threadTs = str(m.thread_ts) || null;
+  const senderId = uid || bid;
+  const senderName = uid
+    ? await nameOf(ctx, uid)
+    : str(m.username) || str((m.bot_profile as Record<string, Json> | undefined)?.name) || bid;
+  const chName = ch.isIm ? `@${ch.user ? await nameOf(ctx, ch.user) : ch.id}` : `#${ch.name}`;
+  const rec: StreamMatch = {
+    type: isReply ? "reply" : "message",
+    channel: { id: ch.id, name: chName },
+    ts,
+    thread_ts: threadTs,
+    user: { id: senderId, name: senderName },
+    // Slack escapes only these three; the regex ran on the raw text above.
+    text: str(m.text).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
+    permalink: permalink(ctx.opts.teamUrl, ch.id, ts, threadTs ?? undefined),
+  };
+  ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
+  ctx.matches++;
+  return true;
+}
+
+export function humanLine(r: StreamMatch): string {
+  const when = new Date(num(r.ts) * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+  const mark = r.type === "reply" ? "↳ " : "";
+  const body = r.text.split("\n").join("\n    ");
+  return `${when}  ${r.channel.name}  ${mark}@${r.user.name}: ${body}\n    ${r.permalink}`;
+}
+
+async function allPages(fetch: (cursor?: string) => Promise<Page>): Promise<Record<string, Json>[]> {
+  const out: Record<string, Json>[] = [];
+  let cursor: string | undefined;
+  do {
+    const p = await fetch(cursor);
+    out.push(...p.messages);
+    cursor = p.nextCursor;
+  } while (cursor);
+  return out;
+}
+
+/** Scan one channel up to `horizon` (now − settle) and advance its cursors. */
+export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Promise<void> {
+  const st = ctx.state.channels[ch.id]!;
+  const horizon = nowSec - (ctx.opts.settleSec ?? 5);
+  const windowStart = nowSec - ctx.opts.threadWindowSec;
+  const cursor = num(st.cursor);
+  const oldest = Math.min(cursor, windowStart);
+
+  const msgs = (await allPages((c) => ctx.client.history(ch.id, fmt(oldest), c)))
+    .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+
+  for (const m of msgs) {
+    const t = num(str(m.ts));
+    if (t <= cursor || t > horizon) continue;
+    // A thread_broadcast is a reply also shown in the channel; it is emitted
+    // here (once) and skipped when its thread's replies are read.
+    const tts = str(m.thread_ts);
+    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts));
+    st.cursor = str(m.ts);
+    // Persist right after a match is written, so a restart cannot repeat it.
+    if (hit) saveState(ctx.opts.statePath, ctx.state);
+  }
+  if (num(st.cursor) < horizon) st.cursor = fmt(horizon);
+
+  // Threads: any parent in the window whose latest reply is past its cursor.
+  for (const p of msgs) {
+    const pts = str(p.ts);
+    const latest = num(str(p.latest_reply));
+    if (!latest || str(p.thread_ts) !== pts) continue;
+    const tc = num(st.threads[pts] ?? st.since);
+    if (latest <= tc) continue;
+    const reps = (await allPages((c) => ctx.client.replies(ch.id, pts, fmt(tc), c)))
+      .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+    for (const r of reps) {
+      const t = num(str(r.ts));
+      if (str(r.ts) === pts || t <= tc || t > horizon) continue;
+      const hit = str(r.subtype) !== "thread_broadcast" && await consider(ctx, ch, r, true);
+      st.threads[pts] = str(r.ts);
+      if (hit) saveState(ctx.opts.statePath, ctx.state);
+    }
+    st.threads[pts] = fmt(Math.max(num(st.threads[pts] ?? "0"), Math.min(latest, horizon)));
+  }
+  // Forget threads that slid out of the window.
+  for (const k of Object.keys(st.threads)) if (num(k) < windowStart) delete st.threads[k];
+  saveState(ctx.opts.statePath, ctx.state);
+}
+
+/** Run the stream. Resolves with the process exit code:
+ *  0 — matches were emitted (--once) / stopped by a signal (long-running);
+ *  2 — --once found no match;
+ *  3 — transport/config failure (stderr says what). */
+export async function runStream(client: StreamClient, opts: StreamOpts): Promise<number> {
+  const maxFailures = opts.maxFailures ?? (opts.once ? 3 : 12);
+  const base = opts.backoffBaseMs ?? 2000;
+  const cap = opts.backoffCapMs ?? 300_000;
+  const refreshEvery = opts.refreshEvery ?? 10;
+
+  let release: (() => void) | undefined;
+  try {
+    release = acquireLock(opts.statePath);
+    const state = loadState(opts.statePath, opts.identity);
+    const ctx: Ctx = { opts, client, state, names: new Map(), matches: 0 };
+    const skipped = new Set<string>();
+    let channels: ChannelRef[] = [];
+    let lastRefreshSec = _internals.now() / 1000;
+    let failures = 0;
+    let cycle = 0;
+
+    if (opts.sinceSec !== undefined) {
+      // An explicit --since replays from that point: drop the saved cursors.
+      state.channels = {};
+    }
+
+    while (!opts.signal?.aborted) {
+      const nowSec = _internals.now() / 1000;
+      try {
+        if (cycle % refreshEvery === 0) {
+          const listed = await client.listChannels();
+          channels = listed.filter((c) => !opts.channels || opts.channels.includes(c.id));
+          if (opts.channels) {
+            for (const id of opts.channels) {
+              if (!channels.some((c) => c.id === id)) {
+                throw new StreamFatal(`--channel ${id}: the identity is not a member of it`);
+              }
+            }
+          }
+          const isFirst = Object.keys(state.channels).length === 0;
+          for (const c of channels) {
+            if (state.channels[c.id]) continue;
+            // First run: start now (or --since). A channel that appears later
+            // (new invite / DM) starts at the previous refresh, so the gap
+            // between joining and noticing it is still scanned.
+            const start = opts.sinceSec !== undefined && cycle === 0
+              ? nowSec - opts.sinceSec
+              : isFirst || cycle === 0 ? nowSec : lastRefreshSec;
+            state.channels[c.id] = { since: fmt(start), cursor: fmt(start), threads: {} };
+          }
+          lastRefreshSec = nowSec;
+          saveState(opts.statePath, state);
+        }
+
+        for (const ch of channels) {
+          if (opts.signal?.aborted) break;
+          if (skipped.has(ch.id)) continue;
+          for (;;) {
+            try {
+              await scanChannel(ctx, ch, nowSec);
+              break;
+            } catch (e) {
+              if (e instanceof RateLimitError) {
+                _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
+                await _internals.sleep(e.retryAfter * 1000, opts.signal);
+                if (opts.signal?.aborted) break;
+                continue;
+              }
+              if (classify(e) === "channel") {
+                skipped.add(ch.id);
+                _internals.err(`slack stream: skipping ${ch.isIm ? ch.id : "#" + ch.name} (${ch.id}): ${errText(e)}`);
+                break;
+              }
+              throw e;
+            }
+          }
+        }
+        if (channels.length > 0 && channels.every((c) => skipped.has(c.id))) {
+          throw new StreamFatal("every channel failed — nothing left to watch");
+        }
+        if (failures > 0) _internals.err(`slack stream: recovered after ${failures} failed attempt(s)`);
+        failures = 0;
+      } catch (e) {
+        if (e instanceof StreamFatal || classify(e) === "fatal") {
+          _internals.err(`slack stream: fatal: ${errText(e)}`);
+          return 3;
+        }
+        failures++;
+        if (failures >= maxFailures) {
+          _internals.err(`slack stream: giving up after ${failures} consecutive failures: ${errText(e)}`);
+          return 3;
+        }
+        const delay = phiDelay(failures, base, cap);
+        _internals.err(`slack stream: ${errText(e)} — reconnecting in ${(delay / 1000).toFixed(1)}s (attempt ${failures}/${maxFailures})`);
+        await _internals.sleep(delay, opts.signal);
+        continue; // retry the same cycle
+      }
+
+      cycle++;
+      if (opts.once) {
+        if (ctx.matches === 0) _internals.err(`slack stream: no matches in ${channels.length - skipped.size} channel(s)`);
+        return ctx.matches > 0 ? 0 : 2;
+      }
+      const elapsed = _internals.now() - nowSec * 1000;
+      await _internals.sleep(Math.max(0, opts.intervalMs - elapsed), opts.signal);
+    }
+    return 0;
+  } catch (e) {
+    _internals.err(`slack stream: fatal: ${errText(e)}`);
+    return 3;
+  } finally {
+    release?.();
+  }
+}

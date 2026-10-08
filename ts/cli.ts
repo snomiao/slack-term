@@ -12,7 +12,8 @@ import { guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
-import { cmdTail } from "./tail.ts";
+import { cmdTail, parseSince as parseDuration } from "./tail.ts";
+import { runStream, webClient } from "./stream.ts";
 import { agentCommands } from "./agent.ts";
 
 import {
@@ -5736,6 +5737,98 @@ async function main(): Promise<void> {
           },
         )
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
+    )
+    .command(
+      "stream",
+      "Print every new message matching --grep, across all channels the identity is in (threads included); resumable",
+      (y) => y
+        .option("grep", { alias: "e", type: "string", demandOption: true, describe: "Regex matched against each message's text (raw, e.g. <@U00000001>). Non-matching messages are never printed or logged" })
+        .option("ignore-case", { alias: "i", type: "boolean", default: false, describe: "Case-insensitive --grep" })
+        .option("channel", { type: "array", string: true, describe: "Only these channels (#name, id or permalink); repeatable" })
+        .option("json", { type: "boolean", default: false, describe: "One JSON object per match: type, channel{id,name}, ts, thread_ts, user{id,name}, text, permalink" })
+        .option("once", { type: "boolean", default: false, describe: "Scan once from the saved cursor (or --since) and exit: 0 = matches printed, 2 = none, 3 = failure" })
+        .option("since", { type: "string", describe: "Replay from this long ago (e.g. 30m, 2h), ignoring the saved cursor" })
+        .option("interval", { type: "string", default: "45s", describe: "Poll interval (e.g. 30s, 2m)" })
+        .option("thread-window", { type: "string", default: "3d", describe: "Watch replies in threads whose parent is at most this old" })
+        .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
+        .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" }),
+      async (argv) => {
+        let re: RegExp;
+        let intervalMs: number;
+        let windowSec: number;
+        let sinceSec: number | undefined;
+        try {
+          re = new RegExp(argv.grep, argv["ignore-case"] ? "i" : "");
+          intervalMs = parseDuration(argv.interval) * 1000;
+          windowSec = parseDuration(argv["thread-window"]);
+          sinceSec = argv.since !== undefined ? parseDuration(argv.since) : undefined;
+        } catch (e) {
+          console.error(`slack stream: ${e instanceof Error ? e.message : String(e)}`);
+          process.exit(1);
+        }
+        // Privacy-safe default: the bot sees only the channels it was invited
+        // to, never the user's DMs. The user identity is an explicit opt-in.
+        const bot = resolveBotToken();
+        const asUser = argv["as-user"] === true || !bot;
+        const token = asUser ? tok(argv as W) : bot!;
+        const cookie = asUser ? ck(argv as W) : undefined;
+        if (!bot && argv["as-user"] !== true) {
+          console.error("slack stream: no bot token (SLACK_BOT_TOKEN) — streaming as the USER identity, which includes its DMs.");
+        }
+        let me: Awaited<ReturnType<typeof authScopes>>;
+        try {
+          me = await authScopes(token, cookie);
+        } catch (e) {
+          console.error(`slack stream: fatal: ${e instanceof Error ? e.message : String(e)}`);
+          process.exit(3);
+        }
+        // Self-echo exclusion is by sender id: the identity's own user id, its
+        // bot id, and — when streaming as the user — the bot's posts too.
+        const selfUsers = new Set([me.userId].filter(Boolean));
+        const selfBots = new Set([me.botId].filter(Boolean));
+        if (asUser && bot) {
+          try {
+            const b = await authScopes(bot);
+            if (b.userId) selfUsers.add(b.userId);
+            if (b.botId) selfBots.add(b.botId);
+          } catch { /* a dead bot token posts nothing to exclude */ }
+        }
+        let channels: string[] | undefined;
+        if (argv.channel?.length) {
+          try {
+            channels = [];
+            for (const c of argv.channel) channels.push(await resolveChannel(token, String(c), cookie));
+          } catch (e) {
+            console.error(`slack stream: --channel: ${e instanceof Error ? e.message : String(e)}`);
+            process.exit(1);
+          }
+        }
+        const key = createHash("sha256")
+          .update(JSON.stringify([me.url, me.userId, re.source, re.flags, [...(channels ?? [])].sort()]))
+          .digest("hex").slice(0, 16);
+        const stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
+        const statePath = argv.state ?? join(stateHome, "slack-term", "stream", `${key}.json`);
+        console.error(`slack stream: as ${asUser ? "user" : "bot"} @${me.user} (${me.userId}); state ${statePath}`);
+        const ac = new AbortController();
+        process.on("SIGINT", () => ac.abort());
+        process.on("SIGTERM", () => ac.abort());
+        const code = await runStream(webClient(token, cookie), {
+          grep: re,
+          ...(channels ? { channels } : {}),
+          selfUsers,
+          selfBots,
+          json: argv.json,
+          once: argv.once,
+          ...(sinceSec !== undefined ? { sinceSec } : {}),
+          intervalMs,
+          threadWindowSec: windowSec,
+          statePath,
+          teamUrl: me.url,
+          identity: me.userId,
+          signal: ac.signal,
+        });
+        process.exit(code);
+      },
     )
     .command(
       "tail [target]",
