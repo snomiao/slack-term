@@ -1463,6 +1463,8 @@ function pinlogQuietWarning(now: Date, what: string): string | null {
 
 interface PinlogCreateArgs {
   target: string;
+  /** `-w`, carried into the printed recovery commands. */
+  workspace?: string;
   state: string;
   name?: string;
   code?: string;
@@ -1509,6 +1511,10 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
   }
   guardUrlBoundaries(args.state, args.allowUrlAdjacent);
 
+  // Every recovery command printed below must act on the SAME workspace: a
+  // `list` that silently checks the default one finds nothing, and the next
+  // step is a duplicate board.
+  const bot = `${args.workspace ? ` -w ${shQuote(args.workspace)}` : ""}${args.asBot ? " --as-bot" : ""}`;
   const getSelf = selfLookup(token, args.cookie);
   const channelId = await resolveChannel(token, ref, args.cookie);
   const self = await getSelf();
@@ -1526,7 +1532,7 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
       `  → ${dest} — NEW top-level message, then pinned`,
       ...(args.name ? [`  Name: ${args.name}`] : []),
       `--- HEAD ------------------------------------`,
-      ...head.split("\n").map((l) => `  ${l}`),
+      ...head.split("\n").map((l) => `  ${stripTerminalControls(l)}`),
       `---------------------------------------------`,
     ]);
   }
@@ -1543,7 +1549,7 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
     } else {
       console.error(
         `⚠ UNKNOWN whether the HEAD was posted: ${friendlySlackError(e)}\n` +
-        `  Check before retrying, or you will have two boards:  slack pinlog list ${shQuote(args.target)}${args.asBot ? " --as-bot" : ""}`,
+        `  Check before retrying, or you will have two boards:  slack pinlog list ${shQuote(args.target)}${bot}`,
       );
     }
     process.exit(1);
@@ -1567,7 +1573,6 @@ async function cmdPinlogCreate(token: string, args: PinlogCreateArgs): Promise<v
     }
   }
 
-  const bot = args.asBot ? " --as-bot" : "";
   try {
     await pinsAdd(token, channelId, headTs, args.cookie);
     console.log("✓ Pinned");
@@ -1637,6 +1642,14 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
       console.error(`Error: --name must be 1-64 of [A-Za-z0-9._-], starting with a letter or digit.`);
       process.exit(2);
     }
+    // The same reservation `create --name` holds, through registration.
+    try {
+      acquireLock(`pinlog-name-${args.name}`);
+    } catch (e: unknown) {
+      if (!(e instanceof LockBusyError)) throw e;
+      console.error(`Error: another pinlog command registering "${args.name}" is running (${e.holder}).`);
+      process.exit(1);
+    }
     const existing = loadRegistry()[args.name];
     if (existing && pinlogId(existing.channel, existing.ts) !== pinlogId(channel, ts)) {
       console.error(`Error: name "${args.name}" already points at another board → ${pinlogId(existing.channel, existing.ts)}`);
@@ -1667,7 +1680,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
         `--- Pinlog log reply (HEAD unchanged) --------`,
         fromLine(self, { asBot: args.asBot }),
         `  → ${dest}, thread of ${id}`,
-        ...args.log.split("\n").map((l) => `  ${l}`),
+        ...args.log.split("\n").map((l) => `  ${stripTerminalControls(l)}`),
         `---------------------------------------------`,
       ]);
     }
@@ -1687,11 +1700,13 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
         fromLine(self, { asBot: args.asBot }),
         `  → ${dest}, ${id}`,
         `--- Current HEAD -----------------------------`,
-        ...currentText.split("\n").map((l) => `  ${l}`),
+        // Shown, not sent: the HEAD comes from Slack, and an escape sequence in
+        // it could repaint this very preview.
+        ...currentText.split("\n").map((l) => `  ${stripTerminalControls(l)}`),
         `--- New HEAD (edited in place — silent) ------`,
-        ...newHead.split("\n").map((l) => `  ${l}`),
+        ...newHead.split("\n").map((l) => `  ${stripTerminalControls(l)}`),
         `--- Log reply (in the thread — notifies) -----`,
-        ...args.log.split("\n").map((l) => `  ${l}`),
+        ...args.log.split("\n").map((l) => `  ${stripTerminalControls(l)}`),
         `---------------------------------------------`,
         ...(unchanged ? [`⚠ The state text is unchanged — only the footer time moves. Replies are for real changes.`] : []),
         ...(adopting ? [`⚠ Adopting: this message has no pinlog footer yet — it becomes a board now.`] : []),
@@ -1756,13 +1771,18 @@ function tsJst(ts: string): string {
   return formatJst(new Date(Number(ts.split(".")[0]) * 1000));
 }
 
-async function pinlogAuthor(token: string, m: Record<string, Json>, cookie?: string): Promise<string> {
+async function pinlogAuthor(token: string, m: Record<string, Json>, cache: Map<string, string>, cookie?: string): Promise<string> {
   if (typeof m.user === "string") {
+    const hit = cache.get(m.user);
+    if (hit !== undefined) return hit;
+    let name: string;
     try {
-      return await userName(token, m.user, cookie);
+      name = await userName(token, m.user, cookie);
     } catch {
-      return m.user;
+      name = m.user;
     }
+    cache.set(m.user, name);
+    return name;
   }
   const prof = asRecord(m.bot_profile);
   if (typeof prof.name === "string") return prof.name;
@@ -1814,9 +1834,11 @@ async function cmdPinlogShow(token: string, target: string, cookie?: string, jso
   for (const l of slackUnescape(text).split("\n")) console.log(stripTerminalControls(l));
   const more = complete ? "" : " — INCOMPLETE: the newest entries are not shown";
   console.log(`=== log (${log.length}${more}) ===`);
+  // One lookup per author, not per entry: a board is mostly one writer.
+  const authors = new Map<string, string>();
   for (const m of log) {
     const body = typeof m.text === "string" ? m.text : "";
-    const author = stripTerminalControls(await pinlogAuthor(token, m, cookie));
+    const author = stripTerminalControls(await pinlogAuthor(token, m, authors, cookie));
     const lines = slackUnescape(body).split("\n").map((l) => stripTerminalControls(l));
     console.log(`${tsJst(String(m.ts))}  @${author}: ${lines[0] ?? ""}`);
     for (const l of lines.slice(1)) console.log(`    ${l}`);
@@ -4846,6 +4868,7 @@ async function main(): Promise<void> {
               const args: PinlogCreateArgs = { target: argv.channel!, state, asBot: t.asBot, allowUrlAdjacent: argv["allow-url-adjacent"] };
               if (t.cookie) args.cookie = t.cookie;
               if (argv.name !== undefined) args.name = argv.name;
+              if (typeof argv.workspace === "string") args.workspace = argv.workspace;
               if (argv.code) args.code = argv.code;
               await cmdPinlogCreate(t.token, args).catch(fail);
             },

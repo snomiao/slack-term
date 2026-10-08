@@ -398,6 +398,35 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
+  // Merge-gate review: the HEAD comes from Slack; an escape sequence in it
+  // could repaint the confirm preview.
+  test("terminal escapes in the current HEAD are stripped from the preview", async () => {
+    const evil = { "conversations.replies": { ok: true, messages: [{ ts: HEAD_TS, user: "U00000001", text: `ok\x1b[2J\x1b[Hfake\n\n${FOOTER}` }] } };
+    await withMock(evil, async (m) => {
+      const r = await run(m, args);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).not.toContain("\x1b[2J");
+      expect(r.stdout).toContain("okfake");
+    });
+  });
+
+  test("update --name waits on the same name reservation create holds", async () => {
+    const ldir = join(tmpHome, ".config", "slack-cli", "locks");
+    mkdirSync(ldir, { recursive: true });
+    const lock = join(ldir, "pinlog-name-reserved.lock");
+    writeFileSync(lock, `pid=${process.pid} since=now nonce=t\n`);
+    try {
+      await withMock({}, async (m) => {
+        const r = await run(m, [...args, "--name", "reserved", "--code=0000"]);
+        expect(r.exitCode).toBe(1);
+        expect(r.stderr).toContain(`registering "reserved" is running`);
+        expect(m.requests.filter((q) => WRITES.has(q.method))).toEqual([]);
+      });
+    } finally {
+      rmSync(lock, { force: true });
+    }
+  });
+
   test("a concurrent update of the same board is refused before any write", async () => {
     const ldir = join(tmpHome, ".config", "slack-cli", "locks");
     mkdirSync(ldir, { recursive: true });
@@ -545,6 +574,19 @@ describe("pinlog show / list / pin", { timeout: 60_000 }, () => {
       const j = JSON.parse((await run(m, ["pinlog", "show", ID, "--json"])).stdout) as { complete: boolean; log: unknown[] };
       expect(j.complete).toBe(true);
       expect(j.log.length).toBe(2);
+    });
+  });
+
+  test("show looks each author up once, not once per entry", async () => {
+    const many = { "conversations.replies": { ok: true, messages: [
+      { ts: HEAD_TS, user: "U00000001", text: HEAD_TEXT },
+      ...[1, 2, 3, 4, 5].map((i) => ({ ts: `170000010${i}.000200`, user: "U00000002", text: `entry ${i}` })),
+    ] } };
+    await withMock(many, async (m) => {
+      const r = await run(m, ["pinlog", "show", ID]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("=== log (5) ===");
+      expect(m.requests.filter((q) => q.method === "users.info").length).toBeLessThanOrEqual(1);
     });
   });
 
