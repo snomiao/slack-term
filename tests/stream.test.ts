@@ -1198,6 +1198,31 @@ describe("runStream — relay", () => {
     expect(err.filter((l) => l.includes("relay connected"))).toHaveLength(2); // and back once drained
   });
 
+  test("a replay over state from before the relay does not repeat what the poll already printed", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const parent = ts(-600);
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000002", text: "parent" });
+    const top = ts(-300);
+    const reply = ts(-200);
+    const fresh = ts(-100);
+    s.post("C00000001", { ts: top, user: "U00000001", text: "@mybot top, printed by the old version" });
+    s.post("C00000001", { ts: reply, thread_ts: parent, user: "U00000001", text: "@mybot reply, printed by the old version" });
+    s.post("C00000001", { ts: fresh, thread_ts: parent, user: "U00000001", text: "@mybot reply past the cursors" });
+    r.log.push([1, { channel: "C00000001", ts: top }], [2, { channel: "C00000001", ts: reply, thread_ts: parent }],
+      [3, { channel: "C00000001", ts: fresh, thread_ts: parent }]);
+    r.latest = 3;
+    // A state file written before `seen` and `relay` existed.
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      version: 1, identity: SELF,
+      channels: { C00000001: { since: ts(-3600), cursor: ts(-150), threads: { [parent]: ts(-150) } } },
+    }));
+    const ac = new AbortController();
+    stepper({ 3: () => ac.abort() }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot reply past the cursors"]);
+  });
+
   test("--once ignores the relay", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

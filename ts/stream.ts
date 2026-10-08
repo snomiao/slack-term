@@ -398,6 +398,14 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   }
   if (!m) return false;
   const tts = str(m.thread_ts);
+  // Already behind the poll's cursors: the poll has considered it (and
+  // printed it if it matched) — e.g. a replay over state from before `seen`.
+  // Top-level posts and broadcasts ride the channel cursor; replies their
+  // thread's.
+  const st = ctx.state.channels[ch.id];
+  const isReply = tts !== "" && tts !== bell.ts && str(m.subtype) !== "thread_broadcast";
+  const polled = isReply ? st?.threads[tts] : st?.cursor;
+  if (polled !== undefined && num(bell.ts) <= num(polled)) return true;
   if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts)) saveState(ctx.opts.statePath, ctx.state);
   return true;
 }
