@@ -13,7 +13,7 @@
 // Nothing here logs a request body.
 
 import { DurableObject } from "cloudflare:workers";
-import { type Doorbell, doorbellOf, safeEqual, verifySlack } from "./slack.ts";
+import { type Doorbell, doorbellOf, MAX_BODY_BYTES, plausiblySigned, readLimited, safeEqual, verifySlack } from "./slack.ts";
 
 export interface Env {
   RELAY: DurableObjectNamespace<Relay>;
@@ -37,12 +37,16 @@ export default {
     const relay = env.RELAY.get(env.RELAY.idFromName("relay"));
 
     if (url.pathname === "/slack/events" && req.method === "POST") {
-      const body = await req.text();
-      const ok = await verifySlack(
-        env.SLACK_SIGNING_SECRET, req.headers.get("x-slack-request-timestamp"),
-        req.headers.get("x-slack-signature"), body, Date.now() / 1000,
-      );
-      if (!ok) return new Response("bad signature", { status: 401 });
+      const timestamp = req.headers.get("x-slack-request-timestamp");
+      const signature = req.headers.get("x-slack-signature");
+      // Reject before reading anything we would have to buffer.
+      if (!plausiblySigned(timestamp, signature, Date.now() / 1000)) return new Response("bad signature", { status: 401 });
+      if (Number(req.headers.get("content-length") ?? 0) > MAX_BODY_BYTES) return new Response("too large", { status: 413 });
+      const body = await readLimited(req.body);
+      if (body === null) return new Response("too large", { status: 413 });
+      if (!await verifySlack(env.SLACK_SIGNING_SECRET, timestamp, signature, body, Date.now() / 1000)) {
+        return new Response("bad signature", { status: 401 });
+      }
       let payload: { type?: unknown; challenge?: unknown };
       try {
         payload = JSON.parse(body) as typeof payload;
@@ -74,8 +78,15 @@ export default {
 /** `pending`: writes not yet taken by the consumer. A client that stops
  *  reading is cut off past MAX_PENDING instead of buffering without bound;
  *  it reconnects with ?after and gets the rest from storage. */
-type Client = { writer: WritableStreamDefaultWriter<Uint8Array>; pending: number };
+type Client = {
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  pending: number;
+  /** Still being fed its backlog from storage; live bells reach it that way. */
+  replaying: boolean;
+};
 const MAX_PENDING = 64;
+/** Backlog rows read and written per step of a replay. */
+const REPLAY_BATCH = 100;
 const enc = new TextEncoder();
 
 export class Relay extends DurableObject<Env> {
@@ -144,19 +155,10 @@ export class Relay extends DurableObject<Env> {
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-    const client: Client = { writer: writable.getWriter(), pending: 0 };
-    // Hello, backlog and registration all happen before the next await, so no
-    // bell can slip between the backlog read and the live feed. The backlog
-    // goes out as one write (at most an hour of bells, ids only).
-    let first = `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC, epoch: this.epoch })}\n\n`;
-    for (const r of this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null }>(
-      "SELECT seq, channel, ts, thread_ts FROM bells WHERE seq > ? ORDER BY seq", from,
-    )) {
-      first += frame(r.seq, r.thread_ts ? { channel: r.channel, ts: r.ts, thread_ts: r.thread_ts } : { channel: r.channel, ts: r.ts });
-    }
+    const client: Client = { writer: writable.getWriter(), pending: 0, replaying: true };
     this.clients.add(client);
-    void this.send(client, first);
     this.keepalive ??= setInterval(() => this.broadcast(": ka\n\n"), KEEPALIVE_MS);
+    void this.replay(client, from, `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC, epoch: this.epoch })}\n\n`);
 
     return new Response(readable, {
       headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" },
@@ -170,8 +172,37 @@ export class Relay extends DurableObject<Env> {
     return { oldest: b.oldest, latest: hw[0]?.seq ?? 0 };
   }
 
+  /** Feed a client its backlog in batches, each write awaited — a reader
+   *  that stalls stalls only its own replay, holding one batch at most. A
+   *  bell rung meanwhile is already stored, so the next batch picks it up;
+   *  the switch to live happens right after a read that came back empty,
+   *  with no await in between, so nothing falls between the two. */
+  private async replay(c: Client, from: number, hello: string): Promise<void> {
+    let chunk = hello;
+    let cursor = from;
+    for (;;) {
+      const rows = this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null }>(
+        "SELECT seq, channel, ts, thread_ts FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", cursor, REPLAY_BATCH,
+      ).toArray();
+      for (const r of rows) {
+        chunk += frame(r.seq, r.thread_ts ? { channel: r.channel, ts: r.ts, thread_ts: r.thread_ts } : { channel: r.channel, ts: r.ts });
+        cursor = r.seq;
+      }
+      if (!rows.length) c.replaying = false;
+      if (chunk) {
+        try {
+          await c.writer.write(enc.encode(chunk));
+        } catch {
+          return this.drop(c);
+        }
+      }
+      if (!c.replaying || !this.clients.has(c)) return;
+      chunk = "";
+    }
+  }
+
   private broadcast(chunk: string): void {
-    for (const c of this.clients) void this.send(c, chunk);
+    for (const c of this.clients) if (!c.replaying) void this.send(c, chunk);
   }
 
   private async send(c: Client, chunk: string): Promise<void> {

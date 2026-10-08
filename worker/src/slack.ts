@@ -10,6 +10,40 @@ export type Doorbell = { channel: string; ts: string; thread_ts?: string };
 /** Slack rejects replays older than five minutes; so do we. */
 export const MAX_SKEW_SEC = 300;
 
+/** Slack event payloads are a few KB; anything far larger is not Slack. */
+export const MAX_BODY_BYTES = 1 << 20;
+
+/** Cheap pre-check before the body is read at all: both signing headers
+ *  present, signature well-formed, timestamp fresh. */
+export function plausiblySigned(timestamp: string | null, signature: string | null, nowSec: number): boolean {
+  if (!timestamp || !signature || !/^v0=[0-9a-f]{64}$/.test(signature)) return false;
+  const ts = Number(timestamp);
+  return Number.isFinite(ts) && Math.abs(nowSec - ts) <= MAX_SKEW_SEC;
+}
+
+/** Read a body as text, giving up (null) once it passes `max` bytes —
+ *  so an oversized request is never buffered whole. */
+export async function readLimited(body: ReadableStream<Uint8Array> | null, max = MAX_BODY_BYTES): Promise<string | null> {
+  if (!body) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(size);
+  let off = 0;
+  for (const c of chunks) { all.set(c, off); off += c.byteLength; }
+  return new TextDecoder().decode(all);
+}
+
 const enc = new TextEncoder();
 
 function hex(buf: ArrayBuffer): string {

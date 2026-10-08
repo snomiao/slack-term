@@ -3,7 +3,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHmac } from "node:crypto";
 import { parseSse, relaySubscriber, RelayAuthError, type Doorbell, type Hello } from "../ts/relay.ts";
-import { doorbellOf, safeEqual, verifySlack } from "../worker/src/slack.ts";
+import { doorbellOf, plausiblySigned, readLimited, safeEqual, verifySlack } from "../worker/src/slack.ts";
 
 describe("parseSse", () => {
   test("frames, ids, multi-line data, comments and a partial tail", () => {
@@ -109,6 +109,22 @@ describe("worker: Slack request signing", () => {
     expect(await verifySlack(secret, "abc", sign("abc", body), body, 1000)).toBe(false);
     expect(await verifySlack(secret, null, sign("1000", body), body, 1000)).toBe(false);
     expect(await verifySlack("", "1000", sign("1000", body), body, 1000)).toBe(false);
+  });
+  test("plausiblySigned rejects before the body is read", () => {
+    const sig = `v0=${"a".repeat(64)}`;
+    expect(plausiblySigned("1000", sig, 1100)).toBe(true);
+    expect(plausiblySigned("1000", sig, 1400)).toBe(false);
+    expect(plausiblySigned("1000", "v0=bogus", 1000)).toBe(false);
+    expect(plausiblySigned(null, sig, 1000)).toBe(false);
+    expect(plausiblySigned("x", sig, 1000)).toBe(false);
+  });
+  test("readLimited reads small bodies and gives up on large ones without buffering them", async () => {
+    const stream = (parts: string[]): ReadableStream<Uint8Array> => new ReadableStream({
+      start(c) { for (const p of parts) c.enqueue(new TextEncoder().encode(p)); c.close(); },
+    });
+    expect(await readLimited(stream(["{\"a\":", "\"é\"}"]), 64)).toBe("{\"a\":\"é\"}");
+    expect(await readLimited(stream(["x".repeat(40), "y".repeat(40)]), 64)).toBeNull();
+    expect(await readLimited(null)).toBe("");
   });
   test("safeEqual", () => {
     expect(safeEqual("abc", "abc")).toBe(true);
