@@ -69,9 +69,11 @@ export function composeHead(state: string, now: Date): string {
   return `${stripPinlogFooter(state).trimEnd()}\n\n${pinlogFooter(now)}`;
 }
 
-/** The "last updated" stamp in a HEAD's footer, or null when there is none. */
+/** The "last updated" stamp in a HEAD's (trailing) footer, or null when there is
+ *  none — not the first stamp anywhere: a state may quote an older footer. */
 export function headUpdatedAt(text: string): string | null {
-  const m = text.match(new RegExp(`${PINLOG_MARKER} (\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2} JST)`));
+  const footer = text.match(FOOTER_RE)?.[0];
+  const m = footer?.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2} JST)/);
   return m ? m[1]! : null;
 }
 
@@ -106,18 +108,30 @@ function holderAlive(content: string): boolean {
  *  non-owner unlink therefore happens under a second O_EXCL file (`.break`):
  *  the re-read and the unlink are serialised, and a breaker that comes second
  *  re-reads the NEW owner's content and leaves it alone. (Owners unlink their
- *  own lock without it: nobody breaks a live owner's lock.) */
+ *  own lock without it: nobody breaks a live owner's lock.)
+ *
+ *  The mutex is owned like a lock: it names its pid, is released only by its
+ *  owner (content check), and is cleared by others only when that pid is
+ *  provably DEAD — never by age. Clearing by age let a live breaker that paused
+ *  between its compare and its unlink lose the mutex, and then delete the live
+ *  lock of whoever broke the dead one in the meantime. The one exception is a
+ *  mutex with no parsable owner (a breaker that died between creating and
+ *  writing it — microseconds), cleared after 10 s so it cannot wedge the lock. */
 export function breakStaleLock(path: string, deadContent: string): void {
   const mutex = `${path}.break`;
+  const mine = `pid=${process.pid} nonce=${Math.random().toString(36).slice(2)}${Date.now()}\n`;
   let fd: number;
   try {
     fd = openSync(mutex, "wx");
+    writeFileSync(fd, mine);
   } catch (e: unknown) {
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    // Another breaker is at it. A mutex left by a breaker that died mid-break
-    // (a window of microseconds) is cleared after 10 s.
+    // Another breaker holds it — leave it, unless its owner is gone.
     try {
-      if (Date.now() - statSync(mutex).mtimeMs > 10_000) unlinkSync(mutex);
+      const held = readFileSync(mutex, "utf8");
+      const owned = /^pid=\d+/.test(held);
+      const stale = owned ? !holderAlive(held) : Date.now() - statSync(mutex).mtimeMs > 10_000;
+      if (stale && readFileSync(mutex, "utf8") === held) unlinkSync(mutex);
     } catch { /* gone */ }
     return;
   }
@@ -125,7 +139,7 @@ export function breakStaleLock(path: string, deadContent: string): void {
     if (readFileSync(path, "utf8") === deadContent) unlinkSync(path);
   } catch { /* already gone */ } finally {
     closeSync(fd);
-    try { unlinkSync(mutex); } catch { /* gone */ }
+    try { if (readFileSync(mutex, "utf8") === mine) unlinkSync(mutex); } catch { /* gone */ }
   }
 }
 

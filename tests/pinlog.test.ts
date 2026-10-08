@@ -83,6 +83,15 @@ describe("footer marker", () => {
   });
 });
 
+describe("headUpdatedAt", () => {
+  test("reads the trailing footer, not an older footer quoted in the state", () => {
+    const quoted = "前回: _Pinlog · 最終更新 2026-01-01 09:00 JST · 更新はスレッドに_ のまま";
+    const head = composeHead(quoted, new Date("2026-10-08T06:10:00Z"));
+    expect(headUpdatedAt(head)).toBe("2026-10-08 15:10 JST");
+    expect(headUpdatedAt("no footer")).toBeNull();
+  });
+});
+
 describe("ids", () => {
   test("parsePinlogId round-trips pinlogId", () => {
     expect(parsePinlogId(pinlogId("C00000001", "1700000000.000100"))).toEqual({ channel: "C00000001", ts: "1700000000.000100" });
@@ -165,6 +174,34 @@ describe("lock", () => {
     expect(readFileSync(p, "utf8")).toContain("nonce=dead");
     rmSync(`${p}.break`);
     acquireLock("k7", { dir: ldir })(); // mutex gone → the dead lock is broken
+  });
+
+  // Codex merge-gate review: clearing the break mutex by AGE let a live breaker
+  // paused between compare and unlink lose it, and then delete a successor's
+  // live lock. Only a provably dead owner's mutex is cleared.
+  test("a live breaker's mutex is never cleared by age; a dead one's is", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k8.lock");
+    const dead = "pid=2147483646 since=x nonce=dead\n";
+    writeFileSync(p, dead);
+    const old = new Date(Date.now() - 10 * 60_000);
+    writeFileSync(`${p}.break`, `pid=${process.pid} nonce=paused\n`); // live, and old
+    utimesSync(`${p}.break`, old, old);
+    breakStaleLock(p, dead);
+    expect(readFileSync(`${p}.break`, "utf8")).toContain("nonce=paused");
+    expect(readFileSync(p, "utf8")).toBe(dead);
+    writeFileSync(`${p}.break`, "pid=2147483646 nonce=crashed\n"); // dead owner, fresh
+    breakStaleLock(p, dead);
+    expect(() => readFileSync(`${p}.break`, "utf8")).toThrow();
+    breakStaleLock(p, dead); // mutex free → the dead lock goes
+    expect(() => readFileSync(p, "utf8")).toThrow();
+  });
+
+  test("a breaker releases only its own mutex", () => {
+    mkdirSync(ldir, { recursive: true });
+    const p = join(ldir, "k9.lock");
+    breakStaleLock(p, "pid=2147483646 since=x nonce=dead\n"); // no lock at all: takes and releases the mutex
+    expect(() => readFileSync(`${p}.break`, "utf8")).toThrow();
   });
 
   test("an unparsable lock is broken only after staleMs", () => {

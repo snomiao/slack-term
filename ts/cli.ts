@@ -4815,8 +4815,25 @@ async function main(): Promise<void> {
         // different token than the one that will write is how a preview shows
         // a message the write then cannot touch.
         const asBotOpt = { type: "boolean", default: false, describe: "Act via the bot token (xoxb / SLACK_BOT_TOKEN). A board the bot created can only be updated --as-bot: Slack lets a token edit only its own messages." } as const;
-        const pick = (argv: W & { "as-bot"?: boolean }): { token: string; cookie?: string; asBot: boolean } => {
-          if (argv["as-bot"]) return { token: requireBotToken(), asBot: true };
+        const pick = async (argv: W & { "as-bot"?: boolean }): Promise<{ token: string; cookie?: string; asBot: boolean }> => {
+          if (argv["as-bot"]) {
+            const bot = requireBotToken();
+            // The bot token is SLACK_BOT_TOKEN whatever -w says. A -w naming a
+            // different workspace would read and write there with the wrong
+            // identity — or in the wrong workspace altogether — so refuse it.
+            if (typeof argv.workspace === "string") {
+              const cookie = ck(argv);
+              const [u, b] = await Promise.all([authScopes(tok(argv), cookie), authScopes(bot)]);
+              if (u.url !== b.url) {
+                console.error(
+                  `Error: --as-bot acts with SLACK_BOT_TOKEN, which belongs to ${b.url}, but -w ${argv.workspace} is ${u.url}.\n` +
+                  "  Drop -w, or set SLACK_BOT_TOKEN to that workspace's bot token.",
+                );
+                process.exit(2);
+              }
+            }
+            return { token: bot, asBot: true };
+          }
           const cookie = ck(argv);
           return { token: tok(argv), ...(cookie ? { cookie } : {}), asBot: false };
         };
@@ -4851,7 +4868,7 @@ async function main(): Promise<void> {
                 console.error("Error: the state is required (positional or --file).");
                 process.exit(2);
               }
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               const args: PinlogCreateArgs = { target: argv.channel!, state, asBot: t.asBot, allowUrlAdjacent: argv["allow-url-adjacent"] };
               if (reason !== undefined) args.log = unescapeArg(reason);
               if (t.cookie) args.cookie = t.cookie;
@@ -4891,7 +4908,7 @@ async function main(): Promise<void> {
                 );
                 process.exit(2);
               }
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               const args: PinlogUpdateArgs = {
                 target: argv.board!, state, log: unescapeArg(reasonRaw), adopt: argv.adopt, asBot: t.asBot,
                 allowUrlAdjacent: argv["allow-url-adjacent"],
@@ -4912,7 +4929,7 @@ async function main(): Promise<void> {
               .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
               .option("as-bot", asBotOpt),
             async (argv) => {
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               const args: PinlogUpdateArgs = {
                 target: argv.board!, log: unescapeArg(argv.reason!), logOnly: true, asBot: t.asBot,
                 allowUrlAdjacent: argv["allow-url-adjacent"],
@@ -4931,7 +4948,7 @@ async function main(): Promise<void> {
               .option("json", { type: "boolean", default: false, describe: "One JSON object: {id, isPinlog, updated, head, log[]}" })
               .option("as-bot", asBotOpt),
             async (argv) => {
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               await cmdPinlogShow(t.token, argv.board!, t.cookie, argv.json).catch(fail);
             },
           )
@@ -4943,7 +4960,7 @@ async function main(): Promise<void> {
               .option("limit", { alias: "n", type: "number", default: 500, describe: "How many recent channel messages to scan" })
               .option("as-bot", asBotOpt),
             async (argv) => {
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               await cmdPinlogList(t.token, argv.channel!, argv.limit, t.cookie).catch(fail);
             },
           )
@@ -4954,7 +4971,7 @@ async function main(): Promise<void> {
               .positional("board", { type: "string", demandOption: true })
               .option("as-bot", asBotOpt),
             async (argv) => {
-              const t = pick(argv as W & { "as-bot"?: boolean });
+              const t = await pick(argv as W & { "as-bot"?: boolean });
               await cmdPinlogPin(t.token, argv.board!, t.cookie).catch(fail);
             },
           )

@@ -268,6 +268,35 @@ describe("pinlog create", { timeout: 60_000 }, () => {
     });
   });
 
+  test("--as-bot with -w naming another workspace is refused before any call as that bot", async () => {
+    // Its own HOME: a profile here would change token resolution for the other tests.
+    const home = mkdtempSync(join(tmpdir(), "slack-pinlog-ws-"));
+    mkdirSync(join(home, ".config", "slack-cli"), { recursive: true });
+    writeFileSync(join(home, ".config", "slack-cli", "profiles.json"), JSON.stringify({ profiles: {
+      other: { token: "xoxp-other", team: "Other", user: "alice" },
+      acme: { token: "xoxp-acme", team: "Acme", user: "alice" },
+    } }));
+    const who = (url: string) => ({ ok: true, user_id: "U00000001", user: "alice", team: "T", url });
+    const authByToken = { "auth.test": { __byAuth: {
+      "Bearer xoxb-fake": who("https://acme.slack.com/"),
+      "Bearer xoxp-acme": who("https://acme.slack.com/"),
+      "*": who("https://other.slack.com/"),
+    } } };
+    try {
+      await withMock(authByToken, async (m) => {
+        const env = { HOME: home, SLACK_BOT_TOKEN: "xoxb-fake" };
+        const bad = await run(m, ["pinlog", "ls", CH, "-w", "other", "--as-bot"], env);
+        expect(bad.exitCode).toBe(2);
+        expect(bad.stderr).toContain("belongs to https://acme.slack.com/, but -w other is https://other.slack.com/");
+        expect(m.requests.some((q) => q.method === "conversations.history")).toBe(false);
+        const ok = await run(m, ["pinlog", "ls", CH, "-w", "acme", "--as-bot"], env);
+        expect(ok.exitCode).toBe(0);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("ls on a board link is refused and points at get", async () => {
     await withMock({}, async (m) => {
       const r = await run(m, ["pinlog", "ls", ID]);
