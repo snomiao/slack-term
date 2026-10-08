@@ -1241,6 +1241,22 @@ describe("runStream — relay", () => {
     expect(emitted().map((m) => m.text)).toEqual(["@mybot reply past the cursors"]);
   });
 
+  test("without a relay nothing is recorded in `seen`, and --once prunes what a relay run left", async () => {
+    const s = new FakeSlack();
+    writeFileSync(join(dir, "state.json"), JSON.stringify({
+      version: 1, identity: SELF, channels: {},
+      seen: { "C00000001:1.000000": 1, [`C00000001:${ts(-5)}`]: T0 - 5 }, // one long expired, one fresh
+    }));
+    s.post("C00000001", { ts: ts(-10), user: "U00000001", text: "@mybot polled" });
+    expect(await runStream(s, opts({ sinceSec: 60 }))).toBe(0);
+    let st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.seen).toBeUndefined(); // --since cleared it; the poll's match was not recorded
+    writeFileSync(join(dir, "state.json"), JSON.stringify({ ...st, seen: { "C00000001:1.000000": 1, [`C00000001:${ts(-5)}`]: T0 - 5 } }));
+    expect(await runStream(s, opts())).toBe(2);
+    st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.seen).toEqual({ [`C00000001:${ts(-5)}`]: T0 - 5 });
+  });
+
   test("--once ignores the relay", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

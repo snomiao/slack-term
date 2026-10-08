@@ -289,10 +289,11 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
   const ts = str(m.ts);
   // A message can arrive twice — from a relay bell and from the poll — and
   // must be printed once.
-  const seen = (ctx.state.seen ??= {});
+  // Recorded only while a relay can deliver (the only second path); always
+  // checked, since a relay run may have printed it ahead of the poll.
   const key = `${ch.id}:${ts}`;
-  if (seen[key] !== undefined) return false;
-  seen[key] = num(ts);
+  if (ctx.state.seen?.[key] !== undefined) return false;
+  if (ctx.opts.relay && !ctx.opts.once) (ctx.state.seen ??= {})[key] = num(ts);
   const threadTs = str(m.thread_ts) || null;
   const senderId = uid || bid;
   const senderName = uid
@@ -414,6 +415,7 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
 function pruneSeen(st: StreamState, oldestSec: number): void {
   if (!st.seen) return;
   for (const [k, t] of Object.entries(st.seen)) if (t < oldestSec) delete st.seen[k];
+  if (!Object.keys(st.seen).length) delete st.seen;
 }
 
 /** Run the stream. Resolves with the process exit code:
@@ -721,12 +723,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         }
 
         cycle++;
+        pruneSeen(state, nowSec - opts.threadWindowSec - 86400);
         if (opts.once) {
+          saveState(opts.statePath, state);
           if (ctx.matches === 0) _internals.err(`slack stream: no matches in ${channels.length - skipped.size} channel(s)`);
           return ctx.matches > 0 ? 0 : 2;
         }
         lastFullMs = nowSec * 1000;
-        pruneSeen(state, nowSec - opts.threadWindowSec - 86400);
       }
 
       // Sleep until the next full poll or bell retry, or until a bell (or a
