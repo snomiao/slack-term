@@ -499,13 +499,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       ring();
     };
     const relayLoop = async (r: NonNullable<typeof relay>): Promise<void> => {
-      // --since asks for everything the relay still keeps (handleBell drops
-      // what is older than --since); otherwise resume where we stopped.
-      let after: Cursor | undefined = opts.sinceSec !== undefined
-        ? { seq: 0 }
-        : state.relay?.url === r.url
-          ? { seq: state.relay.seq, ...(state.relay.epoch ? { epoch: state.relay.epoch } : {}) }
-          : undefined;
+      // Resume where we stopped. Without a saved point — or with --since —
+      // ask for everything the relay keeps: a bell that rang between our
+      // start and the first connection must not be lost, and handleBell drops
+      // whatever is older than the channel's start (or --since).
+      let after: Cursor = opts.sinceSec === undefined && state.relay?.url === r.url
+        ? { seq: state.relay.seq, ...(state.relay.epoch ? { epoch: state.relay.epoch } : {}) }
+        : { seq: 0 };
       let attempt = 0;
       const pendingCount = (): number => bus.queue.length + bus.retry.length + (bus.inflight ? 1 : 0);
       while (!inner.signal.aborted) {
@@ -528,7 +528,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
             hello: (h) => {
               attempt = 0;
               // Bells after our resume point are gone: poll to catch up.
-              if (h.gap && after !== undefined) bus.full = true;
+              if (h.gap) bus.full = true;
               if (h.gap || state.relay?.url !== r.url || state.relay.epoch !== h.epoch) {
                 state.relay = { url: r.url, seq: h.seq, ...(h.epoch ? { epoch: h.epoch } : {}) };
                 // The relay's numbering may have restarted: nothing from the
@@ -548,6 +548,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
                 _internals.err(`slack stream: relay backlog over ${MAX_QUEUED_BELLS} — pausing the relay until it drains`);
                 paused = true;
                 conn.abort();
+                setLive(false, "paused while its backlog drains");
                 return;
               }
               after = { ...after, seq };
