@@ -136,6 +136,12 @@ export type StreamOpts = {
 };
 
 export const PHI = 1.618;
+/** Relay bells handled per turn of the loop before the poll gets a look in. */
+const MAX_DRAIN = 25;
+/** Bells queued beyond this are dropped in favour of a catch-up poll. */
+const MAX_QUEUED_BELLS = 2000;
+/** Reads of a bell's message before giving up on it (~4 min with φ backoff). */
+const BELL_TRIES = 8;
 
 export const _internals = {
   now: (): number => Date.now(),
@@ -459,7 +465,13 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     // --- relay: a background subscription that only queues bells; the loop
     // below handles them, so Slack calls and state writes stay sequential.
     // `live` starts undefined so the first outcome, up or down, is announced.
-    const bus = { queue: [] as { seq: number; bell: Doorbell }[], live: undefined as boolean | undefined, full: false };
+    type Pending = { seq: number; bell: Doorbell; tries: number; dueMs: number };
+    const bus = {
+      queue: [] as Pending[], // in seq order, due now
+      retry: [] as Pending[], // waiting for dueMs
+      handled: 0, // highest seq resolved (emitted, filtered out, or abandoned)
+      live: undefined as boolean | undefined, full: false,
+    };
     let wake = new AbortController();
     const ring = (): void => wake.abort();
     const setLive = (live: boolean, why = ""): void => {
@@ -487,7 +499,16 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
             },
             bell: (seq, bell) => {
               after = seq;
-              bus.queue.push({ seq, bell });
+              if (bus.queue.length >= MAX_QUEUED_BELLS) {
+                // Bells arrive faster than they can be read: drop the backlog
+                // and let a full poll catch up, rather than grow without bound.
+                _internals.err(`slack stream: relay backlog over ${MAX_QUEUED_BELLS} — dropped it; polling to catch up`);
+                bus.queue = [];
+                bus.handled = Math.max(bus.handled, seq);
+                bus.full = true;
+              } else {
+                bus.queue.push({ seq, bell, tries: 0, dueMs: 0 });
+              }
               ring();
             },
           });
@@ -508,39 +529,67 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     };
     if (relay) void relayLoop(relay);
 
-    const handleBell = async (bell: Doorbell): Promise<void> => {
-      if (opts.channels && !opts.channels.includes(bell.channel)) return;
+    /** true = resolved (emitted, or nothing to emit); false = not visible yet. */
+    const handleBell = async (bell: Doorbell): Promise<boolean> => {
+      if (opts.channels && !opts.channels.includes(bell.channel)) return true;
       let ch = channels.find((c) => c.id === bell.channel);
       if (!ch && _internals.now() / 1000 - lastRefreshSec >= 60) {
         // A channel joined since the last refresh (at most one re-list a minute).
         await refresh(_internals.now() / 1000);
         ch = channels.find((c) => c.id === bell.channel);
       }
-      if (!ch) return;
-      if (skipped.has(ch.id) || !state.channels[ch.id]) return;
-      if (await ringBell(ctx, ch, bell)) return;
-      // Not visible yet — give Slack a moment, once. Otherwise the poll has it.
-      await _internals.sleep(1500, opts.signal);
-      await ringBell(ctx, ch, bell);
+      if (!ch || skipped.has(ch.id) || !state.channels[ch.id]) return true;
+      return ringBell(ctx, ch, bell);
     };
+    /** Resume point: every bell up to it is resolved. A bell still being
+     *  retried holds it back, so a restart gets that bell again. */
+    const ack = (): void => {
+      if (!state.relay || state.relay.url !== relay?.url) return;
+      const pending = [...bus.queue, ...bus.retry].map((p) => p.seq);
+      state.relay.seq = pending.length ? Math.min(...pending) - 1 : Math.max(state.relay.seq, bus.handled);
+    };
+    /** Handle due bells — at most MAX_DRAIN per call, so a flood cannot starve
+     *  the poll. A bell whose message is not readable yet is retried with φ
+     *  backoff, then abandoned loudly (the poll still covers its window). */
     const drainBells = async (): Promise<void> => {
-      while (bus.queue.length && !opts.signal?.aborted) {
-        const { seq, bell } = bus.queue[0]!;
+      const nowMs = _internals.now();
+      const due = bus.retry.filter((p) => p.dueMs <= nowMs);
+      if (due.length) {
+        bus.retry = bus.retry.filter((p) => p.dueMs > nowMs);
+        bus.queue = [...due, ...bus.queue].sort((a, b) => a.seq - b.seq);
+      }
+      let n = 0;
+      while (bus.queue.length && n < MAX_DRAIN && !opts.signal?.aborted) {
+        const p = bus.queue[0]!;
+        let done: boolean;
+        let why = "not visible yet";
         try {
-          await handleBell(bell);
+          done = await handleBell(p.bell);
         } catch (e) {
           if (e instanceof RateLimitError) {
             _internals.err(`slack stream: rate limited — waiting ${e.retryAfter}s`);
             await _internals.sleep(e.retryAfter * 1000, opts.signal);
             continue;
           }
-          // The poll will reach it; say so without naming the message.
-          _internals.err(`slack stream: relay bell for ${bell.channel} failed (${errText(e)}) — left to the next poll`);
+          done = false;
+          why = errText(e);
         }
         bus.queue.shift();
-        if (state.relay?.url === relay?.url && state.relay) state.relay.seq = seq;
-        if (!bus.queue.length) saveState(opts.statePath, state);
+        n++;
+        if (done) {
+          bus.handled = Math.max(bus.handled, p.seq);
+        } else if (++p.tries >= BELL_TRIES) {
+          // Name the place, never the message.
+          _internals.err(`slack stream: relay bell for ${p.bell.channel} abandoned after ${p.tries} tries (${why}) — only the poll can find it now`);
+          bus.handled = Math.max(bus.handled, p.seq);
+        } else {
+          p.dueMs = _internals.now() + phiDelay(p.tries, 1500, 60_000);
+          bus.retry.push(p);
+        }
       }
+      const before = state.relay?.seq;
+      ack(); // also after a dropped backlog, when nothing was handled here
+      if (n || state.relay?.seq !== before) saveState(opts.statePath, state);
     };
     const interval = (): number => (bus.live === true && relay ? Math.max(opts.intervalMs, relay.reconcileMs) : opts.intervalMs);
 
@@ -606,13 +655,15 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         pruneSeen(state, nowSec - opts.threadWindowSec - 86400);
       }
 
-      // Sleep until the next full poll, or until a bell (or a relay up/down) wakes us.
+      // Sleep until the next full poll or bell retry, or until a bell (or a
+      // relay up/down) wakes us.
       if (!bus.queue.length && !bus.full) {
+        const until = Math.min(lastFullMs + interval(), ...bus.retry.map((p) => p.dueMs));
         wake = new AbortController();
         const w = wake;
         const stop = (): void => w.abort();
         opts.signal?.addEventListener("abort", stop, { once: true });
-        await _internals.sleep(Math.max(0, lastFullMs + interval() - _internals.now()), w.signal);
+        await _internals.sleep(Math.max(0, until - _internals.now()), w.signal);
         opts.signal?.removeEventListener("abort", stop);
       }
       await drainBells();

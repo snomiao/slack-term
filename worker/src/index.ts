@@ -71,7 +71,11 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-type Client = { writer: WritableStreamDefaultWriter<Uint8Array> };
+/** `pending`: writes not yet taken by the consumer. A client that stops
+ *  reading is cut off past MAX_PENDING instead of buffering without bound;
+ *  it reconnects with ?after and gets the rest from storage. */
+type Client = { writer: WritableStreamDefaultWriter<Uint8Array>; pending: number };
+const MAX_PENDING = 64;
 const enc = new TextEncoder();
 
 export class Relay extends DurableObject<Env> {
@@ -130,16 +134,18 @@ export class Relay extends DurableObject<Env> {
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
-    const client: Client = { writer: writable.getWriter() };
+    const client: Client = { writer: writable.getWriter(), pending: 0 };
     // Hello, backlog and registration all happen before the next await, so no
-    // bell can slip between the backlog read and the live feed.
-    void this.send(client, `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC })}\n\n`);
+    // bell can slip between the backlog read and the live feed. The backlog
+    // goes out as one write (at most an hour of bells, ids only).
+    let first = `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC })}\n\n`;
     for (const r of this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null }>(
       "SELECT seq, channel, ts, thread_ts FROM bells WHERE seq > ? ORDER BY seq", from,
     )) {
-      void this.send(client, frame(r.seq, r.thread_ts ? { channel: r.channel, ts: r.ts, thread_ts: r.thread_ts } : { channel: r.channel, ts: r.ts }));
+      first += frame(r.seq, r.thread_ts ? { channel: r.channel, ts: r.ts, thread_ts: r.thread_ts } : { channel: r.channel, ts: r.ts });
     }
     this.clients.add(client);
+    void this.send(client, first);
     this.keepalive ??= setInterval(() => this.broadcast(": ka\n\n"), KEEPALIVE_MS);
 
     return new Response(readable, {
@@ -159,8 +165,11 @@ export class Relay extends DurableObject<Env> {
   }
 
   private async send(c: Client, chunk: string): Promise<void> {
+    if (c.pending >= MAX_PENDING) return this.drop(c);
+    c.pending++;
     try {
       await c.writer.write(enc.encode(chunk));
+      c.pending--;
     } catch {
       this.drop(c);
     }
