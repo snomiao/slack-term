@@ -1,5 +1,6 @@
 // Slack Web API client (user token, Authorization: Bearer)
 import { resolveCookie } from "./profiles.ts";
+import { repairMessageText } from "./newlines.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -230,7 +231,21 @@ export async function history(
   if (oldest !== undefined) params.oldest = oldest;
   if (cursor !== undefined) params.cursor = cursor;
   if (inclusive) params.inclusive = "true";
-  return get(token, "conversations.history", params, cookie);
+  return repairMessages(await get(token, "conversations.history", params, cookie));
+}
+
+/** Give every message in a history/replies/search response its line breaks
+ *  back when Slack stored its text flattened (see newlines.ts). Done here, at
+ *  the fetch, so `read`, `--format jsonl`, `ask`'s parser and every other
+ *  reader of `.text` agree on one text. */
+function repairMessages(resp: Json): Json {
+  const r = resp as { messages?: Json };
+  const msgs = Array.isArray(r.messages) ? r.messages
+    : r.messages && typeof r.messages === "object" && Array.isArray((r.messages as { matches?: Json }).matches)
+      ? (r.messages as { matches: Json[] }).matches
+      : [];
+  for (const m of msgs) repairMessageText(m);
+  return resp;
 }
 
 export async function replies(
@@ -240,7 +255,40 @@ export async function replies(
   limit = 50,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie);
+  return repairMessages(await get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie));
+}
+
+// One page of a thread's replies newer than `oldest` (exclusive). Slack returns
+// the parent first on every page regardless of `oldest`; callers drop it.
+export async function repliesPage(
+  token: string,
+  channel: string,
+  ts: string,
+  opts: { oldest?: string; cursor?: string; limit?: number } = {},
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = { channel, ts, limit: String(opts.limit ?? 200) };
+  if (opts.oldest !== undefined) params.oldest = opts.oldest;
+  if (opts.cursor !== undefined) params.cursor = opts.cursor;
+  return repairMessages(await get(token, "conversations.replies", params, cookie));
+}
+
+// Conversations the token's OWN identity is a member of (users.conversations),
+// unlike conversations.list, which also returns public channels it is not in.
+export async function userConversations(token: string, types: string, cookie?: string): Promise<Json[]> {
+  const out: Json[] = [];
+  let cursor = "";
+  do {
+    const params: Record<string, string> = { limit: "200", types, exclude_archived: "true" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.conversations", params, cookie)) as {
+      channels?: Json[];
+      response_metadata?: { next_cursor?: string };
+    };
+    out.push(...(resp.channels ?? []));
+    cursor = resp.response_metadata?.next_cursor ?? "";
+  } while (cursor);
+  return out;
 }
 
 // Metadata for a single uploaded file (files.info). Carries url_private_download,
@@ -297,13 +345,13 @@ export async function searchPage(
   page: number,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "search.messages", {
+  return repairMessages(await get(token, "search.messages", {
     query,
     sort: "timestamp",
     sort_dir: "desc",
     count: String(Math.min(Math.max(count, 1), 100)),
     page: String(Math.max(page, 1)),
-  }, cookie);
+  }, cookie));
 }
 
 export async function search(token: string, query: string, cookie?: string): Promise<Json> {
@@ -1026,6 +1074,18 @@ export async function conversationInfoSession(token: string, channelId: string, 
 
 export async function userInfo(token: string, userId: string, cookie?: string): Promise<Json> {
   return get(token, "users.info", { user: userId }, cookie);
+}
+
+/** A person's Slack UI locale (`ja-JP`, `en-US`), or undefined when it cannot
+ *  be read. Fail-soft: it only picks the language of `ask`'s copy, and a lookup
+ *  failure must never stop a question from being asked. */
+export async function userLocale(token: string, userId: string, cookie?: string): Promise<string | undefined> {
+  try {
+    const r = (await get(token, "users.info", { user: userId, include_locale: "true" }, cookie)) as { user?: { locale?: unknown } };
+    return typeof r.user?.locale === "string" ? r.user.locale : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function conversationInfo(token: string, channelId: string, cookie?: string): Promise<Json> {

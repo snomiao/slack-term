@@ -10,3 +10,6 @@ bun.lockb
 tests/fixtures/raw/
 coverage/
 tmp/
+worker/node_modules
+worker/.wrangler
+worker/.dev.vars

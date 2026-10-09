@@ -1,0 +1,18 @@
+// slack-term relay. Deploy: `npx --yes wrangler@4.105.0 deploy` from this dir
+// (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN in the environment), then:
+//   wrangler secret put SLACK_SIGNING_SECRET   # Slack app → Basic Information
+//   wrangler secret put RELAY_TOKEN            # any long random string; give it to consumers
+//   wrangler secret put SLACK_TEAM_ID          # optional: accept one workspace only
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "slack-term-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "durable_objects": {
+    "bindings": [{ "name": "RELAY", "class_name": "Relay" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Relay"] }],
+  // Request bodies are message events from possibly customer-facing channels:
+  // keep Workers Logs off so nothing about them is persisted by the platform.
+  "observability": { "enabled": false }
+}
