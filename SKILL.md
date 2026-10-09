@@ -159,6 +159,14 @@ without losing clicks. A reaction is durable state anyone can read back later.
   the other party counts automatically.
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
+- **❓ is the standing "other" choice.** Every question with choices lists it last
+  (`1️⃣ … 2️⃣ … 3️⃣ … ❓ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
+  is not an answer — `--wait` notes it on stderr and keeps waiting for the reply, which
+  arrives as free text (exit `5`).
+- **The instructions are posted in `ja` or `en`.** `--lang` (or `SLACK_TERM_LANG`) decides;
+  otherwise the answerers' Slack locale when they all share one, else the language the
+  question is written in, else the system locale, else `ja`. The confirm gate prints the
+  choice and why (`Language: en (answerers' Slack locale; …)`). `--waitFor` reads either.
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
@@ -173,6 +181,16 @@ without losing clicks. A reaction is durable state anyone can read back later.
   question back returned as `rc=0` was stored as the decision). The question stays open,
   so a pill pressed later still decides it: re-wait past the delivered reply with
   `slack ask --waitFor='<permalink>' --after=<reply ts>` (stderr prints this line).
+
+**Thread notes ride along with the answer.** A reply from the audience that is not the
+answer (「あと cswap ls も見て」 next to a pressed pill) is a *note*. Notes are read even when
+a pill answered, and again on every `--waitFor` of a ✅ question, so a note written after
+the answer still reaches you. Plain mode: stdout is still the answer alone, and the notes go
+to stderr. `--json`: stdout is one object
+`{status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink}`, with the same
+exit codes. Pass `cursor` back as `--after` on your next `--waitFor --timeout 0` and you
+never get the same note twice. Only the question's audience counts; the asker, bots and
+bystanders are never notes.
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
