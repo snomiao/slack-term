@@ -100,10 +100,16 @@ export type StreamMatch = {
   user: { id: string; name: string };
   text: string;
   permalink: string;
+  /** Why it was printed: its text matched --grep, or (failing that) it is a
+   *  reply in a thread started by a --replies-to sender. */
+  match: "grep" | "replies-to";
 };
 
 export type StreamOpts = {
   grep: RegExp;
+  /** Also emit replies in threads whose parent was posted by one of these user
+   *  ids (Slack's `parent_user_id`), whether or not they match --grep. */
+  repliesTo?: Set<string>;
   /** Restrict to these channel ids; otherwise every conversation the identity is in. */
   channels?: string[];
   /** Sender ids whose posts are never emitted: the identity itself (user id / bot id). */
@@ -286,7 +292,12 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
   const bid = str(m.bot_id);
   if ((uid && ctx.opts.selfUsers.has(uid)) || (bid && ctx.opts.selfBots.has(bid))) return false;
   ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
-  if (!ctx.opts.grep.test(matchText(m))) return false;
+  const match = ctx.opts.grep.test(matchText(m))
+    ? "grep"
+    : isReply && ctx.opts.repliesTo?.has(str(m.parent_user_id))
+      ? "replies-to"
+      : undefined;
+  if (!match) return false;
 
   const ts = str(m.ts);
   // A message can arrive twice — from a relay bell and from the poll — and
@@ -311,6 +322,8 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
     // Slack escapes only these three; the regex ran on the raw text above.
     text: str(m.text).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
     permalink: permalink(ctx.opts.teamUrl, ch.id, ts, threadTs ?? undefined),
+
+    match,
   };
   ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
   ctx.matches++;

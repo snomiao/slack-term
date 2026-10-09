@@ -132,6 +132,7 @@ describe("runStream — grep", () => {
       user: { id: "U00000001", name: "alice" },
       text: "hey <@U00000099> <please> look",
       permalink: `https://acme.slack.com/archives/C00000001/p${ts(-60).replace(".", "")}`,
+      match: "grep",
     }]);
     const everything = [...out, ...err].join("\n");
     expect(everything).not.toContain("secret");
@@ -233,6 +234,45 @@ describe("runStream — threads", () => {
     s.post("D00000001", { ts: ts(-60), user: "U00000001", text: "@mybot hi" });
     await runStream(s, opts({ sinceSec: 120 }));
     expect(emitted()[0]!.channel).toEqual({ id: "D00000001", name: "@alice" });
+  });
+});
+
+describe("runStream — --replies-to (threads started by given senders)", () => {
+  /** A thread the bot (SELF) started, one a person started, and a top-level
+   *  post — none of the bodies match --grep. Slack stamps each reply with
+   *  parent_user_id; the fake does not compute it, so fixtures set it. */
+  function workspace(): FakeSlack {
+    const s = new FakeSlack();
+    const root = ts(-86400), other = ts(-3000);
+    s.post("C00000001", { ts: root, user: SELF, bot_id: SELF_BOT, text: "QA please check", thread_ts: root });
+    s.post("C00000001", { ts: ts(-90), user: "U00000001", text: "checked, looks fine", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-85), user: SELF, bot_id: SELF_BOT, text: "thanks", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-80), bot_id: SELF_BOT, username: "mybot", text: "posted by app", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-75), user: "U00000002", text: "ping @mybot here", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: other, user: "U00000002", text: "lunch?", thread_ts: other });
+    s.post("C00000001", { ts: ts(-70), user: "U00000001", text: "sure", thread_ts: other, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-65), user: "U00000001", text: "unrelated post" });
+    return s;
+  }
+
+  test("a person's reply in a thread the bot started is emitted without --grep; own replies never", async () => {
+    expect(await runStream(workspace(), opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match, m.type])).toEqual([
+      ["checked, looks fine", "replies-to", "reply"],
+      ["ping @mybot here", "grep", "reply"],
+    ]);
+  });
+
+  test("without --replies-to the same workspace emits only the --grep match", async () => {
+    expect(await runStream(workspace(), opts({ sinceSec: 120 }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["ping @mybot here", "grep"]]);
+  });
+
+  test("only threads whose root is by a listed sender count; that sender's top-level posts do not", async () => {
+    const s = workspace();
+    s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "a top-level post by the listed sender" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set(["U00000002"]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["ping @mybot here", "grep"], ["sure", "replies-to"]]);
   });
 });
 
@@ -475,7 +515,7 @@ describe("helpers", () => {
   });
   test("humanLine marks replies", () => {
     expect(humanLine({
-      type: "reply", channel: { id: "C1", name: "#dev" }, ts: "1700000000.000100", thread_ts: "1", user: { id: "U1", name: "a" }, text: "t", permalink: "p",
+      type: "reply", channel: { id: "C1", name: "#dev" }, ts: "1700000000.000100", thread_ts: "1", user: { id: "U1", name: "a" }, text: "t", permalink: "p", match: "grep",
     })).toBe("2023-11-14T22:13:20Z  #dev  ↳ @a: t\n    p");
   });
   test("the real now/out/err seams", () => {
@@ -654,6 +694,29 @@ describe("runStream — relay", () => {
     }, ac);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(emitted().map((m) => [m.type, m.thread_ts])).toEqual([["reply", parent]]);
+  });
+
+  test("--replies-to: a bell for a person's reply in the bot's thread emits it; the bot's own reply does not", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-3600);
+    s.post("C00000001", { ts: root, thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "QA please check" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000001", text: "done", parent_user_id: SELF });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      2: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "thanks", parent_user_id: SELF });
+        r.ring(2, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["done", "replies-to"]]);
   });
 
   test("bells for other channels, own posts and non-matches print nothing", async () => {
