@@ -347,8 +347,8 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
   without tagging it. It matches Slack's `parent_user_id`, the parent's
   `reply_users`, and the id's own replies the stream has seen (kept in the state
   file for 30 days). `reply_users` lists at most five people, so a thread cut short
-  there is read once in full. A bot can appear as its user id (`U…`) or bot id
-  (`B…`); `self` covers both. Polling only reaches threads inside `--thread-window`;
+  there is read once in full (as is one whose list is missing). A bot can appear
+  as its user id (`U…`) or bot id (`B…`); `self`, or a `B…` id, covers both. Polling only reaches threads inside `--thread-window`;
   with the relay, a reply in an older thread is caught too.
 - **No self-echo.** Posts by the streaming identity are excluded by sender id (its user
   id and bot id; with `--as-user`, the bot's posts too) — the same text from anyone

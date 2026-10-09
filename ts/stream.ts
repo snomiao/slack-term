@@ -360,18 +360,39 @@ async function inThreadOf(
 ): Promise<boolean> {
   if (ids.has(str(m.parent_user_id))) return true;
   const tts = str(m.thread_ts);
+  const known = knownMember(ctx, ch, ids, tts, parent);
+  if (known !== undefined) return known;
+  return readMembership(ctx, ch, ids, tts, str(parent?.latest_reply),
+    await allPages((c) => ctx.client.replies(ch.id, tts, "0", c)));
+}
+
+/** Membership from what is at hand — true, false, or undefined when only a
+ *  full read of the thread can tell. */
+function knownMember(
+  ctx: Ctx, ch: ChannelRef, ids: Set<string>, tts: string, parent?: Record<string, Json>,
+): boolean | undefined {
   const key = `${ch.id}:${tts}`;
   if (ctx.state.joined?.[key] !== undefined) return true;
-  // The starter, by either id (parent_user_id above is only ever a user id).
-  if (parent && (ids.has(str(parent.user)) || ids.has(str(parent.bot_id)))) return true;
-  const users = Array.isArray(parent?.reply_users) ? parent.reply_users.map((u) => str(u)) : [];
-  if (users.some((u) => ids.has(u))) return true;
-  const count = typeof parent?.reply_users_count === "number" ? parent.reply_users_count : 0;
-  if (parent && count <= users.length) return false;
-  // A negative from earlier in this run holds only while the thread is quiet.
-  const latest = str(parent?.latest_reply);
+  if (!parent) return undefined;
+  // The starter, by either id (a reply's parent_user_id is only ever a user id).
+  if (ids.has(str(parent.user)) || ids.has(str(parent.bot_id))) return true;
+  const users = Array.isArray(parent.reply_users) ? parent.reply_users.map((u) => str(u)) : undefined;
+  if (users?.some((u) => ids.has(u))) return true;
+  // A complete list without the ids is a no. A missing list, or one cut to its
+  // five entries, says nothing.
+  const count = typeof parent.reply_users_count === "number" ? parent.reply_users_count : undefined;
+  if (users && (count !== undefined ? count <= users.length : users.length < 5)) return false;
+  // A negative from a full read earlier in this run holds while the thread is quiet.
+  const latest = str(parent.latest_reply);
   if (latest && ctx.notJoined?.get(key) === latest) return false;
-  const all = await allPages((c) => ctx.client.replies(ch.id, tts, "0", c));
+  return undefined;
+}
+
+/** Decide membership from a full read of the thread (parent included) and remember it. */
+function readMembership(
+  ctx: Ctx, ch: ChannelRef, ids: Set<string>, tts: string, latest: string, all: Record<string, Json>[],
+): boolean {
+  const key = `${ch.id}:${tts}`;
   const post = all.filter((r) => ids.has(str(r.user)) || ids.has(str(r.bot_id))).pop();
   if (!post) {
     if (latest) (ctx.notJoined ??= new Map()).set(key, latest);
@@ -432,8 +453,14 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     if (!latest || str(p.thread_ts) !== pts) continue;
     const tc = num(st.threads[pts] ?? st.since);
     if (latest <= tc) continue;
-    const reps = (await allPages((c) => ctx.client.replies(ch.id, pts, fmt(tc), c)))
+    // When --replies-to cannot tell from the parent whether the ids are in this
+    // thread, read it whole in this one call instead of the new replies only —
+    // a second read could be rate-limited on every retry, stalling the scan.
+    const ids = ctx.opts.repliesTo;
+    const full = ids !== undefined && knownMember(ctx, ch, ids, pts, p) === undefined;
+    const reps = (await allPages((c) => ctx.client.replies(ch.id, pts, full ? "0" : fmt(tc), c)))
       .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+    if (full) readMembership(ctx, ch, ids!, pts, str(p.latest_reply), reps);
     for (const r of reps) {
       const t = num(str(r.ts));
       if (str(r.ts) === pts || t <= tc || t > horizon) continue;

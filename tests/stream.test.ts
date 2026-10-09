@@ -25,6 +25,8 @@ class FakeSlack implements StreamClient {
   calls: string[] = [];
   failNext: unknown[] = [];
   failChannel = new Map<string, unknown>();
+  /** replies() returns the parent without reply_users (a shape Slack documents). */
+  bareParents = false;
 
   post(channel: string, m: Msg): void {
     const list = this.msgs.get(channel) ?? [];
@@ -65,7 +67,7 @@ class FakeSlack implements StreamClient {
     const all = this.msgs.get(channel) ?? [];
     const root = all.find((m) => m.ts === threadTs)!;
     const thread = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs);
-    const parent = thread.length ? { ...root, ...replyUsers(thread) } : root;
+    const parent = thread.length && !this.bareParents ? { ...root, ...replyUsers(thread) } : root;
     const reps = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs && Number(r.ts) > Number(oldest));
     const start = cursor ? Number(cursor) : 0;
     const slice = [parent, ...reps.slice(start, start + 2)];
@@ -316,7 +318,7 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     expect(fullReads() - before).toBe(1); // the scan's own read of the new reply, nothing more
   });
 
-  test("a thread with five-plus repliers and no bot is read in full once per run, then skipped", async () => {
+  test("a thread with five-plus repliers and no bot costs one full read, not one extra per reply", async () => {
     const s = new FakeSlack();
     const root = ts(-86400);
     s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
@@ -326,9 +328,9 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "a", thread_ts: root, parent_user_id: "U00000002" });
     s.post("C00000001", { ts: ts(-50), user: "U00000003", text: "b", thread_ts: root, parent_user_id: "U00000002" });
     expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(2);
-    // One page for the new replies, then ONE full read (8 replies, 2 per page)
-    // for the first of them; the second reply reuses its answer.
-    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`).length).toBe(1 + 4);
+    // ONE read: the whole thread (8 replies, 2 per page) instead of only the new
+    // replies, since reply_users cannot tell — never a second read on top.
+    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`).length).toBe(4);
   });
 
   test("a bot listed in reply_users by its bot id (B…) counts", async () => {
@@ -871,6 +873,26 @@ describe("runStream — relay", () => {
       4: () => ac.abort(),
     }, ac);
     expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
+  });
+
+  test("--replies-to: a parent without reply_users is unknown, not a no — the thread is read in full", async () => {
+    const s = new FakeSlack();
+    s.bareParents = true;
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-17 * 86400);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "answer", parent_user_id: "U00000002" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
   });
 

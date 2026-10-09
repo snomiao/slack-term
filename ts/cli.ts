@@ -58,6 +58,7 @@ import { attributionEnabled, attributionMetadata, captureAttribution, parseSince
 import {
   authTest,
   authScopes,
+  botsInfo,
   authTestSession,
   conversationInfoSession,
   createChannel,
@@ -5815,6 +5816,15 @@ async function main(): Promise<void> {
               process.exit(1);
             }
             repliesTo.add(r);
+            // A bot can be listed under its user id too: add that alias.
+            if (r.startsWith("B")) {
+              try {
+                const { userId } = await botsInfo(token, r, cookie);
+                if (userId) repliesTo.add(userId);
+              } catch (e) {
+                console.error(`slack stream: --replies-to ${r}: cannot resolve its bot user id (${e instanceof Error ? e.message : String(e)}); threads where it shows as a user id are missed`);
+              }
+            }
           }
         }
         let channels: string[] | undefined;
