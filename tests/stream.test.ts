@@ -27,6 +27,8 @@ class FakeSlack implements StreamClient {
   failChannel = new Map<string, unknown>();
   /** replies() returns the parent without reply_users (a shape Slack documents). */
   bareParents = false;
+  /** "thread_ts>oldest" of every replies() call. */
+  repliesFrom: string[] = [];
 
   post(channel: string, m: Msg): void {
     const list = this.msgs.get(channel) ?? [];
@@ -63,6 +65,7 @@ class FakeSlack implements StreamClient {
   }
   async replies(channel: string, threadTs: string, oldest: string, cursor?: string): Promise<Page> {
     this.calls.push(`replies ${channel} ${threadTs}`);
+    this.repliesFrom.push(`${threadTs}>${oldest}`);
     this.maybeFail(channel);
     const all = this.msgs.get(channel) ?? [];
     const root = all.find((m) => m.ts === threadTs)!;
@@ -331,6 +334,30 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     // ONE read: the whole thread (8 replies, 2 per page) instead of only the new
     // replies, since reply_users cannot tell — never a second read on top.
     expect(s.calls.filter((c) => c === `replies C00000001 ${root}`).length).toBe(4);
+  });
+
+  test("a busy thread without the bot is checked incrementally on later polls, never re-read from its start", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000011", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      const t = now / 1000;
+      if (cycles <= 2) s.post("C00000001", { ts: (t - 10).toFixed(6), user: "U00000012", text: `more ${cycles}`, thread_ts: root, parent_user_id: "U00000002" });
+      if (cycles === 3) ac.abort();
+    };
+    expect(await runStream(s, opts({ sinceSec: 120, once: false, signal: ac.signal, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted()).toEqual([]);
+    const froms = s.repliesFrom.filter((f) => f.startsWith(`${root}>`)).map((f) => f.split(">")[1]);
+    // The first check reads the thread from its start (8 replies, 2 per page);
+    // each later poll reads only past what was already checked.
+    expect(froms).toEqual([...Array(4).fill("0.000000"), ts(-60), ts(20)]);
   });
 
   test("a bot listed in reply_users by its bot id (B…) counts", async () => {

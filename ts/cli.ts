@@ -5839,7 +5839,9 @@ async function main(): Promise<void> {
         }
         const key = createHash("sha256")
           .update(JSON.stringify([me.url, me.userId, re.source, re.flags, [...(channels ?? [])].sort(),
-            ...(repliesTo ? [[...repliesTo].sort()] : [])]))
+            // As given, not as resolved: a failed bots.info lookup must not
+            // move the stream to a fresh state file.
+            ...(argv["replies-to"]?.length ? [[...argv["replies-to"].map(String)].sort()] : [])]))
           .digest("hex").slice(0, 16);
         const stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
         const statePath = argv.state ?? join(stateHome, "slack-term", "stream", `${key}.json`);
