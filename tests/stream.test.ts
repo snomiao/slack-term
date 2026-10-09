@@ -51,7 +51,7 @@ class FakeSlack implements StreamClient {
       .map((m) => {
         const reps = all.filter((r) => r.thread_ts === m.ts && r.ts !== m.ts);
         return reps.length && m.thread_ts !== undefined && m.thread_ts === m.ts
-          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts! }
+          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts!, reply_users: replyUsers(reps) }
           : m;
       })
       .sort((a, b) => Number(b.ts) - Number(a.ts)); // newest first, like Slack
@@ -63,7 +63,9 @@ class FakeSlack implements StreamClient {
     this.calls.push(`replies ${channel} ${threadTs}`);
     this.maybeFail(channel);
     const all = this.msgs.get(channel) ?? [];
-    const parent = all.find((m) => m.ts === threadTs)!;
+    const root = all.find((m) => m.ts === threadTs)!;
+    const thread = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs);
+    const parent = thread.length ? { ...root, reply_users: replyUsers(thread) } : root;
     const reps = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs && Number(r.ts) > Number(oldest));
     const start = cursor ? Number(cursor) : 0;
     const slice = [parent, ...reps.slice(start, start + 2)];
@@ -73,6 +75,11 @@ class FakeSlack implements StreamClient {
     this.calls.push(`user ${id}`);
     return ({ U00000001: "alice", U00000002: "bob" } as Record<string, string>)[id] ?? id;
   }
+}
+
+/** Like Slack: the distinct user ids that replied (a bot's posts carry its bot user id). */
+function replyUsers(reps: Msg[]): string[] {
+  return [...new Set(reps.map((r) => String(r.user ?? "")).filter(Boolean))];
 }
 
 let dir: string;
@@ -268,11 +275,30 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["ping @mybot here", "grep"]]);
   });
 
-  test("only threads whose root is by a listed sender count; that sender's top-level posts do not", async () => {
+  test("a thread someone else started counts once the bot has replied in it; before that it does not", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "how do I export?", thread_ts: root });
+    s.post("C00000001", { ts: ts(-100), user: "U00000001", text: "me too", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(2);
+    expect(emitted()).toEqual([]); // not yet: the bot has not posted in it
+    out.length = 0;
+    s.post("C00000001", { ts: ts(-90), user: SELF, bot_id: SELF_BOT, text: "use File > Export", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-80), user: "U00000002", text: "thanks, works", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["me too", "replies-to"], ["thanks, works", "replies-to"]]);
+  });
+
+  test("only threads a listed sender started or replied in count; that sender's top-level posts do not", async () => {
     const s = workspace();
     s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "a top-level post by the listed sender" });
+    s.post("C00000001", { ts: ts(-50), user: "U00000001", text: "a thread nobody listed is in", thread_ts: ts(-50) });
+    s.post("C00000001", { ts: ts(-40), user: "U00000003", text: "reply there", thread_ts: ts(-50), parent_user_id: "U00000001" });
     expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set(["U00000002"]) }))).toBe(0);
-    expect(emitted().map((m) => [m.text, m.match])).toEqual([["ping @mybot here", "grep"], ["sure", "replies-to"]]);
+    // U00000002 started the "lunch?" thread and replied in the bot's thread.
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([
+      ["checked, looks fine", "replies-to"], ["ping @mybot here", "grep"], ["sure", "replies-to"],
+    ]);
   });
 });
 
@@ -717,6 +743,31 @@ describe("runStream — relay", () => {
     }, ac);
     expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["done", "replies-to"]]);
+  });
+
+  test("--replies-to: a bell reaches a thread the bot replied in, even one older than the window", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-17 * 86400), quiet = ts(-17 * 86400 + 10);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "answer", parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: quiet, thread_ts: quiet, user: "U00000002", text: "unrelated old thread" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      2: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: quiet, user: "U00000001", text: "not ours", parent_user_id: "U00000002" });
+        r.ring(2, { channel: "C00000001", ts: t, thread_ts: quiet });
+      },
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
   });
 
   test("bells for other channels, own posts and non-matches print nothing", async () => {

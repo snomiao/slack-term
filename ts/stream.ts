@@ -107,8 +107,9 @@ export type StreamMatch = {
 
 export type StreamOpts = {
   grep: RegExp;
-  /** Also emit replies in threads whose parent was posted by one of these user
-   *  ids (Slack's `parent_user_id`), whether or not they match --grep. */
+  /** Also emit replies in threads one of these user ids started (Slack's
+   *  `parent_user_id`) or has replied in (the parent's `reply_users`), whether
+   *  or not they match --grep. */
   repliesTo?: Set<string>;
   /** Restrict to these channel ids; otherwise every conversation the identity is in. */
   channels?: string[];
@@ -286,7 +287,9 @@ async function nameOf(ctx: Ctx, id: string): Promise<string> {
 
 /** Match one message and, only if it matches, resolve names and emit it.
  *  Nothing about a non-matching message is printed or logged. */
-async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isReply: boolean): Promise<boolean> {
+async function consider(
+  ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isReply: boolean, parent?: Record<string, Json>,
+): Promise<boolean> {
   if (SKIP_SUBTYPES.has(str(m.subtype))) return false;
   const uid = str(m.user);
   const bid = str(m.bot_id);
@@ -294,7 +297,7 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
   ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
   const match = ctx.opts.grep.test(matchText(m))
     ? "grep"
-    : isReply && ctx.opts.repliesTo?.has(str(m.parent_user_id))
+    : isReply && ctx.opts.repliesTo && inThreadOf(ctx.opts.repliesTo, m, parent)
       ? "replies-to"
       : undefined;
   if (!match) return false;
@@ -328,6 +331,15 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
   ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
   ctx.matches++;
   return true;
+}
+
+/** Did one of `ids` start this reply's thread, or reply in it? The starter is
+ *  on every reply; the repliers only on the parent (`reply_users`), when the
+ *  caller has it. */
+function inThreadOf(ids: Set<string>, m: Record<string, Json>, parent?: Record<string, Json>): boolean {
+  if (ids.has(str(m.parent_user_id))) return true;
+  const users = parent?.reply_users;
+  return Array.isArray(users) && users.some((u) => ids.has(str(u)));
 }
 
 export function humanLine(r: StreamMatch): string {
@@ -365,7 +377,7 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     // A thread_broadcast is a reply also shown in the channel; it is emitted
     // here (once) and skipped when its thread's replies are read.
     const tts = str(m.thread_ts);
-    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts));
+    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts), msgs.find((x) => str(x.ts) === tts));
     st.cursor = str(m.ts);
     // Persist right after a match is written, so a restart cannot repeat it.
     if (hit) saveState(ctx.opts.statePath, ctx.state);
@@ -384,7 +396,7 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     for (const r of reps) {
       const t = num(str(r.ts));
       if (str(r.ts) === pts || t <= tc || t > horizon) continue;
-      const hit = str(r.subtype) !== "thread_broadcast" && await consider(ctx, ch, r, true);
+      const hit = str(r.subtype) !== "thread_broadcast" && await consider(ctx, ch, r, true, p);
       st.threads[pts] = str(r.ts);
       if (hit) saveState(ctx.opts.statePath, ctx.state);
     }
@@ -403,12 +415,16 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   // conversations.replies on the message's own ts returns that message first
   // even when it has no thread; a reply is read from just before its ts. Either
   // way it is near the start, however much was posted since — but follow the
-  // cursor (a few pages at most) in case that second was busy.
+  // cursor (a few pages at most) in case that second was busy. Slack puts
+  // the thread's parent at the top of every page, whatever `oldest` says: it
+  // carries `reply_users` for --replies-to.
   let m: Record<string, Json> | undefined;
+  let parent: Record<string, Json> | undefined;
   let cursor: string | undefined;
   for (let i = 0; i < 5 && !m; i++) {
     const p = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1), cursor);
     m = p.messages.find((x) => str(x.ts) === bell.ts);
+    parent ??= bell.thread_ts ? p.messages.find((x) => str(x.ts) === bell.thread_ts) : undefined;
     cursor = p.nextCursor;
     if (!cursor) break;
   }
@@ -422,7 +438,7 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   const isReply = tts !== "" && tts !== bell.ts && str(m.subtype) !== "thread_broadcast";
   const polled = isReply ? st?.threads[tts] : st?.cursor;
   if (polled !== undefined && num(bell.ts) <= num(polled)) return true;
-  if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts)) saveState(ctx.opts.statePath, ctx.state);
+  if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts, parent)) saveState(ctx.opts.statePath, ctx.state);
   return true;
 }
 
