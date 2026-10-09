@@ -90,6 +90,10 @@ export type StreamState = {
   seen?: Record<string, number>;
   /** Last relay bell fully handled; a restart resumes the relay from here. */
   relay?: { url: string; seq: number; epoch?: string };
+  /** Threads a --replies-to id has posted in, "channel:thread_ts" → ts of its
+   *  latest post seen there. The parent's `reply_users` lists at most five
+   *  people, so this is what remembers that the bot is in a busy thread. */
+  joined?: Record<string, number>;
 };
 
 export type StreamMatch = {
@@ -107,9 +111,9 @@ export type StreamMatch = {
 
 export type StreamOpts = {
   grep: RegExp;
-  /** Also emit replies in threads one of these user ids started (Slack's
-   *  `parent_user_id`) or has replied in (the parent's `reply_users`), whether
-   *  or not they match --grep. */
+  /** Also emit replies in threads one of these ids (user `U…` or bot `B…`)
+   *  started (Slack's `parent_user_id`) or has replied in, whether or not they
+   *  match --grep. */
   repliesTo?: Set<string>;
   /** Restrict to these channel ids; otherwise every conversation the identity is in. */
   channels?: string[];
@@ -274,6 +278,8 @@ type Ctx = {
   state: StreamState;
   names: Map<string, string>;
   matches: number;
+  /** Threads already read in full this run and found without a --replies-to id. */
+  notJoined?: Set<string>;
 };
 
 async function nameOf(ctx: Ctx, id: string): Promise<string> {
@@ -293,11 +299,19 @@ async function consider(
   if (SKIP_SUBTYPES.has(str(m.subtype))) return false;
   const uid = str(m.user);
   const bid = str(m.bot_id);
+  // Note a --replies-to id's own reply (usually the bot's, which is never
+  // printed) before the self-echo check drops it: later replies in that
+  // thread count even when reply_users no longer shows it.
+  const ids = ctx.opts.repliesTo;
+  const tts = str(m.thread_ts);
+  if (isReply && ids && tts && (ids.has(uid) || ids.has(bid))) {
+    (ctx.state.joined ??= {})[`${ch.id}:${tts}`] = num(str(m.ts));
+  }
   if ((uid && ctx.opts.selfUsers.has(uid)) || (bid && ctx.opts.selfBots.has(bid))) return false;
   ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
   const match = ctx.opts.grep.test(matchText(m))
     ? "grep"
-    : isReply && ctx.opts.repliesTo && inThreadOf(ctx.opts.repliesTo, m, parent)
+    : isReply && ids && await inThreadOf(ctx, ch, ids, m, parent)
       ? "replies-to"
       : undefined;
   if (!match) return false;
@@ -325,7 +339,6 @@ async function consider(
     // Slack escapes only these three; the regex ran on the raw text above.
     text: str(m.text).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
     permalink: permalink(ctx.opts.teamUrl, ch.id, ts, threadTs ?? undefined),
-
     match,
   };
   ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
@@ -334,12 +347,29 @@ async function consider(
 }
 
 /** Did one of `ids` start this reply's thread, or reply in it? The starter is
- *  on every reply; the repliers only on the parent (`reply_users`), when the
- *  caller has it. */
-function inThreadOf(ids: Set<string>, m: Record<string, Json>, parent?: Record<string, Json>): boolean {
+ *  on every reply; the repliers come from what this stream has seen them post
+ *  (`joined`) and the parent's `reply_users`. That list holds at most five
+ *  entries (user or bot ids), so when it is cut short — or the parent is not at
+ *  hand — the thread is read once in full. */
+async function inThreadOf(
+  ctx: Ctx, ch: ChannelRef, ids: Set<string>, m: Record<string, Json>, parent?: Record<string, Json>,
+): Promise<boolean> {
   if (ids.has(str(m.parent_user_id))) return true;
-  const users = parent?.reply_users;
-  return Array.isArray(users) && users.some((u) => ids.has(str(u)));
+  const tts = str(m.thread_ts);
+  const key = `${ch.id}:${tts}`;
+  if (ctx.state.joined?.[key] !== undefined) return true;
+  const users = Array.isArray(parent?.reply_users) ? parent.reply_users.map((u) => str(u)) : [];
+  if (users.some((u) => ids.has(u))) return true;
+  const count = typeof parent?.reply_users_count === "number" ? parent.reply_users_count : 0;
+  if ((parent && count <= users.length) || ctx.notJoined?.has(key)) return false;
+  const all = await allPages((c) => ctx.client.replies(ch.id, tts, "0", c));
+  const post = all.filter((r) => str(r.ts) !== tts && (ids.has(str(r.user)) || ids.has(str(r.bot_id)))).pop();
+  if (!post) {
+    (ctx.notJoined ??= new Set()).add(key);
+    return false;
+  }
+  (ctx.state.joined ??= {})[key] = num(str(post.ts));
+  return true;
 }
 
 export function humanLine(r: StreamMatch): string {
@@ -370,6 +400,8 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
 
   const msgs = (await allPages((c) => ctx.client.history(ch.id, fmt(oldest), c)))
     .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+  // A broadcast's parent, for --replies-to.
+  const byTs = ctx.opts.repliesTo ? new Map(msgs.map((x) => [str(x.ts), x])) : undefined;
 
   for (const m of msgs) {
     const t = num(str(m.ts));
@@ -377,7 +409,7 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     // A thread_broadcast is a reply also shown in the channel; it is emitted
     // here (once) and skipped when its thread's replies are read.
     const tts = str(m.thread_ts);
-    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts), msgs.find((x) => str(x.ts) === tts));
+    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts), tts ? byTs?.get(tts) : undefined);
     st.cursor = str(m.ts);
     // Persist right after a match is written, so a restart cannot repeat it.
     if (hit) saveState(ctx.opts.statePath, ctx.state);
@@ -438,8 +470,20 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   const isReply = tts !== "" && tts !== bell.ts && str(m.subtype) !== "thread_broadcast";
   const polled = isReply ? st?.threads[tts] : st?.cursor;
   if (polled !== undefined && num(bell.ts) <= num(polled)) return true;
-  if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts, parent)) saveState(ctx.opts.statePath, ctx.state);
+  const joined = Object.keys(ctx.state.joined ?? {}).length;
+  const hit = await consider(ctx, ch, m, tts !== "" && tts !== bell.ts, parent);
+  if (hit || Object.keys(ctx.state.joined ?? {}).length !== joined) saveState(ctx.opts.statePath, ctx.state);
   return true;
+}
+
+/** How long a thread the bot posted in keeps counting for --replies-to after
+ *  its last post there (a relay bell can reach a thread of any age). */
+const JOINED_TTL_SEC = 30 * 86400;
+
+function pruneJoined(st: StreamState, oldestSec: number): void {
+  if (!st.joined) return;
+  for (const [k, t] of Object.entries(st.joined)) if (t < oldestSec) delete st.joined[k];
+  if (!Object.keys(st.joined).length) delete st.joined;
 }
 
 /** Drop `seen` entries no scan can reach any more. */
@@ -788,6 +832,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
 
         cycle++;
         pruneSeen(state, nowSec - opts.threadWindowSec - 86400);
+        pruneJoined(state, nowSec - JOINED_TTL_SEC);
         if (opts.once) {
           saveState(opts.statePath, state);
           if (ctx.matches === 0) _internals.err(`slack stream: no matches in ${channels.length - skipped.size} channel(s)`);

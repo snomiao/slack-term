@@ -51,7 +51,7 @@ class FakeSlack implements StreamClient {
       .map((m) => {
         const reps = all.filter((r) => r.thread_ts === m.ts && r.ts !== m.ts);
         return reps.length && m.thread_ts !== undefined && m.thread_ts === m.ts
-          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts!, reply_users: replyUsers(reps) }
+          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts!, ...replyUsers(reps) }
           : m;
       })
       .sort((a, b) => Number(b.ts) - Number(a.ts)); // newest first, like Slack
@@ -65,7 +65,7 @@ class FakeSlack implements StreamClient {
     const all = this.msgs.get(channel) ?? [];
     const root = all.find((m) => m.ts === threadTs)!;
     const thread = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs);
-    const parent = thread.length ? { ...root, reply_users: replyUsers(thread) } : root;
+    const parent = thread.length ? { ...root, ...replyUsers(thread) } : root;
     const reps = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs && Number(r.ts) > Number(oldest));
     const start = cursor ? Number(cursor) : 0;
     const slice = [parent, ...reps.slice(start, start + 2)];
@@ -77,9 +77,11 @@ class FakeSlack implements StreamClient {
   }
 }
 
-/** Like Slack: the distinct user ids that replied (a bot's posts carry its bot user id). */
-function replyUsers(reps: Msg[]): string[] {
-  return [...new Set(reps.map((r) => String(r.user ?? "")).filter(Boolean))];
+/** Like Slack: who replied — user ids, or the bot id of a post without one —
+ *  cut to five entries, with the true count beside it. */
+function replyUsers(reps: Msg[]): { reply_users: string[]; reply_users_count: number } {
+  const all = [...new Set(reps.map((r) => String(r.user ?? r.bot_id ?? "")).filter(Boolean))];
+  return { reply_users: all.slice(0, 5), reply_users_count: all.length };
 }
 
 let dir: string;
@@ -287,6 +289,59 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     s.post("C00000001", { ts: ts(-80), user: "U00000002", text: "thanks, works", thread_ts: root, parent_user_id: "U00000002" });
     expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(0);
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["me too", "replies-to"], ["thanks, works", "replies-to"]]);
+  });
+
+  test("a busy thread whose reply_users no longer shows the bot is read once in full, then remembered", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "big discussion", thread_ts: root });
+    // Five people reply first, then the bot (the sixth replier, cut from reply_users).
+    for (let i = 1; i <= 5; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `view ${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-85000), user: SELF, bot_id: SELF_BOT, text: "summary", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "agreed", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["agreed", "replies-to"]]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.joined).toEqual({ [`C00000001:${root}`]: Number(ts(-85000)) });
+    // Next reply: the remembered participation answers; no second full read.
+    out.length = 0;
+    const fullReads = (): number => s.calls.filter((c) => c === `replies C00000001 ${root}`).length;
+    const before = fullReads();
+    now += 60_000;
+    s.post("C00000001", { ts: ts(0), user: "U00000003", text: "+1", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["+1"]);
+    expect(fullReads() - before).toBe(1); // the scan's own read of the new reply, nothing more
+  });
+
+  test("a thread with five-plus repliers and no bot is read in full once per run, then skipped", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-50), user: "U00000003", text: "b", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(2);
+    // One page for the new replies, then ONE full read (8 replies, 2 per page)
+    // for the first of them; the second reply reuses its answer.
+    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`).length).toBe(1 + 4);
+  });
+
+  test("a bot listed in reply_users by its bot id (B…) counts", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "question", thread_ts: root });
+    s.post("C00000001", { ts: ts(-86000), bot_id: SELF_BOT, username: "mybot", text: "answer", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "thanks", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["thanks"]);
+    out.length = 0;
+    // Listing only the user id misses it — which is why `self` expands to both.
+    expect(await runStream(s, opts({ sinceSec: 120, statePath: join(dir, "b.json"), repliesTo: new Set([SELF]) }))).toBe(2);
   });
 
   test("only threads a listed sender started or replied in count; that sender's top-level posts do not", async () => {

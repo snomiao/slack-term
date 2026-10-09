@@ -5746,7 +5746,7 @@ async function main(): Promise<void> {
         .option("grep", { alias: "e", type: "string", demandOption: true, describe: "Regex matched against each message's text (raw, e.g. <@U00000001>). Non-matching messages are never printed or logged" })
         .option("ignore-case", { alias: "i", type: "boolean", default: false, describe: "Case-insensitive --grep" })
         .option("channel", { type: "array", string: true, describe: "Only these channels (#name, id or permalink); repeatable" })
-        .option("replies-to", { type: "array", string: true, describe: "Also print replies in threads this user id started or replied in (e.g. U00000001; `self` = the streaming identity), --grep or not; repeatable" })
+        .option("replies-to", { type: "array", string: true, describe: "Also print replies in threads this id started or replied in (user U…/bot B…; `self` = the streaming identity), --grep or not; repeatable" })
         .option("json", { type: "boolean", default: false, describe: "One JSON object per match: type, channel{id,name}, ts, thread_ts, user{id,name}, text, permalink, match (grep | replies-to)" })
         .option("once", { type: "boolean", default: false, describe: "Scan once from the saved cursor (or --since) and exit: 0 = matches printed, 2 = none, 3 = failure" })
         .option("since", { type: "string", describe: "Replay from this long ago (e.g. 30m, 2h), ignoring the saved cursor" })
@@ -5799,18 +5799,22 @@ async function main(): Promise<void> {
             if (b.botId) selfBots.add(b.botId);
           } catch { /* a dead bot token posts nothing to exclude */ }
         }
-        // Thread roots are matched on Slack's `parent_user_id`, which is a user
-        // id — a bot's posts carry its bot USER id (auth.test user_id), not B….
+        // Slack names a bot in a thread either way: `parent_user_id` holds its
+        // bot USER id (auth.test user_id), `reply_users` sometimes its B… bot
+        // id — so `self` stands for both.
         let repliesTo: Set<string> | undefined;
         if (argv["replies-to"]?.length) {
           repliesTo = new Set();
           for (const r of argv["replies-to"].map(String)) {
-            const id = r === "self" ? me.userId : r;
-            if (!/^[UW][A-Z0-9]{2,}$/.test(id)) {
-              console.error(`slack stream: --replies-to: "${r}" is not a user id (U…/W…) or "self"`);
+            if (r === "self") {
+              for (const id of [me.userId, me.botId]) if (id) repliesTo.add(id);
+              continue;
+            }
+            if (!/^[UWB][A-Z0-9]{2,}$/.test(r)) {
+              console.error(`slack stream: --replies-to: "${r}" is not a user or bot id (U…/W…/B…) or "self"`);
               process.exit(1);
             }
-            repliesTo.add(id);
+            repliesTo.add(r);
           }
         }
         let channels: string[] | undefined;
