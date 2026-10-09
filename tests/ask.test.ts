@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage } from "../ts/ask.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -196,6 +196,36 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
       const r = await run(["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM], m.baseUrl);
       expect(r.exitCode).toBe(1); // reached the gate, i.e. not refused
       expect(r.stdout).toContain(`  Answerable by: @bob (${BOB})`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the copy follows the answerer's Slack locale, and the gate says why", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      "users.info__include_locale=true&user=U00000BOB": { ok: true, user: { id: BOB, locale: "en-US" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      // Written in Japanese, but bob reads Slack in English — bob is the one
+      // who has to follow the instructions.
+      const base = ["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("Language: en (answerers' Slack locale; override with --lang)");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const post = m.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
+      const posted = JSON.parse(post.body).text as string;
+      expect(posted).toContain(":question: Other — reply to this message");
+      expect(posted).toContain("_Press one of the reactions below to answer.");
+
+      // --lang overrides it.
+      const ja = await run([...base, "--lang", "ja"], m.baseUrl);
+      expect(ja.stdout).toContain("Language: ja (--lang; override with --lang)");
     } finally {
       await m.stop();
     }
@@ -395,9 +425,11 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       const seeds = reqs.filter((q) => q.method === "reactions.add").map((q) => JSON.parse(q.body).name);
       // Order is the whole point: Slack renders pills in add order, so a
       // parallel/out-of-order seed would show the choices shuffled.
-      // The marker leads: it identifies the message as an `ask` and is what a
-      // reader (or `has:`) sees first, so it must sit left of the pills.
-      expect(seeds).toEqual(["question", "one", "two", "three"]);
+      // The marker goes LAST: it doubles as the "other" choice the body lists
+      // under the numbered ones, so the pill row reads 1 2 3 ❓ like the body.
+      expect(seeds).toEqual(["one", "two", "three", "question"]);
+      const posted = JSON.parse(reqs[post]!.body).text as string;
+      expect(posted).toMatch(/:three: [^\n]*\n:question: その他/);
       // And every seed must come after the message it is attached to.
       expect(reqs.findIndex((q) => q.method === "reactions.add")).toBeGreaterThan(post);
     } finally {
@@ -474,6 +506,29 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("❓ (other) alone is not an answer — it says a reply is coming, and keeps waiting", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      ...pollFixture(DM, [questionMsg({ reactions: [
+        { name: "one", users: [SELF], count: 1 },
+        { name: "question", users: [SELF, BOB], count: 2 },
+      ] })]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const base = ["ask", "@bob", "どっち?", "A", "B", "--channel-id", DM, "--wait", "--timeout", "2"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+      // Once, not once per poll tick.
+      expect(r.stderr.split("❓ その他 を押しました").length - 1).toBe(1);
     } finally {
       await m.stop();
     }
@@ -662,6 +717,36 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       // No confirm gate and nothing new posted: --waitFor only reads and stamps.
       expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("collecting keeps the background and the chosen option, and drops the rest", async () => {
+    const withBody = askBuildText(`<@${BOB}> どっち?`, "背景: リリース前\n推奨: B", ["A", "B"], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [{
+        type: "message", user: SELF, ts: QTS, text: withBody,
+        reactions: [{ name: "two", users: [SELF, BOB], count: 2 }],
+      }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B");
+      const upd = m.requests.find((q) => q.method === "chat.update")!;
+      const text = (upd.body.startsWith("{") ? JSON.parse(upd.body).text : new URLSearchParams(upd.body).get("text")) as string;
+      expect(text.startsWith(":white_check_mark: ")).toBe(true);
+      expect(text).toContain("背景: リリース前\n推奨: B");
+      expect(text).toContain(":two: B");
+      expect(text).not.toContain(":one: A");
+      expect(text).not.toContain("その他");
+      // And it reads back as the same answer.
+      expect(askParseMessage(text)).toEqual({ kind: "resolved", question: `<@${BOB}> どっち?`, answer: "B" });
     } finally {
       await m.stop();
     }
@@ -986,4 +1071,175 @@ describe("ask URL boundaries", () => {
       } finally { await m.stop(); }
     });
   }
+});
+
+// THE LIVE CASE, 2026-10-02: a pill was pressed and collected, ✅ was written,
+// the watcher exited — and the same person's thread note 40 s later was never
+// delivered by anything. A note is a reply from the audience that is NOT the
+// answer. It rides along with the answer, never replaces it: plain stdout is
+// still the answer alone, and --json carries the notes plus a cursor that, fed
+// back as --after, never delivers the same note twice.
+describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 }, () => {
+  const Q = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], true);
+  const T = (n: number) => `1700000000.000${n}`; // all after QTS (…000100)
+  const note = (ts: string, text: string, user = BOB, extra: Record<string, unknown> = {}) =>
+    ({ type: "message", user, ts, thread_ts: QTS, text, ...extra });
+
+  function fx(question: Record<string, unknown>, thread: unknown[]): InlineFixtures {
+    const messages = [question];
+    return {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages },
+      ...pollFixture(CHAN, messages),
+      [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+      [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+    };
+  }
+  const json = (stdout: string) => JSON.parse(stdout.trim()) as { status: string; answer: string | null; notes: { ts: string; user: string; text: string }[]; cursor: string };
+
+  test("a pill + a thread note already there: both delivered, the pill is still the answer", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.status).toBe("answered");
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => [n.ts, n.user, n.text])).toEqual([[T(200), BOB, "cswap ls も見て"]]);
+      expect(o.cursor).toBe(T(200));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a question missing from the history page still has its thread read", async () => {
+    // Busy conversation: the poll's history page does not include the question,
+    // so its reply_count is unknown — and unknown must not be read as zero.
+    const qd = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], false);
+    const q = { type: "message", user: SELF, ts: QTS, text: qd, reply_count: 1 };
+    const page = [{ type: "message", user: BOB, ts: T(200), text: "1" }];
+    const m = await startMock({ inline: {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      [`conversations.history__channel=${DM}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [q] },
+      ...pollFixture(DM, page),
+      [`conversations.replies__channel=${DM}&limit=100&ts=${QTS}`]: { ok: true, messages: [q, { ...note(T(300), "スレッドにも一言") }] },
+    } });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["スレッドにも一言"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("plain mode keeps stdout = the answer alone; the note goes to stderr", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("A\n");
+      expect(r.stderr).toContain("cswap ls も見て");
+      expect(r.stderr).toContain(`--after=${T(200)}`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a pill + a note written AFTER ✅ is delivered on the next --waitFor (the 2026-10-02 case)", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    // ✅ was written at …150 — by a build that collected no notes, so the …120
+    // note was never delivered either. No default cursor: both come back.
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(120), "前の追記"), note(T(300), "也看一眼 cswap ls")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["前の追記", "也看一眼 cswap ls"]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a free-text answer + another reply: the answer is not repeated as a note", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 2 };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2"), note(T(300), "あと README も")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("B");
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("on a ✅ question answered BY A REPLY, that reply is not handed back as a note", async () => {
+    // Stamp says "reply (2)": the "2." before the ✅ edit is the answer itself.
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "B", how: "返信 (2)", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 3, edited: { user: SELF, ts: T(250) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2."), note(T(300), "2 番目の理由も書いて"), note(T(400), "あと README も")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("B");
+      // …300 also starts with "2", but it came AFTER ✅ — it cannot be the answer.
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300), T(400)]);
+    } finally {
+      await m.stop();
+    }
+    // The answer reply since deleted: a later "2 …" must not be taken for it.
+    const m2 = await startMock({ inline: fx(q, [note(T(300), "2 番目の理由も書いて")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m2.baseUrl)).stdout);
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+    } finally {
+      await m2.stop();
+    }
+  });
+
+  test("replies from outside the audience — a bystander, the asker, a bot — are not notes", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 4, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [
+      note(T(200), "横から失礼", ALICE),
+      note(T(300), "了解、見ます", SELF),
+      note(T(400), "bot echo", BOB, { bot_id: "B00000001" }),
+      note(T(500), "joined", BOB, { subtype: "channel_join" }),
+    ]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(json(r.stdout).notes).toEqual([]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the cursor never delivers a note twice", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "one"), note(T(300), "two")]) });
+    try {
+      const first = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(first.notes.map((n) => n.text)).toEqual(["one", "two"]);
+      // Feed the cursor back: nothing new, nothing repeated — and the cursor holds.
+      const again = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${first.cursor}`], m.baseUrl)).stdout);
+      expect(again.notes).toEqual([]);
+      expect(again.cursor).toBe(first.cursor);
+      // A cursor between the two delivers only the newer one.
+      const mid = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${T(200)}`], m.baseUrl)).stdout);
+      expect(mid.notes.map((n) => n.text)).toEqual(["two"]);
+    } finally {
+      await m.stop();
+    }
+  });
 });
