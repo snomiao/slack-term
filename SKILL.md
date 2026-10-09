@@ -159,11 +159,19 @@ without losing clicks. A reaction is durable state anyone can read back later.
   the other party counts automatically.
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
+- **❓ is the standing "other" choice.** Every question with choices lists it last
+  (`1️⃣ … 2️⃣ … 3️⃣ … ❓ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
+  is not an answer — `--wait` notes it on stderr and keeps waiting for the reply, which
+  arrives as free text (exit `5`).
+- **The instructions are posted in `ja` or `en`.** `--lang` (or `SLACK_TERM_LANG`) decides;
+  otherwise the answerers' Slack locale when they all share one, else the language the
+  question is written in, else the system locale, else `ja`. The confirm gate prints the
+  choice and why (`Language: en (answerers' Slack locale; …)`). `--waitFor` reads either.
 - **Two pills pressed = no answer.** Changing your mind leaves both reactions in place, so
   `ask` says so in the thread once and keeps waiting rather than guessing.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
   replied, `3` transport/config failure, `4` a reply matched several choices (stdout
-  empty), `5` a **free-text reply** that picked none of the offered choices — the reply
+  empty), `6` the question was **voided** (stop waiting), `5` a **free-text reply** that picked none of the offered choices — the reply
   text is on stdout. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
 - **A reply that chooses nothing is delivered, but is not a decision.** When choices were
@@ -173,6 +181,34 @@ without losing clicks. A reaction is durable state anyone can read back later.
   question back returned as `rc=0` was stored as the decision). The question stays open,
   so a pill pressed later still decides it: re-wait past the delivered reply with
   `slack ask --waitFor='<permalink>' --after=<reply ts>` (stderr prints this line).
+
+**Thread notes ride along with the answer.** A reply from the audience that is not the
+answer (「あと cswap ls も見て」 next to a pressed pill) is a *note*. Notes are read even when
+a pill answered, and again on every `--waitFor` of a ✅ question, so a note written after
+the answer still reaches you. Plain mode: stdout is still the answer alone, and the notes go
+to stderr. `--json`: stdout is one object
+`{status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink}`, with the same
+exit codes. Pass `cursor` back as `--after` on your next `--waitFor --timeout 0` and you
+never get the same note twice. Only the question's audience counts; the asker, bots and
+bystanders are never notes.
+
+**Answering keeps the context.** The ✅ rewrite keeps the question's body (its background)
+and the chosen option; only the options not chosen, the ❓ line and the instructions go.
+The head is unchanged (`:white_check_mark:` prefix, question, stamp, quoted answer), so
+anything that keys on the prefix or re-reads the answer works on old and new ✅ bodies alike.
+
+**Voiding a question (作废).** When a question has expired or stopped meaning anything
+(the head it was pinned to moved, the decision was made elsewhere), retire it:
+`slack ask --void='<permalink>' --reason '…' [--superseded-by '<new permalink>']`
+(repeatable `--void=`; alias `slack ask void <link…>`; same `--code` gate; own questions
+only, `--as-bot` for the bot's). The text becomes `:no_entry_sign:` + reason with the body
+kept, our pills come off, and a 🚫 reaction is added. Three states, three prefixes:
+`:question:` open, `:white_check_mark:` answered, `:no_entry_sign:` void. `--wait` /
+`--waitFor` on a void question **exit 6** (`--json` → `status: "void"`): stop waiting.
+Answered questions cannot be voided.
+
+**Don't `slack edit` a question.** `edit` refuses an ask/poll message (its body is what
+collect reads back); `--force` overrides. Retire it with `--void` instead.
 
 **Collecting an answer you did not block on.** Without `--wait`, stdout is a runnable
 `slack ask --waitFor='<permalink>'`. Run it any time — it re-reads the question from Slack
