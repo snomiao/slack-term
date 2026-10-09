@@ -46,3 +46,14 @@ export function unescapeArg(s: string): string {
 export function hasEscapes(s: string): boolean {
   return unescapeArg(s) !== s;
 }
+
+/** The inverse of `unescapeArg`, for printing a command that will be run again:
+ *  `unescapeArg(escapeArg(x)) === x` for every `x`. Each lead is doubled first
+ *  (so a literal `\\n` survives), then real newlines/tabs become `\\n`/`\\t` so
+ *  the printed command stays on one line. */
+export function escapeArg(s: string): string {
+  return s
+    .replace(new RegExp(`[${ESCAPE_LEAD}]`, "g"), (c) => `\\${c}`)
+    .replace(/\n/g, "\\n")
+    .replace(/\t/g, "\\t");
+}

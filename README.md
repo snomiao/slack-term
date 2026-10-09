@@ -277,6 +277,59 @@ Notes:
   are **never** cached — they are exactly the values that change, and Slack's search index
   already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
+### pinlog — a pinned status board that keeps a log
+
+A **pinlog** is one pinned top-level message that always holds the *current* state
+(HEAD), plus a thread under it with one short reply per change (the log). The HEAD is
+**edited in place, which is silent**; each log reply **notifies**. People who want the
+state read the pin; people who want to know what changed follow the thread. Good for
+anything people come back to: blocker boards, release readiness, incidents — one board
+per topic.
+
+```bash
+slack pinlog ls  "#gtm"                     # boards in a channel (found by their footer)
+slack pinlog get <board>                    # state + log   (--json for one object)
+slack pinlog new "#gtm" "販売ブロッカー\n1. 見積テンプレ — 未" ["why this board exists"]
+slack pinlog set <board> "<the WHOLE new state>" "見積テンプレ: 未 → 済"
+slack pinlog set <board> --file board.md "見積テンプレ: 未 → 済"   # state from a file (- = stdin)
+slack pinlog note <board> "まだ法務待ち — 再送済"                   # reason only, state unchanged
+```
+
+`<board>` is the board's permalink, `#chan:ts`, or the `C…:ts` id `new` prints. There
+are no names and nothing is stored locally: a board *is* its Slack message, so the same
+command works from any machine. Each verb takes only its own kind of target — `new` and
+`ls` a channel, the rest a board — so a pasted channel can never turn an intended update
+into a second board.
+
+- Every HEAD ends with a footer, `_Pinlog · 最終更新 2026-10-08 15:10 JST · 更新はスレッドに_`,
+  refreshed on each update. `ls` finds boards by it, and `set` **refuses** a message
+  without it, so a wrong link cannot overwrite an ordinary message.
+  To turn an existing hand-run board into a pinlog on purpose, pass `set --adopt` once.
+- `new`, `set` and `note` use the same two-step `--code` gate as `send`/`edit`, and the
+  preview shows the situation, not just your text: `new` lists boards already in the
+  channel (usually a sign you meant `set`), and `set` shows the current state next to
+  the new one. The `set` code covers the current state, so if someone else changed the
+  board after your preview, your code stops matching and you re-read first.
+- **`set` order:** the state edit first, then the reason reply. If the edit fails, **no**
+  reason is posted. If the reply fails, the command exits 1, says the state *is* updated,
+  and prints the exact retry (`slack pinlog note <board> '…' --code=…`).
+  A failure that *may* have landed (network error, Slack `internal_error`/`fatal_error`)
+  is reported as `UNKNOWN`, not `NOT posted`, with the `get`/`ls` command to check
+  first, because a blind retry would post a second board or a second notifying reply.
+  A HEAD over Slack's 40,000-character limit is refused before posting, because Slack
+  would truncate the footer.
+- `new` without the pin scope still creates the board: it says `NOT pinned`, prints
+  the `slack pinlog pin <board>` command, and exits 0, because retrying `new` would make a
+  second board. Pinning needs `pins:write` on the token you act with.
+- `--as-bot` acts as the bot for reads and writes. Slack lets a token edit only its own
+  messages, so a board the bot created must be updated `--as-bot`.
+- During quiet hours (JST 23:00–08:00) the preview shows the quiet-hours line, and the
+  confirmed run warns that the reply notified. It warns but does not block.
+- Text is posted as-is (plain mrkdwn, no blocks) so the footer reads back verbatim;
+  `@handle`s are **not** converted — write `<@U…>` if you need a real mention.
+- Stateless: the only local files are short-lived per-board locks, held while a `set` runs,
+  so two writers on one machine cannot interleave.
+
 ### tail — real-time message stream
 
 `slack tail` polls a channel every 3 seconds (configurable via `--interval`) and
