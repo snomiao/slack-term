@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startMock, type InlineFixtures } from "./mock.ts";
-import { askBuildText, askBuildResolvedText } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askBuildVoidText, askParseMessage } from "../ts/ask.ts";
+import { pollBuildText } from "../ts/poll.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -35,7 +36,7 @@ afterAll(() => {
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
 
-function run(args: string[], baseUrl: string): Promise<RunResult> {
+function run(args: string[], baseUrl: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
@@ -46,6 +47,7 @@ function run(args: string[], baseUrl: string): Promise<RunResult> {
     HOME: tmpHome,
     SLACK_API_BASE: `${baseUrl}/api`,
     SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
+    ...extraEnv,
   };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env });
@@ -196,6 +198,36 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
       const r = await run(["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM], m.baseUrl);
       expect(r.exitCode).toBe(1); // reached the gate, i.e. not refused
       expect(r.stdout).toContain(`  Answerable by: @bob (${BOB})`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the copy follows the answerer's Slack locale, and the gate says why", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      "users.info__include_locale=true&user=U00000BOB": { ok: true, user: { id: BOB, locale: "en-US" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      // Written in Japanese, but bob reads Slack in English — bob is the one
+      // who has to follow the instructions.
+      const base = ["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("Language: en (answerers' Slack locale; override with --lang)");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const post = m.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
+      const posted = JSON.parse(post.body).text as string;
+      expect(posted).toContain(":question: Other — reply to this message");
+      expect(posted).toContain("_Press one of the reactions below to answer.");
+
+      // --lang overrides it.
+      const ja = await run([...base, "--lang", "ja"], m.baseUrl);
+      expect(ja.stdout).toContain("Language: ja (--lang; override with --lang)");
     } finally {
       await m.stop();
     }
@@ -395,9 +427,11 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       const seeds = reqs.filter((q) => q.method === "reactions.add").map((q) => JSON.parse(q.body).name);
       // Order is the whole point: Slack renders pills in add order, so a
       // parallel/out-of-order seed would show the choices shuffled.
-      // The marker leads: it identifies the message as an `ask` and is what a
-      // reader (or `has:`) sees first, so it must sit left of the pills.
-      expect(seeds).toEqual(["question", "one", "two", "three"]);
+      // The marker goes LAST: it doubles as the "other" choice the body lists
+      // under the numbered ones, so the pill row reads 1 2 3 ❓ like the body.
+      expect(seeds).toEqual(["one", "two", "three", "question"]);
+      const posted = JSON.parse(reqs[post]!.body).text as string;
+      expect(posted).toMatch(/:three: [^\n]*\n:question: その他/);
       // And every seed must come after the message it is attached to.
       expect(reqs.findIndex((q) => q.method === "reactions.add")).toBeGreaterThan(post);
     } finally {
@@ -474,6 +508,29 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("❓ (other) alone is not an answer — it says a reply is coming, and keeps waiting", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      ...pollFixture(DM, [questionMsg({ reactions: [
+        { name: "one", users: [SELF], count: 1 },
+        { name: "question", users: [SELF, BOB], count: 2 },
+      ] })]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const base = ["ask", "@bob", "どっち?", "A", "B", "--channel-id", DM, "--wait", "--timeout", "2"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+      // Once, not once per poll tick.
+      expect(r.stderr.split("❓ その他 を押しました").length - 1).toBe(1);
     } finally {
       await m.stop();
     }
@@ -662,6 +719,36 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       // No confirm gate and nothing new posted: --waitFor only reads and stamps.
       expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("collecting keeps the background and the chosen option, and drops the rest", async () => {
+    const withBody = askBuildText(`<@${BOB}> どっち?`, "背景: リリース前\n推奨: B", ["A", "B"], [], false);
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      ...waitForFixture(DM, [{
+        type: "message", user: SELF, ts: QTS, text: withBody,
+        reactions: [{ name: "two", users: [SELF, BOB], count: 2 }],
+      }]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout.trim()).toBe("B");
+      const upd = m.requests.find((q) => q.method === "chat.update")!;
+      const text = (upd.body.startsWith("{") ? JSON.parse(upd.body).text : new URLSearchParams(upd.body).get("text")) as string;
+      expect(text.startsWith(":white_check_mark: ")).toBe(true);
+      expect(text).toContain("背景: リリース前\n推奨: B");
+      expect(text).toContain(":two: B");
+      expect(text).not.toContain(":one: A");
+      expect(text).not.toContain("その他");
+      // And it reads back as the same answer.
+      expect(askParseMessage(text)).toEqual({ kind: "resolved", question: `<@${BOB}> どっち?`, answer: "B" });
     } finally {
       await m.stop();
     }
@@ -986,4 +1073,646 @@ describe("ask URL boundaries", () => {
       } finally { await m.stop(); }
     });
   }
+});
+
+// THE LIVE CASE, 2026-10-02: a pill was pressed and collected, ✅ was written,
+// the watcher exited — and the same person's thread note 40 s later was never
+// delivered by anything. A note is a reply from the audience that is NOT the
+// answer. It rides along with the answer, never replaces it: plain stdout is
+// still the answer alone, and --json carries the notes plus a cursor that, fed
+// back as --after, never delivers the same note twice.
+describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 }, () => {
+  const Q = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], true);
+  const T = (n: number) => `1700000000.000${n}`; // all after QTS (…000100)
+  const note = (ts: string, text: string, user = BOB, extra: Record<string, unknown> = {}) =>
+    ({ type: "message", user, ts, thread_ts: QTS, text, ...extra });
+
+  function fx(question: Record<string, unknown>, thread: unknown[]): InlineFixtures {
+    const messages = [question];
+    return {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages },
+      ...pollFixture(CHAN, messages),
+      [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+      [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [question, ...thread] },
+    };
+  }
+  const json = (stdout: string) => JSON.parse(stdout.trim()) as { status: string; answer: string | null; notes: { ts: string; user: string; text: string }[]; cursor: string };
+
+  test("a pill + a thread note already there: both delivered, the pill is still the answer", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.status).toBe("answered");
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => [n.ts, n.user, n.text])).toEqual([[T(200), BOB, "cswap ls も見て"]]);
+      expect(o.cursor).toBe(T(200));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a question missing from the history page still has its thread read", async () => {
+    // Busy conversation: the poll's history page does not include the question,
+    // so its reply_count is unknown — and unknown must not be read as zero.
+    const qd = askBuildText(`<@${BOB}> どっち?`, "", ["A", "B"], [], false);
+    const q = { type: "message", user: SELF, ts: QTS, text: qd, reply_count: 1 };
+    const page = [{ type: "message", user: BOB, ts: T(200), text: "1" }];
+    const m = await startMock({ inline: {
+      ...AUTH,
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      [`conversations.history__channel=${DM}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [q] },
+      ...pollFixture(DM, page),
+      [`conversations.replies__channel=${DM}&limit=100&ts=${QTS}`]: { ok: true, messages: [q, { ...note(T(300), "スレッドにも一言") }] },
+    } });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["スレッドにも一言"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("plain mode keeps stdout = the answer alone; the note goes to stderr", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 1, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [note(T(200), "cswap ls も見て")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("A\n");
+      expect(r.stderr).toContain("cswap ls も見て");
+      expect(r.stderr).toContain(`--after=${T(200)}`);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a pill + a note written AFTER ✅ is delivered on the next --waitFor (the 2026-10-02 case)", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    // ✅ was written at …150 — by a build that collected no notes, so the …120
+    // note was never delivered either. No default cursor: both come back.
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(120), "前の追記"), note(T(300), "也看一眼 cswap ls")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("A");
+      expect(o.notes.map((n) => n.text)).toEqual(["前の追記", "也看一眼 cswap ls"]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a free-text answer + another reply: the answer is not repeated as a note", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 2 };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2"), note(T(300), "あと README も")]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const o = json(r.stdout);
+      expect(o.answer).toBe("B");
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+      expect(o.cursor).toBe(T(300));
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("on a ✅ question answered BY A REPLY, that reply is not handed back as a note", async () => {
+    // Stamp says "reply (2)": the "2." before the ✅ edit is the answer itself.
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "B", how: "返信 (2)", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 3, edited: { user: SELF, ts: T(250) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "2."), note(T(300), "2 番目の理由も書いて"), note(T(400), "あと README も")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(o.answer).toBe("B");
+      // …300 also starts with "2", but it came AFTER ✅ — it cannot be the answer.
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300), T(400)]);
+    } finally {
+      await m.stop();
+    }
+    // The answer reply since deleted: a later "2 …" must not be taken for it.
+    const m2 = await startMock({ inline: fx(q, [note(T(300), "2 番目の理由も書いて")]) });
+    try {
+      const o = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m2.baseUrl)).stdout);
+      expect(o.notes.map((n) => n.ts)).toEqual([T(300)]);
+    } finally {
+      await m2.stop();
+    }
+  });
+
+  test("replies from outside the audience — a bystander, the asker, a bot — are not notes", async () => {
+    const q = { type: "message", user: SELF, ts: QTS, text: Q, reply_count: 4, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] };
+    const m = await startMock({ inline: fx(q, [
+      note(T(200), "横から失礼", ALICE),
+      note(T(300), "了解、見ます", SELF),
+      note(T(400), "bot echo", BOB, { bot_id: "B00000001" }),
+      note(T(500), "joined", BOB, { subtype: "channel_join" }),
+    ]) });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(json(r.stdout).notes).toEqual([]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the cursor never delivers a note twice", async () => {
+    const resolved = askBuildResolvedText(`<@${BOB}> どっち?`, { answer: "A", how: "リアクション 1️⃣", who: BOB }, "bob");
+    const q = { type: "message", user: SELF, ts: QTS, text: resolved, reply_count: 2, edited: { user: SELF, ts: T(150) } };
+    const m = await startMock({ inline: fx(q, [note(T(200), "one"), note(T(300), "two")]) });
+    try {
+      const first = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json"], m.baseUrl)).stdout);
+      expect(first.notes.map((n) => n.text)).toEqual(["one", "two"]);
+      // Feed the cursor back: nothing new, nothing repeated — and the cursor holds.
+      const again = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${first.cursor}`], m.baseUrl)).stdout);
+      expect(again.notes).toEqual([]);
+      expect(again.cursor).toBe(first.cursor);
+      // A cursor between the two delivers only the newer one.
+      const mid = json((await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--json", `--after=${T(200)}`], m.baseUrl)).stdout);
+      expect(mid.notes.map((n) => n.text)).toEqual(["two"]);
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
+  const LINK = `${CHAN}:${QTS}`;
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
+  const NEW_TS = "1700000000.000900";
+  const fx = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] },
+    // The replacement question --superseded-by points at.
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${NEW_TS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: NEW_TS, text: "new" }] },
+    ...pollFixture(CHAN, [msg]),
+  });
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+
+  test("voids your own open question behind the code gate: 🚫 text, body kept, seeds off, 🚫 on", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: OPEN, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reason", "head moved", "--superseded-by", `https://acme.slack.com/archives/C00000001/p1700000000000900`];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("1 question(s)");
+      expect(dry.stdout).toContain("already pressed: :one:");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      expect(text.startsWith(":no_entry_sign: ")).toBe(true);
+      expect(text).toContain("背景: head bcb7fd8e");
+      expect(text).not.toContain(":one: リリースする");
+      const p = askParseMessage(text);
+      expect(p.kind === "void" && p.supersededBy).toBe("https://acme.slack.com/archives/C00000001/p1700000000000900");
+      const removed = m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name);
+      expect(removed).toEqual(["one", "two", "question"]);
+      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["no_entry_sign"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a --superseded-by that names no message is refused before anything is edited", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: OPEN }) });
+    try {
+      for (const bad of ["not-a-link", "https://acme.slack.com/archives/C00000001/p1700000000000777"]) {
+        const r = await run(["ask", `--void=${LINK}`, "--superseded-by", bad], m.baseUrl);
+        expect(r.exitCode).toBe(3);
+      }
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("refuses a question someone else posted, and an answered one", async () => {
+    for (const msg of [
+      { type: "message", user: BOB, ts: QTS, text: OPEN },
+      { type: "message", user: SELF, ts: QTS, text: askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "見送る", how: "リアクション 2️⃣" }, "bob") },
+    ]) {
+      const m = await startMock({ inline: fx(msg) });
+      try {
+        const r = await run(["ask", "void", LINK], m.baseUrl);
+        expect(r.exitCode).toBe(3);
+        expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  test("collect / --waitFor on a void question exits 6 — plain stdout empty, --json says void", async () => {
+    const voided = askBuildVoidText(`<@${BOB}> 出してよい?`, "head moved", "ja", "背景");
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, ts: QTS, text: voided }) });
+    try {
+      const plain = await run(["ask", "collect", LINK, "--timeout", "0"], m.baseUrl);
+      expect(plain.exitCode).toBe(6);
+      expect(plain.stdout).toBe("");
+      const j = await run(["ask", "--waitFor", LINK, "--timeout", "0", "--json"], m.baseUrl);
+      expect(j.exitCode).toBe(6);
+      const o = JSON.parse(j.stdout);
+      expect(o.status).toBe("void");
+      expect(o.reason).toContain("head moved");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a wait on a question that gets voided meanwhile stops with 6", async () => {
+    // --waitFor opens on the OPEN text; the poll then sees it voided.
+    const voided = askBuildVoidText(`<@${BOB}> 出してよい?`, "expired", "ja");
+    const m = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: OPEN }] },
+      ...pollFixture(CHAN, [{ type: "message", user: SELF, ts: QTS, text: voided }]),
+    } });
+    try {
+      const r = await run(["ask", "--waitFor", LINK, "--timeout", "5"], m.baseUrl);
+      expect(r.exitCode).toBe(6);
+      expect(r.stdout).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("slack edit refuses an edit that BREAKS an ask / poll (CLI)", { timeout: 90_000 }, () => {
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+  const fx = (text: string): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.replies__channel=${CHAN}&limit=1&ts=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text }] },
+  });
+  const edit = (newText: string, ...extra: string[]) => ["edit", `#chan:${QTS}`, newText, "--channel-id", CHAN, "--no-mentions", ...extra];
+
+  test("free text over an open ask is refused, points at --void; --force reaches the gate and says so", async () => {
+    const m = await startMock({ inline: fx(OPEN) });
+    try {
+      const r = await run(edit("書き換え"), m.baseUrl);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("slack ask --void=");
+      expect(r.stdout).not.toContain("Editing as");
+      const f = await run(edit("書き換え", "--force"), m.baseUrl);
+      expect(f.stdout).toContain("Editing as");
+      expect(f.stdout).toContain("⚠ --force");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The consumer 51c523d broke: the ask-devteam skill resolves #dev questions by
+  // writing the ✅ form with `slack edit` (preview, then --code), and the
+  // split-vote close the same way. Those keep the message readable, so they
+  // must pass with no new flag — older builds on other hosts run the same script.
+  for (const [name, resolved] of [
+    ["the ask-devteam ✅ rewrite", `:white_check_mark: *<@${BOB}> 出してよい?*\n_リアクション 2️⃣で回答済み (bob)_\n\n> B`],
+    ["the ask-devteam split-vote close", `:white_check_mark: *<@${BOB}> 出してよい?*\n_両者の回答が分かれたため taku の決定で回答済み (ask-taku: x)_\n\n> A`],
+  ] as const) {
+    test(`${name} passes without --force, with the ordinary gate`, async () => {
+      const m = await startMock({ inline: fx(OPEN) });
+      try {
+        const dry = await run(edit(resolved), m.baseUrl);
+        expect(dry.exitCode).toBe(1);
+        expect(dry.stdout).toContain("Editing as");
+        expect(dry.stdout).not.toContain("⚠ --force");
+        const r = await run(edit(resolved, `--code=${extractCode(dry.stderr)}`), m.baseUrl);
+        expect(r.exitCode).toBe(0);
+        expect(m.requests.some((q) => q.method === "chat.update")).toBe(true);
+      } finally {
+        await m.stop();
+      }
+    });
+  }
+
+  test("an answered question turned back into an open one is refused", async () => {
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "B", how: "リアクション 2️⃣" }, "bob");
+    const m = await startMock({ inline: fx(done) });
+    try {
+      const r = await run(edit(OPEN), m.baseUrl);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("back into an OPEN question");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a poll: a rewrite that is still a poll passes; one that is not is refused", async () => {
+    const poll = pollBuildText("どれにする?", "", ["A", "B"]);
+    const m = await startMock({ inline: fx(poll) });
+    try {
+      const ok = await run(edit(pollBuildText("どれにする? (締切 18:00)", "", ["A", "B"])), m.baseUrl);
+      expect(ok.stdout).toContain("Editing as");
+      const bad = await run(edit("書き換え"), m.baseUrl);
+      expect(bad.exitCode).toBe(1);
+      expect(bad.stderr).toContain("slack poll");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an ordinary message is not affected", async () => {
+    const m = await startMock({ inline: fx("ふつうのメッセージ") });
+    try {
+      const r = await run(edit("書き換え"), m.baseUrl);
+      expect(r.stderr).not.toContain("slack ask --void=");
+      expect(r.stdout).toContain("Editing as");
+      expect(r.stdout).not.toContain("⚠ --force");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+// The rest of the lifecycle (design agreed with taku 2026-10-05): change a
+// question through the builder, re-ask one whose options must change after a
+// vote, and list what I asked with its live state.
+describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
+  const OLD = "1699999999.000100"; // the question being edited/replaced (the mock posts new ones at QTS)
+  const LINK = `${CHAN}:${OLD}`;
+  const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+  const fx = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${OLD}`]: { ok: true, messages: [{ ts: OLD, ...msg }] },
+    [`conversations.history__channel=${CHAN}&limit=1`]: { ok: true, messages: [] },
+  });
+
+  test("--edit rewords the question and body through the builder; options and pills untouched", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "one", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--edit=${LINK}`, `<@${BOB}> 本番に出してよい？（head 2c706eb4）`, "--body", "背景: head 2c706eb4"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("+ 背景: head 2c706eb4");
+      expect(dry.stdout).toContain("Choices: (unchanged)");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      const p = askParseMessage(text);
+      expect(p.kind).toBe("open");
+      if (p.kind !== "open") return;
+      expect(p.question).toBe(`<@${BOB}> 本番に出してよい？（head 2c706eb4）`);
+      expect(p.body).toBe("背景: head 2c706eb4");
+      expect(p.reactable).toEqual(["リリースする", "見送る"]);
+      expect(m.requests.some((q) => q.method === "reactions.remove" || q.method === "reactions.add")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit changes the options while nobody has answered, and re-seeds the pills in order", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "one", users: [SELF], count: 1 }] }) });
+    try {
+      const base = ["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "リリースする", "見送る", "明日にする"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("+ 3. 明日にする");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["one", "two", "three", "question"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit refuses to change the options once someone has answered, and points at --reask", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "two", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "A", "B", "C"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("--reask");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit: our OWN thread note does not lock the options; someone else's reply does", async () => {
+    for (const [who, locked] of [[SELF, false], [BOB, true]] as const) {
+      const m = await startMock({ inline: {
+        ...fx({ type: "message", user: SELF, text: OPEN, reply_count: 1 }),
+        [`conversations.replies__channel=${CHAN}&limit=100&ts=${OLD}`]: { ok: true, messages: [
+          { type: "message", user: SELF, ts: OLD, text: OPEN },
+          { type: "message", user: who, ts: "1699999999.000200", thread_ts: OLD, text: "補足" },
+        ] },
+      } });
+      try {
+        const r = await run(["ask", `--edit=${LINK}`, `<@${BOB}> 出してよい?`, "A", "B", "C"], m.baseUrl);
+        expect(r.exitCode).toBe(locked ? 3 : 1); // 1 = reached the gate
+        expect(r.stderr.includes("--reask")).toBe(locked);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  test("--edit refuses a question that would only tag the asker", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, `<@${SELF}> 出してよい?`], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit shows a language change in the gate", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, "--lang", "en"], m.baseUrl);
+      expect(r.stdout).toContain("Language: ja → en");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--edit refuses an answered question", async () => {
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "見送る", how: "リアクション 2️⃣" }, "bob");
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: done }) });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, "--body", "x"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--void --reask: one gate, the new question goes up, then the old one is voided as replaced by it", async () => {
+    const m = await startMock({ inline: fx({ type: "message", user: SELF, text: OPEN, reactions: [{ name: "two", users: [SELF, BOB], count: 2 }] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reask", "--reason", "head moved", `<@${BOB}> 出してよい?（head 2c706eb4）`, "リリースする", "見送る"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain(`Then 作废: ${LINK}`);
+      expect(m.requests.some((q) => q.method === "chat.postMessage" || q.method === "chat.update")).toBe(false);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const posted = body(m.requests.find((q) => q.method === "chat.postMessage")!).text as string;
+      expect(askParseMessage(posted).kind).toBe("open");
+      expect(posted).toContain("背景: head bcb7fd8e"); // body carried over (no --body given)
+      const upd = m.requests.find((q) => q.method === "chat.update")!;
+      expect(body(upd).ts).toBe(OLD);
+      const v = askParseMessage(body(upd).text as string);
+      expect(v.kind).toBe("void");
+      expect(v.kind === "void" && v.supersededBy).toContain(QTS);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--ls lists what I asked with its live state; --stale prints the gated --void command", async () => {
+    const db = join(tmpHome, `ls-${Date.now()}.sqlite`);
+    const env = { SLACK_TERM_SENT_DB: db };
+    const q = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+    const ask = await startMock({ inline: { ...AUTH, "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } } } });
+    try {
+      const base = ["ask", "#chan", `@bob 出してよい?`, "A", "B", "--channel-id", CHAN];
+      const dry = await run(base, ask.baseUrl, env);
+      expect((await run([...base, `--code=${extractCode(dry.stderr)}`], ask.baseUrl, env)).exitCode).toBe(0);
+    } finally {
+      await ask.stop();
+    }
+    const live = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: q }] },
+    } });
+    try {
+      const r = await run(["ask", "--ls", "--json"], live.baseUrl, env);
+      expect(r.exitCode).toBe(0);
+      const items = JSON.parse(r.stdout) as { state: string; link: string }[];
+      expect(items.map((i) => i.state)).toEqual(["open"]);
+      // Not stale yet:
+      const fresh = await run(["ask", "--ls", "--stale", "1h"], live.baseUrl, env);
+      expect(fresh.stderr).not.toContain("--void=");
+      const stale = await run(["ask", "--ls", "--stale", "0s"], live.baseUrl, env);
+      expect(stale.stderr).toContain(`--void='`);
+    } finally {
+      await live.stop();
+    }
+    // Answered elsewhere: the live state wins over what the log recorded.
+    const done = askBuildResolvedText(`<@${BOB}> 出してよい?`, { answer: "B", how: "リアクション 2️⃣" }, "bob");
+    const after = await startMock({ inline: {
+      ...AUTH,
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: done }] },
+    } });
+    try {
+      expect(JSON.parse((await run(["ask", "--ls", "--json"], after.baseUrl, env)).stdout)).toEqual([]);
+      const all = JSON.parse((await run(["ask", "--ls", "--state", "all", "--json"], after.baseUrl, env)).stdout) as { state: string; answer?: string }[];
+      expect(all.map((i) => [i.state, i.answer])).toEqual([["answered", "B"]]);
+    } finally {
+      await after.stop();
+    }
+  });
+});
+
+describe("unreadable asks, plain edits, and who the multi-select notice names (CLI)", { timeout: 120_000 }, () => {
+  const FLAT = ":question: *:large_yellow_circle: <@U00000BOB> <@U0000ALIC> landing のテスト環境リリース（ <https://example.com/pull/131> ）を実施してよいですか？*  ランディングサイトをテスト環境に反映します。CIはすべて成功、DBの変更はありません。 _by release-bot agent_  :one: リリースする :two: 今日は見送る  _:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: <@U00000BOB>, <@U0000ALIC>_ _下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_";
+  const OLD = "1699999999.000100";
+  const LINK = `${CHAN}:${OLD}`;
+  const body = (q: { body: string }) => (q.body.startsWith("{") ? JSON.parse(q.body) : Object.fromEntries(new URLSearchParams(q.body)));
+  const fxAt = (msg: Record<string, unknown>): InlineFixtures => ({
+    ...AUTH,
+    [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${OLD}`]: { ok: true, messages: [{ ts: OLD, ...msg }] },
+  });
+
+  test("--void retires our own ❓ question that no longer parses: gate warns, 🚫 + body, our seeds off", async () => {
+    const m = await startMock({ inline: fxAt({ type: "message", user: SELF, text: FLAT, reactions: [
+      { name: "question", users: [SELF], count: 1 },
+      { name: "one", users: [SELF, BOB, ALICE], count: 3 },
+      { name: "two", users: [SELF], count: 1 },
+    ] }) });
+    try {
+      const base = ["ask", `--void=${LINK}`, "--reason", "1 で承認済み"];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("no longer reads as an ask");
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
+      const v = askParseMessage(text);
+      expect(v.kind).toBe("void");
+      expect(text).toContain("ランディングサイトをテスト環境に反映します。");
+      expect(text).not.toContain("下のリアクションを");
+      expect(m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name)).toEqual(["one", "two", "question"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("…but never someone else's", async () => {
+    const m = await startMock({ inline: fxAt({ type: "message", user: BOB, text: FLAT }) });
+    try {
+      expect((await run(["ask", `--void=${LINK}`], m.baseUrl)).exitCode).toBe(3);
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("slack edit sends an ask PLAIN (no blocks, so Slack keeps the newlines); an ordinary message keeps its blocks", async () => {
+    const open = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+    const done = `:white_check_mark: *<@${BOB}> 出してよい?*\n_リアクション 1️⃣で回答済み (bob)_\n\n> A`;
+    for (const [orig, next, blocks] of [[open, done, false], ["ふつう", "ふつう2", true]] as const) {
+      const m = await startMock({ inline: {
+        ...AUTH,
+        [`conversations.replies__channel=${CHAN}&limit=1&ts=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: orig }] },
+      } });
+      try {
+        const args = ["edit", `#chan:${QTS}`, next, "--channel-id", CHAN, "--no-mentions"];
+        const dry = await run(args, m.baseUrl);
+        expect((await run([...args, `--code=${extractCode(dry.stderr)}`], m.baseUrl)).exitCode).toBe(0);
+        const upd = body(m.requests.find((q) => q.method === "chat.update")!);
+        expect(upd.blocks !== undefined).toBe(blocks);
+      } finally {
+        await m.stop();
+      }
+    }
+  });
+
+  // 2026-10-01: the notice named a voter who had pressed only 1️⃣, because
+  // someone else was briefly on two pills. Only the multi-pressers are named;
+  // a split between different people names nobody (and still decides nothing).
+  test("the notice names only people on several pills; a split names nobody", async () => {
+    const Q = askBuildText(`<@${BOB}> <@${ALICE}> 出してよい?`, "", ["A", "B"], [], true);
+    for (const [reactions, named] of [
+      [[{ name: "one", users: [SELF, BOB, ALICE], count: 3 }, { name: "two", users: [SELF, BOB], count: 2 }], [BOB]],
+      [[{ name: "one", users: [SELF, BOB], count: 2 }, { name: "two", users: [SELF, ALICE], count: 2 }], []],
+    ] as const) {
+      const m = await startMock({ inline: {
+        ...AUTH,
+        [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [{ type: "message", user: SELF, ts: QTS, text: Q, reactions }] },
+        ...pollFixture(CHAN, [{ type: "message", user: SELF, ts: QTS, text: Q, reactions }]),
+      } });
+      try {
+        const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
+        expect(r.exitCode).toBe(2);
+        const upd = m.requests.find((q) => q.method === "chat.update");
+        if (named.length) {
+          const t = body(upd!).text as string;
+          const warning = t.split("\n").find((l) => l.includes(":warning:"))!;
+          expect([...warning.matchAll(/<@([A-Z0-9]+)>/g)].map((x) => x[1])).toEqual([...named]);
+        } else {
+          expect(upd).toBeUndefined();
+          expect(r.stderr).toContain("回答が分かれています");
+        }
+      } finally {
+        await m.stop();
+      }
+    }
+  });
 });

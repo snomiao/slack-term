@@ -1028,6 +1028,18 @@ export async function userInfo(token: string, userId: string, cookie?: string): 
   return get(token, "users.info", { user: userId }, cookie);
 }
 
+/** A person's Slack UI locale (`ja-JP`, `en-US`), or undefined when it cannot
+ *  be read. Fail-soft: it only picks the language of `ask`'s copy, and a lookup
+ *  failure must never stop a question from being asked. */
+export async function userLocale(token: string, userId: string, cookie?: string): Promise<string | undefined> {
+  try {
+    const r = (await get(token, "users.info", { user: userId, include_locale: "true" }, cookie)) as { user?: { locale?: unknown } };
+    return typeof r.user?.locale === "string" ? r.user.locale : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function conversationInfo(token: string, channelId: string, cookie?: string): Promise<Json> {
   return get(token, "conversations.info", { channel: channelId }, cookie);
 }
