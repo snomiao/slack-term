@@ -310,7 +310,8 @@ async function consider(
   const ids = ctx.opts.repliesTo;
   const tts = str(m.thread_ts);
   if (isReply && ids && tts && (ids.has(uid) || ids.has(bid))) {
-    (ctx.state.joined ??= {})[`${ch.id}:${tts}`] = num(str(m.ts));
+    const joined = (ctx.state.joined ??= {});
+    joined[`${ch.id}:${tts}`] = Math.max(joined[`${ch.id}:${tts}`] ?? 0, num(str(m.ts)));
   }
   if ((uid && ctx.opts.selfUsers.has(uid)) || (bid && ctx.opts.selfBots.has(bid))) return false;
   ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
@@ -393,10 +394,11 @@ function knownMember(
  *  read of it stopped) shows: a post by the ids, or absence up to its last reply. */
 function readMembership(ctx: Ctx, ch: ChannelRef, ids: Set<string>, tts: string, read: Record<string, Json>[]): void {
   const key = `${ch.id}:${tts}`;
-  const post = read.filter((r) => ids.has(str(r.user)) || ids.has(str(r.bot_id)))
-    .sort((a, b) => num(str(a.ts)) - num(str(b.ts)))[0];
-  if (post) {
-    (ctx.state.joined ??= {})[key] = num(str(post.ts));
+  const posts = read.filter((r) => ids.has(str(r.user)) || ids.has(str(r.bot_id))).map((r) => num(str(r.ts)));
+  if (posts.length) {
+    // The latest post: `joined` expires 30 days after it.
+    const joined = (ctx.state.joined ??= {});
+    joined[key] = Math.max(joined[key] ?? 0, ...posts);
     ctx.notJoined?.delete(key);
     return;
   }
@@ -493,6 +495,19 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   let m: Record<string, Json> | undefined;
   let parent: Record<string, Json> | undefined;
   let cursor: string | undefined;
+  // --replies-to and nothing remembered about this thread: read it from where
+  // the last check stopped (or its start) in this one read, which then answers
+  // membership too. A second read could be rate-limited on every retry of the
+  // bell, so the bell would never be delivered.
+  const ids = ctx.opts.repliesTo;
+  const key = `${ch.id}:${bell.thread_ts ?? ""}`;
+  if (ids && bell.thread_ts && ctx.state.joined?.[key] === undefined) {
+    const from = Math.min(ctx.notJoined?.get(key) ?? 0, num(bell.ts) - 1);
+    const read = await allPages((c) => ctx.client.replies(ch.id, bell.thread_ts!, fmt(from), c));
+    m = read.find((x) => str(x.ts) === bell.ts);
+    parent = read.find((x) => str(x.ts) === bell.thread_ts);
+    if (m) readMembership(ctx, ch, ids, bell.thread_ts, read);
+  }
   for (let i = 0; i < 5 && !m; i++) {
     const p = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1), cursor);
     m = p.messages.find((x) => str(x.ts) === bell.ts);

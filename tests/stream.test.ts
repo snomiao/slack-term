@@ -923,6 +923,32 @@ describe("runStream — relay", () => {
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
   });
 
+  test("--replies-to: a bell in an unknown thread costs ONE read, and remembers the bot's LATEST post", async () => {
+    const s = new FakeSlack();
+    s.bareParents = true;
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-60 * 86400);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-40 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "first answer", parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "second answer", parent_user_id: "U00000002" });
+    let bellTs = "";
+    stepper({
+      1: () => {
+        bellTs = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: bellTs, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: bellTs, thread_ts: root });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["follow-up"]);
+    // 3 replies, 2 per page: one read is 2 pages — no second read for membership.
+    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`)).toHaveLength(2);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.joined).toEqual({ [`C00000001:${root}`]: Number(ts(-5 * 86400)) });
+  });
+
   test("bells for other channels, own posts and non-matches print nothing", async () => {
     const s = new FakeSlack();
     s.channels.push({ id: "C00000002", name: "random", isIm: false });
