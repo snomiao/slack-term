@@ -102,6 +102,7 @@ export default defineConfig({
         "ts/reactionSeed.ts",
         "ts/rtm.ts",
         "ts/slack.ts",
+        "ts/stream.ts",
         "ts/tail.ts",
         "ts/todo.ts",
         "ts/urlGuard.ts",

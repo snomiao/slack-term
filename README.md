@@ -123,11 +123,15 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
+# A ❓ "その他 (other)" pill always follows the choices: pressing it means "none of
+# these" and the answer comes as a reply (exit 5), not as the ❓ itself.
+# The instructions are posted in ja or en: --lang / SLACK_TERM_LANG, else the
+# answerers' Slack locale, else the question's own language, else $LANG, else ja.
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
 # exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
-# 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
+# 4 = a reply matched several choices, 6 = the question was voided, 5 = a free-text reply that picked NO choice —
 # the reply text is on stdout, it is not a decision, and the question stays open.
 #
 # The question must say WHO may answer — only their reaction/reply is taken as the
@@ -138,8 +142,20 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 #
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
-# Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
-# seeds are removed, leaving the chosen pill visible.
+# Once answered, the question is edited to "✅ …回答済み > <answer>" — the body/background
+# and the CHOSEN option line stay; the other options, ❓ line and instructions go. The
+# unpressed seeds are removed, leaving the chosen pill visible.
+#
+# Thread notes (audience replies that are not the answer, even after ✅) go to
+# stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
+#   slack ask --waitFor='<permalink>' --timeout 0 --json --after=<cursor>
+#
+# Retire a question that expired / stopped meaning anything (作废) — waits on it exit 6:
+#   slack ask --void='<permalink>' --reason 'head moved' --superseded-by '<new permalink>'
+# Change one: slack ask --edit='<permalink>' ["new question" [choices…]] [--body …]
+#   (options only while unanswered; after that: --void='<permalink>' --reask …)
+# List mine with live state: slack ask --ls [--stale 24h] [--state all] [--json]
+# (`slack edit` refuses an edit that would break an ask/poll; --force overrides.)
 #
 # WITHOUT --wait, stdout is the command that collects the answer later:
 RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
@@ -354,6 +370,52 @@ slack tail "@alice" --exit-on-message --timeout 30m --interval 15000
 
 **Note:** Cross-channel mention streaming (`--me` without a target) is not yet
 supported — a target channel is required.
+
+### stream — every matching message, across all channels
+
+`slack stream --grep <regex>` watches **every** conversation the identity is in —
+new top-level posts *and* thread replies — and prints each message whose text
+matches. It is the cross-channel counterpart of `tail`, built for a long-running
+consumer (e.g. "wake an agent whenever someone @mentions the bot"):
+
+```sh
+slack stream --grep '<@U00000001>|@mybot' --json            # runs until stopped
+slack stream --grep 'deploy' -i --channel '#dev' --once       # one scan, then exit
+slack stream --grep '<@U00000001>' --since 2h --json          # replay the last 2 hours
+```
+
+- **One JSON line per match** with `--json`:
+  `{type: "message"|"reply", channel: {id, name}, ts, thread_ts, user: {id, name}, text, permalink}`.
+  `--grep` runs on the raw text (mentions look like `<@U…>`), plus legacy attachment
+  text; the emitted `text` has `&lt; &gt; &amp;` decoded.
+- **Privacy-safe defaults.** With a bot token (`SLACK_BOT_TOKEN`) it streams **as the
+  bot**, so it sees only channels the bot was invited to — never the user's DMs.
+  `--as-user` opts into the user identity. Matching happens before anything is
+  printed: a non-matching message is never printed, logged, or even name-resolved.
+- **No self-echo.** Posts by the streaming identity are excluded by sender id (its user
+  id and bot id; with `--as-user`, the bot's posts too) — the same text from anyone
+  else still matches.
+- **Resumable.** A per-channel cursor (plus one per active thread) is saved under
+  `$XDG_STATE_HOME/slack-term/stream/` (one file per identity + grep + channels;
+  override with `--state`). A restart continues where it stopped: nothing lost,
+  nothing repeated. The first run starts *now*; `--since` replays from a point,
+  ignoring the saved cursor. Delivery is at-least-once only in one corner — a crash
+  between printing a match and saving the cursor repeats that line, so dedupe on
+  `channel.id + ts`. A lock file keeps two streams off the same state.
+- **Transport: polling** (`--interval`, default `45s`). Each cycle reads every
+  channel's history over a sliding `--thread-window` (default `3d`): that one scan
+  shows new posts and which threads gained replies, and only those threads are read.
+  A message is held back until it is 5 s old, so a cursor never skips one Slack has
+  not made visible yet. Rate limits honour `Retry-After`.
+- **Not covered:** edits (a message edited *into* matching is not re-emitted), and
+  replies in a thread whose parent is older than `--thread-window`.
+- **Failures are loud and distinguishable.** A network/API error retries the cycle
+  with φ backoff (`2s·1.618ⁿ`, capped at 5 min), one stderr line per attempt; after
+  12 consecutive failures (≈16 min) it exits. A channel it cannot read is skipped with
+  one stderr line; if *every* channel fails, that is a failure, not "no matches".
+- **Exit codes** (same contract as `ask`): `0` matches printed (`--once`) or stopped by
+  SIGINT/SIGTERM; `2` `--once` found nothing; `3` transport/auth failure (stderr says
+  which); `1` bad arguments (e.g. an invalid regex).
 
 ## Configuration
 
