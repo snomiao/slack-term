@@ -344,6 +344,55 @@ describe("runStream — --replies-to (threads started by given senders)", () => 
     expect(await runStream(s, opts({ sinceSec: 120, statePath: join(dir, "b.json"), repliesTo: new Set([SELF]) }))).toBe(2);
   });
 
+  test("a cached 'bot not in this thread' is dropped once the thread moves (review: broadcast lost)", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      const t = (now / 1000);
+      if (cycles === 1) {
+        // Between polls the bot joins (7th replier, cut from reply_users), then a
+        // person posts a non-grep broadcast — the channel scan sees it first.
+        s.post("C00000001", { ts: (t - 20).toFixed(6), user: SELF, bot_id: SELF_BOT, text: "on it", thread_ts: root, parent_user_id: "U00000002" });
+        s.post("C00000001", { ts: (t - 10).toFixed(6), user: "U00000003", text: "fyi all", thread_ts: root, parent_user_id: "U00000002", subtype: "thread_broadcast" });
+      }
+      if (cycles === 2) ac.abort();
+    };
+    expect(await runStream(s, opts({ sinceSec: 120, once: false, signal: ac.signal, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["fyi all"]);
+  });
+
+  test("a thread the bot started counts by its bot id alone (review: starter check)", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, bot_id: SELF_BOT, username: "mybot", text: "deploy done", thread_ts: root });
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "nice", thread_ts: root });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["nice"]);
+  });
+
+  test("remembered threads are dropped when the state is reused with other --replies-to ids", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "q", thread_ts: root });
+    s.post("C00000001", { ts: ts(-100), user: SELF, bot_id: SELF_BOT, text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(2);
+    const read = (): StreamState => JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(Object.keys(read().joined ?? {})).toEqual([`C00000001:${root}`]);
+    now += 60_000;
+    s.post("C00000001", { ts: ts(0), user: "U00000001", text: "later", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ repliesTo: new Set(["U00000003"]) }))).toBe(2);
+    expect(read().joined).toBeUndefined();
+    expect(read().joinedBy).toBe("U00000003");
+  });
+
   test("only threads a listed sender started or replied in count; that sender's top-level posts do not", async () => {
     const s = workspace();
     s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "a top-level post by the listed sender" });

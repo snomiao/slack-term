@@ -94,6 +94,9 @@ export type StreamState = {
    *  latest post seen there. The parent's `reply_users` lists at most five
    *  people, so this is what remembers that the bot is in a busy thread. */
   joined?: Record<string, number>;
+  /** The --replies-to ids `joined` was recorded for (sorted, comma-joined): a
+   *  run with other ids starts it afresh. */
+  joinedBy?: string;
 };
 
 export type StreamMatch = {
@@ -278,8 +281,9 @@ type Ctx = {
   state: StreamState;
   names: Map<string, string>;
   matches: number;
-  /** Threads already read in full this run and found without a --replies-to id. */
-  notJoined?: Set<string>;
+  /** Threads read in full this run and found without a --replies-to id →
+   *  the thread's `latest_reply` then. Reused only while that is unchanged. */
+  notJoined?: Map<string, string>;
 };
 
 async function nameOf(ctx: Ctx, id: string): Promise<string> {
@@ -358,14 +362,19 @@ async function inThreadOf(
   const tts = str(m.thread_ts);
   const key = `${ch.id}:${tts}`;
   if (ctx.state.joined?.[key] !== undefined) return true;
+  // The starter, by either id (parent_user_id above is only ever a user id).
+  if (parent && (ids.has(str(parent.user)) || ids.has(str(parent.bot_id)))) return true;
   const users = Array.isArray(parent?.reply_users) ? parent.reply_users.map((u) => str(u)) : [];
   if (users.some((u) => ids.has(u))) return true;
   const count = typeof parent?.reply_users_count === "number" ? parent.reply_users_count : 0;
-  if ((parent && count <= users.length) || ctx.notJoined?.has(key)) return false;
+  if (parent && count <= users.length) return false;
+  // A negative from earlier in this run holds only while the thread is quiet.
+  const latest = str(parent?.latest_reply);
+  if (latest && ctx.notJoined?.get(key) === latest) return false;
   const all = await allPages((c) => ctx.client.replies(ch.id, tts, "0", c));
-  const post = all.filter((r) => str(r.ts) !== tts && (ids.has(str(r.user)) || ids.has(str(r.bot_id)))).pop();
+  const post = all.filter((r) => ids.has(str(r.user)) || ids.has(str(r.bot_id))).pop();
   if (!post) {
-    (ctx.notJoined ??= new Set()).add(key);
+    if (latest) (ctx.notJoined ??= new Map()).set(key, latest);
     return false;
   }
   (ctx.state.joined ??= {})[key] = num(str(post.ts));
@@ -512,6 +521,12 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
   try {
     release = acquireLock(opts.statePath);
     const state = loadState(opts.statePath, opts.identity);
+    // `joined` answers "is one of THESE ids in that thread": recorded for
+    // other ids (an explicit --state reused with a new --replies-to), drop it.
+    const joinedBy = opts.repliesTo ? [...opts.repliesTo].sort().join(",") : undefined;
+    if (state.joinedBy !== joinedBy) delete state.joined;
+    if (joinedBy) state.joinedBy = joinedBy;
+    else delete state.joinedBy;
     const ctx: Ctx = { opts, client, state, names: new Map(), matches: 0 };
     const skipped = new Set<string>();
     let channels: ChannelRef[] = [];
