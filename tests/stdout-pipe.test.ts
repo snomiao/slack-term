@@ -91,7 +91,8 @@ describe("piped output under a slow reader", { timeout: 60_000 }, () => {
       const lines = r.stdout.split("\n").filter((l) => l !== "");
       expect(lines.length).toBe(N);
       const rows = lines.map((l) => JSON.parse(l) as { text: string });
-      expect(rows.map((x) => Number(x.text.split(" ")[1]))).toEqual(Array.from({ length: N }, (_, i) => i));
+      // Whole texts, padding included: a byte lost or mangled inside a row fails too.
+      expect(rows.map((x) => x.text)).toEqual(Array.from({ length: N }, (_, i) => `row ${i} ${PAD}`));
     } finally {
       await m.stop();
     }
@@ -108,7 +109,7 @@ describe("piped output under a slow reader", { timeout: 60_000 }, () => {
     const r = await run([script], { ...process.env as Record<string, string> }, 1500);
     expect(r.exitCode, r.stderr).toBe(3);
     const lines = r.stdout.split("\n").filter((l) => l !== "");
-    expect(lines.map((l) => Number(l.split(" ")[0]))).toEqual(Array.from({ length: N }, (_, i) => i));
+    expect(lines).toEqual(Array.from({ length: N }, (_, i) => `${i} ${PAD}`));
   });
 
   test("a reader that goes away makes the writer exit non-zero, not 0", async () => {
