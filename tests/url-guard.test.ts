@@ -64,6 +64,26 @@ describe("URL boundaries", () => {
   test("a URL glued to the end of a code span is still caught", () => {
     expect(urlBoundaryIssues("`x`https://example.com/")).toEqual([{ url: "https://example.com/", side: "before", char: "`" }]);
   });
+  test("an escaped backtick does not open a code span", () => {
+    expect(adjacentUrls("\\`説明：https://example.com/x \\`")).toEqual(["https://example.com/x"]);
+  });
+  test("a double-backtick span containing a single backtick is masked whole", () => {
+    expect(adjacentUrls("``echo ` 説明：https://example.com/x``")).toEqual([]);
+  });
+  test("an unclosed backtick is literal and hides nothing", () => {
+    expect(adjacentUrls("`説明：https://example.com/x")).toEqual(["https://example.com/x"]);
+  });
+  test("a ~~~ fence and an unterminated ``` fence are masked", () => {
+    expect(adjacentUrls("~~~\n説明：https://example.com/x\n~~~")).toEqual([]);
+    expect(adjacentUrls("```\n説明：https://example.com/x")).toEqual([]);
+  });
+  test("text after a closed fence is still checked", () => {
+    expect(adjacentUrls("```\nx\n```\n説明：https://example.com/x")).toEqual(["https://example.com/x"]);
+  });
+  test("a markdown [label](url) link is explicit and accepted", () => {
+    expect(adjacentUrls("説明：[https://example.com/x](https://example.com/x)")).toEqual([]);
+    expect(adjacentUrls("[docs](https://example.com/内容)")).toEqual([]);
+  });
   test("code masking does not hide a glued URL outside the span", () => {
     expect(adjacentUrls("`code` 説明：https://example.com/x")).toEqual(["https://example.com/x"]);
   });
