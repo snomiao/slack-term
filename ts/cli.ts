@@ -6204,7 +6204,7 @@ async function main(): Promise<void> {
             if (!text) { console.error("Usage: slack drafts new <#channel|@user> <text>"); process.exit(2); }
             // Drafts emit explicit link elements, so a URL glued BEFORE is fine
             // here; one that runs into text AFTER would be cut at a guess.
-            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, ["after"]);
+            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, { sides: ["after"], markdown: false });
             const channelId = await resolveChannel(token, argv.channel!, cookie);
             const resp = (await createDraft(token, channelId, text, cookie)) as Record<string, Json>;
             console.log(`✓ Draft created (id: ${asRecord(resp.draft).id ?? "?"})`);
@@ -6230,7 +6230,7 @@ async function main(): Promise<void> {
             const token = tok(argv as W); const cookie = ck(argv as W);
             const text = (argv.text as string[]).join(" ");
             if (!text) { console.error("Usage: slack drafts edit <id> <new-text>"); process.exit(2); }
-            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, ["after"]);
+            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, { sides: ["after"], markdown: false });
             const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
             const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
             if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }

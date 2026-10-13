@@ -84,6 +84,30 @@ describe("URL boundaries", () => {
     expect(adjacentUrls("説明：[https://example.com/x](https://example.com/x)")).toEqual([]);
     expect(adjacentUrls("[docs](https://example.com/内容)")).toEqual([]);
   });
+  test("a URL glued on BOTH sides reports both", () => {
+    expect(urlBoundaryIssues("説明：https://example.com/日本語")).toEqual([
+      { url: "https://example.com/日本語", side: "before", char: "：" },
+      { url: "https://example.com/日本語", side: "after", char: "日" },
+    ]);
+    expect(adjacentUrls("説明：https://example.com/日本語")).toEqual(["https://example.com/日本語"]);
+  });
+  test("```x``` on one line is an inline span, not a fence that hides what follows", () => {
+    expect(adjacentUrls("```x```\n説明：https://example.com/x")).toEqual(["https://example.com/x"]);
+  });
+  test("a CRLF-closed fence ends where it should", () => {
+    expect(adjacentUrls("```\r\nx\r\n```\r\n説明：https://example.com/x")).toEqual(["https://example.com/x"]);
+  });
+  test("an escaped \\] does not close a link label", () => {
+    expect(adjacentUrls("[説明：https://example.com/x\\](foo)")).toEqual(["https://example.com/x\\](foo)"]);
+  });
+  test("markdown: false (drafts) masks nothing", () => {
+    expect(adjacentUrls("`説明：https://example.com/x`")).toEqual([]);
+    expect(urlBoundaryIssues("[docs](https://example.com/日本語)", { markdown: false }).map((i) => i.side)).toEqual(["after"]);
+    expect(() => guardUrlBoundaries("[docs](https://example.com/日本語)", false, undefined, { sides: ["after"], markdown: false }))
+      .toThrow("Ambiguous URL boundary");
+    expect(() => guardUrlBoundaries("説明：https://example.com/日本語", false, undefined, { sides: ["after"], markdown: false }))
+      .toThrow("runs into");
+  });
   test("code masking does not hide a glued URL outside the span", () => {
     expect(adjacentUrls("`code` 説明：https://example.com/x")).toEqual(["https://example.com/x"]);
   });
