@@ -95,6 +95,18 @@ describe("drafts edit/delete gates (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  test("a bare URL running into non-ASCII text is refused, not silently cut", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const r = await run(["drafts", "edit", "Dr001", "https://example.com/日本語"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("Ambiguous URL boundary");
+      expect(m.requests.some((q) => q.method === "drafts.update")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("edit gate names the identity above the draft diff", async () => {
     const m = await startMock({ inline: fixtures });
     try {
