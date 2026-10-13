@@ -74,6 +74,27 @@ const fixtures = {
 };
 
 describe("drafts edit/delete gates (CLI)", { timeout: 60_000 }, () => {
+  // Drafts are raw rich_text, which Slack never autolinks: a URL left inside a
+  // `text` element is dead text, however it is spaced. It must be a `link`.
+  test("a URL glued to CJK punctuation is stored as a link element", async () => {
+    const m = await startMock({ inline: fixtures });
+    try {
+      const text = "説明：https://example.com/x";
+      const dry = await run(["drafts", "edit", "Dr001", text], { baseUrl: m.baseUrl });
+      const before = m.requests.length;
+      const r = await run(["drafts", "edit", "Dr001", text, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      const upd = m.requests.slice(before).find((q) => q.method === "drafts.update")!;
+      const blocks = JSON.parse(new URLSearchParams(upd.body).get("blocks")!);
+      expect(blocks[0].elements[0].elements).toEqual([
+        { type: "text", text: "説明：" },
+        { type: "link", url: "https://example.com/x" },
+      ]);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("edit gate names the identity above the draft diff", async () => {
     const m = await startMock({ inline: fixtures });
     try {

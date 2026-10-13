@@ -1,6 +1,7 @@
 // Slack Web API client (user token, Authorization: Bearer)
 import { resolveCookie } from "./profiles.ts";
 import { repairMessageText } from "./newlines.ts";
+import { linkifyRichText } from "./urlGuard.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -1034,7 +1035,7 @@ export async function createDraft(
   const { randomUUID } = await import("node:crypto");
   const blocks = JSON.stringify([{
     type: "rich_text",
-    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+    elements: [{ type: "rich_text_section", elements: linkifyRichText(text) }],
   }]);
   return postSession(token, "drafts.create", {
     client_msg_id: randomUUID(),
@@ -1054,7 +1055,7 @@ export async function updateDraft(
 ): Promise<Json> {
   const blocks = JSON.stringify([{
     type: "rich_text",
-    elements: [{ type: "rich_text_section", elements: [{ type: "text", text }] }],
+    elements: [{ type: "rich_text_section", elements: linkifyRichText(text) }],
   }]);
   // client_last_updated_ts must be the current time (server uses it as new stored ts)
   const nowTs = (Date.now() / 1000).toFixed(6);
