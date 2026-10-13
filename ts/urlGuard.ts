@@ -35,10 +35,12 @@ function maskCode(text: string): string {
   let i = 0;
   while (i < text.length) {
     const lineStart = i === 0 || text[i - 1] === "\n";
-    const fence = lineStart ? /^ {0,3}(`{3,}|~{3,})/.exec(text.slice(i)) : null;
+    // A backtick fence's info string may not contain a backtick (```x``` on
+    // one line is an inline span, not a fence opener).
+    const fence = lineStart ? /^ {0,3}(?:(`{3,})[^`\n]*|(~{3,})[^\n]*)(?=\n|$)/.exec(text.slice(i)) : null;
     if (fence) {
-      const marker = fence[1]!;
-      const close = new RegExp(`\n {0,3}${marker[0] === "`" ? "`" : "~"}{${marker.length},}[ \t]*(?=\n|$)`, "g");
+      const marker = fence[1] ?? fence[2]!;
+      const close = new RegExp(`\n {0,3}${marker[0] === "`" ? "`" : "~"}{${marker.length},}[ \t]*\r?(?=\n|$)`, "g");
       close.lastIndex = i + fence[0].length;
       const m = close.exec(text);
       const end = m ? m.index + m[0].length : text.length;
@@ -66,7 +68,8 @@ function maskCode(text: string): string {
       continue;
     }
     if (ch === "[") {
-      const link = /^\[[^\]\n]*\]\([^()\s]*\)/.exec(text.slice(i));
+      // Escape-aware: `\]` does not close the label.
+      const link = /^\[(?:\\.|[^\]\\\n])*\]\([^()\s]*\)/.exec(text.slice(i));
       if (link) { blank(i, i + link[0].length); i += link[0].length; continue; }
     }
     i++;
@@ -74,8 +77,11 @@ function maskCode(text: string): string {
   return out.join("");
 }
 
-export function urlBoundaryIssues(text: string): UrlBoundaryIssue[] {
-  const masked = maskCode(text);
+/** `markdown: false` is for text that is NOT parsed as markdown (drafts, whose
+ *  rich_text is built by `linkifyRichText`): there a backtick or `[label](url)`
+ *  hides nothing, so nothing is masked. */
+export function urlBoundaryIssues(text: string, { markdown = true }: { markdown?: boolean } = {}): UrlBoundaryIssue[] {
+  const masked = markdown ? maskCode(text) : text;
   const issues: UrlBoundaryIssue[] = [];
   for (const m of masked.matchAll(URL_TOKEN)) {
     const url = m[0];
@@ -84,7 +90,6 @@ export function urlBoundaryIssues(text: string): UrlBoundaryIssue[] {
     const before = at > 0 ? masked[at - 1]! : "";
     if (before && !SAFE_BEFORE.test(before)) {
       issues.push({ url, side: "before", char: text[at - 1]! });
-      continue;
     }
     const after = url.match(/[^\x00-\x7f]|>/);
     if (after) issues.push({ url, side: "after", char: after[0] });
@@ -93,14 +98,16 @@ export function urlBoundaryIssues(text: string): UrlBoundaryIssue[] {
 }
 
 export function adjacentUrls(text: string): string[] {
-  return urlBoundaryIssues(text).map((i) => i.url);
+  return [...new Set(urlBoundaryIssues(text).map((i) => i.url))];
 }
 
 export function guardUrlBoundaries(
   text: string, allow = false, warn: (message: string) => void = console.error,
-  sides: ReadonlyArray<UrlBoundaryIssue["side"]> = ["before", "after"],
+  { sides = ["before", "after"], markdown = true }: {
+    sides?: ReadonlyArray<UrlBoundaryIssue["side"]>; markdown?: boolean;
+  } = {},
 ): void {
-  const issues = urlBoundaryIssues(text).filter((i) => sides.includes(i.side));
+  const issues = urlBoundaryIssues(text, { markdown }).filter((i) => sides.includes(i.side));
   if (!issues.length) return;
   const described = issues.map((i) => i.side === "before"
     ? `${JSON.stringify(i.url)} (glued to ${JSON.stringify(i.char)} before it — Slack will NOT make it a link)`
@@ -124,7 +131,8 @@ type RichTextElement =
  *  whitespace, `<`, or the first non-ASCII character (`https://x/内容` links
  *  `https://x/` only), and trailing sentence punctuation is left outside it.
  *  Whether that cut is the intended one is ambiguous, so callers gate it with
- *  `guardUrlBoundaries(text, allow, warn, ["after"])` first. */
+ *  `guardUrlBoundaries(text, allow, warn, { sides: ["after"], markdown: false })`
+ *  first. */
 export function linkifyRichText(text: string): RichTextElement[] {
   const out: RichTextElement[] = [];
   const pushText = (s: string) => {
