@@ -10,7 +10,9 @@
  * autolinker (GFM rules) only starts a link at the start of a line, after
  * ASCII whitespace, or after one of `( * _ ~`. */
 
-const URL_TOKEN = /<https?:\/\/[^\s<>|]+(?:\|[^<>\r\n]*)?>|https?:\/\/[^\t\n\v\f\r <]+/gi;
+// `\x00` is maskCode's filler: a bare URL stops at a masked span, so a URL
+// on the far side of one is its own token with its own left boundary.
+const URL_TOKEN = /<https?:\/\/[^\s<>|]+(?:\|[^<>\r\n]*)?>|https?:\/\/[^\t\n\v\f\r <\x00]+/gi;
 /** What may sit right before a bare URL and still let it autolink. */
 const SAFE_BEFORE = /[\t\n\v\f\r (*_~]/;
 
@@ -56,6 +58,8 @@ function maskCode(text: string): string {
       let j = i + n;
       let end = -1;
       while (j < text.length) {
+        // A blank line ends the paragraph, and a span cannot cross it.
+        if (text[j] === "\n" && /^\n[ \t\r]*(?:\n|$)/.test(text.slice(j))) break;
         if (text[j] !== "`") { j++; continue; }
         let r = 0;
         while (text[j + r] === "`") r++;

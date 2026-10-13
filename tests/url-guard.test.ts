@@ -108,6 +108,14 @@ describe("URL boundaries", () => {
     expect(() => guardUrlBoundaries("説明：https://example.com/日本語", false, undefined, { sides: ["after"], markdown: false }))
       .toThrow("runs into");
   });
+  test("a code span between two URLs does not merge them into one token", () => {
+    expect(urlBoundaryIssues("https://example.com/a`code`https://example.org/b"))
+      .toEqual([{ url: "https://example.org/b", side: "before", char: "`" }]);
+  });
+  test("an inline code span does not cross a blank line", () => {
+    expect(adjacentUrls("`unfinished\n\n説明：https://example.com/x\n\n`")).toEqual(["https://example.com/x"]);
+    expect(adjacentUrls("`one\ntwo 説明：https://example.com/x`")).toEqual([]);
+  });
   test("code masking does not hide a glued URL outside the span", () => {
     expect(adjacentUrls("`code` 説明：https://example.com/x")).toEqual(["https://example.com/x"]);
   });
