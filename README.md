@@ -123,9 +123,10 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
-# A ❓ "その他 (other)" pill always follows the choices: pressing it means "none of
-# these" and the answer comes as a reply (exit 5), not as the ❓ itself.
-# --explain (or SLACK_TERM_ASK_EXPLAIN=1) adds an ℹ️ "説明して (explain)" pill after ❓:
+# A ➕ "その他 (other)" pill always follows the choices: pressing it means "none of
+# these" and the answer comes as a reply (exit 5), not as the ➕ itself. (Pills posted
+# before ➕ carry ❓ there; they are still read, collected and voided the same way.)
+# --explain (or SLACK_TERM_ASK_EXPLAIN=1) adds an ℹ️ "説明して (explain)" pill after ➕:
 # pressing it asks YOU to explain in the thread and is never an answer — the question
 # stays open. --wait/--waitFor say so on stderr and may post ONE thread note (once per
 # question) saying an explanation is coming; --explain-exit makes that exit 7.
@@ -151,7 +152,7 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
 # Once answered, the question is edited to "✅ …回答済み > <answer>" — the body/background
-# and the CHOSEN option line stay; the other options, ❓ line and instructions go. The
+# and the CHOSEN option line stay; the other options, ➕ line and instructions go. The
 # unpressed seeds are removed, leaving the chosen pill visible.
 #
 # Thread notes (audience replies that are not the answer, even after ✅) go to

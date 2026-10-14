@@ -34,17 +34,40 @@ export type AskFound = { answer: string; how: string; who?: string; ts?: string;
  *  in-flight question unparseable. The marker carries identity now, and the
  *  instruction is free to be translated.
  *
- *  It is also seeded as a REACTION, which is what makes `has:question` list
- *  every question the way `has:pushpin` lists every todo. `todo` gave this
- *  emoji up (its needs-discussion flag moved to :thinking_face:) precisely so
- *  the two would not collide in search. */
+ *  It is also seeded as a REACTION on free-text questions and on pills posted
+ *  before ➕; a question with choices now seeds ➕ (`ASK_OTHER_MARKER`) in its
+ *  place. So `has::question: OR has::heavy_plus_sign:`-style search lists the
+ *  open questions the way `has::pushpin:` lists every todo — with the trade-off
+ *  that ➕ is a common emoji, so that search can also match unrelated messages
+ *  (`slack ask --ls` reads the local sent-log and is unaffected). `todo` gave
+ *  ❓ up (its needs-discussion flag moved to :thinking_face:) precisely so the
+ *  two would not collide in search. */
 export const ASK_MARKER = "question";
 export const ASK_MARKER_PREFIX = `:${ASK_MARKER}: `;
+
+/** The "other" pill — "none of these fit, my answer follows as a reply" —
+ *  seeded after the numbered pills and listed under them in the body. ➕, not
+ *  ❓ (taku 2026-10-14): ❓ read as "I have a question", not "add my own answer".
+ *
+ *  ❓ stays the HEAD marker (`ASK_MARKER_PREFIX` on the first line): that is the
+ *  wire format that identifies an ask, and every reader keys on it. Only the
+ *  pill moved. A free-text question has no other line and still seeds ❓.
+ *
+ *  Pills posted before this carry ❓ as the other pill, both as the seed and
+ *  as the body line. They stay fully working: the parser accepts either line
+ *  (`askSeedMarker(text)` says which one a question was seeded with), a press
+ *  on either counts as "other", and void / edit / resolve take off exactly the
+ *  seed that is there. */
+export const ASK_OTHER_MARKER = "heavy_plus_sign";
+export const ASK_OTHER_PREFIX = `:${ASK_OTHER_MARKER}: `;
+/** Every reaction that means "other" on some open pill: ➕ now, ❓ on the
+ *  pills posted before ➕. */
+export const ASK_OTHER_MARKERS: readonly string[] = [ASK_OTHER_MARKER, ASK_MARKER];
 
 /** The "explain" pill (`--explain`): pressing it asks the asker to explain the
  *  question, and is NEVER an answer. Reported 2026-10-14: an "explain" offered
  *  as a numbered choice was collected as the decision and closed the question.
- *  Not ❓: ❓ means "none of these fit — my answer follows as a reply", and that
+ *  Not ➕: ➕ means "none of these fit — my answer follows as a reply", and that
  *  reply resolves the question; ℹ️ means "I cannot answer yet", and the question
  *  stays open for a real answer after the explanation. */
 export const ASK_EXPLAIN_MARKER = "information_source";
@@ -145,10 +168,10 @@ interface AskCopy {
 }
 
 /** The standing "none of these" choice (`otherThread` / `otherHere`), listed
- *  after the numbered ones. It is the ❓ marker pill, which is seeded LAST so
- *  the reaction row reads the same as the body: 1️⃣ 2️⃣ 3️⃣ ❓. People already
- *  pressed ❓ to mean "none of these fit" — the line makes that an explicit
- *  choice, and says where the actual answer has to go: ❓ itself carries no
+ *  after the numbered ones. It is the ➕ pill (`ASK_OTHER_MARKER`; ❓ on pills
+ *  posted before 2026-10-14), seeded LAST so the reaction row reads the same as
+ *  the body: 1️⃣ 2️⃣ 3️⃣ ➕. The line makes "none of these fit" an explicit
+ *  choice, and says where the actual answer has to go: ➕ itself carries no
  *  answer text, so it never resolves the question; the reply that follows it
  *  does (exit 5, delivered as free text). Optional on the way in: questions
  *  posted before it existed have no such line and must stay collectable.
@@ -164,8 +187,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
       "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_",
     instructionTextHere: "_このメッセージに返信してください。本文がそのまま回答になります。_",
     overflowNote: "_11 番目以降はリアクションがないので、返信で答えてください。_",
-    otherThread: `${ASK_MARKER_PREFIX}その他 — スレッドで返信してください`,
-    otherHere: `${ASK_MARKER_PREFIX}その他 — このメッセージに返信してください`,
+    otherThread: `${ASK_OTHER_PREFIX}その他 — スレッドで返信してください`,
+    otherHere: `${ASK_OTHER_PREFIX}その他 — このメッセージに返信してください`,
     explainLine: `${ASK_EXPLAIN_PREFIX}説明して — 押すと質問者に説明を頼みます (回答にはなりません)`,
     explainNote: `${ASK_EXPLAIN_PREFIX}説明のリクエストを受け付けました — このスレッドで説明します。質問はまだ開いているので、回答はそのあとで大丈夫です。`,
     invalidPrefix: "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ",
@@ -185,8 +208,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
       "_Reply in this message's *thread* — your reply is the answer (ordinary channel posts are not picked up as answers)._",
     instructionTextHere: "_Reply to this message — your reply is the answer._",
     overflowNote: "_Choices 11 and up have no reaction — answer them with a reply._",
-    otherThread: `${ASK_MARKER_PREFIX}Other — reply in the thread`,
-    otherHere: `${ASK_MARKER_PREFIX}Other — reply to this message`,
+    otherThread: `${ASK_OTHER_PREFIX}Other — reply in the thread`,
+    otherHere: `${ASK_OTHER_PREFIX}Other — reply to this message`,
     explainLine: `${ASK_EXPLAIN_PREFIX}Explain — press to ask the asker for more detail (not an answer)`,
     explainNote: `${ASK_EXPLAIN_PREFIX}Explanation requested — it will follow in this thread. The question stays open; answer it after that.`,
     invalidPrefix: "_:warning: Several choices are selected, so this is not counted as an answer — keep only one: ",
@@ -199,11 +222,20 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
   },
 };
 
-/** True for the "other" line in either spelling — the shortcode we write, or the
- *  glyph a body hand-edited in the Slack UI can carry. Matched by prefix, not
- *  verbatim, so the copy stays free to change. */
-function askIsOtherLine(line: string | undefined): boolean {
-  return line !== undefined && (line.startsWith(ASK_MARKER_PREFIX) || line.startsWith("❓ "));
+/** The "other" copy pills posted before ➕ carried — the same words under ❓.
+ *  Kept so `askSalvageUnreadable` can still strip it from an old flattened body. */
+const ASK_LEGACY_OTHER_LINES: string[] = ASK_LANGS.flatMap((l) =>
+  [ASK_COPY[l].otherThread, ASK_COPY[l].otherHere].map((s) => ASK_MARKER_PREFIX + s.slice(ASK_OTHER_PREFIX.length)));
+
+/** Which reaction the "other" line names, or null if the line is not one: ➕ or
+ *  ❓ (pills posted before ➕), each as the shortcode we write or the glyph a
+ *  body hand-edited in the Slack UI can carry. Matched by prefix, not verbatim,
+ *  so the copy stays free to change. */
+function askOtherLineMarker(line: string | undefined): string | null {
+  if (line === undefined) return null;
+  if (line.startsWith(ASK_OTHER_PREFIX) || line.startsWith("➕ ")) return ASK_OTHER_MARKER;
+  if (line.startsWith(ASK_MARKER_PREFIX) || line.startsWith("❓ ")) return ASK_MARKER;
+  return null;
 }
 
 /** True for the explain line, in either spelling. Matched by prefix, like the
@@ -287,7 +319,7 @@ export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
 /** Prefix `--void` stamps on a question that should no longer be answered —
  *  expired, superseded, or overtaken by events (無効化). A THIRD state beside open
  *  (`:question:`) and answered (`:white_check_mark:`), on purpose: anything that
- *  keys on "starts with :question:" (the stale-pill reminder, `has::question:`)
+ *  keys on "starts with :question:" (the stale-pill reminder, `has::question: OR has::heavy_plus_sign:`)
  *  stops counting it the moment it is voided, and nothing reads it as answered.
  *  Also seeded as a reaction, so `has::no_entry_sign:` lists every void. */
 export const ASK_VOID_MARKER = "no_entry_sign";
@@ -352,9 +384,9 @@ export function askBuildText(question: string, body: string, reactable: string[]
     // form keeps posted and read-back bytes identical, which is what the
     // round-trip test can actually check. (`poll` already did this.)
     lines.push(...reactable.map((s, i) => `${askPill(i)} ${askFlatten(s)}`));
-    // Directly under the pills, matching the ❓ seeded right after them.
+    // Directly under the pills, matching the ➕ seeded right after them.
     lines.push(threadOnly ? c.otherThread : c.otherHere);
-    // Under ❓, matching the ℹ️ seeded right after it.
+    // Under ➕, matching the ℹ️ seeded right after it.
     if (explain) lines.push(c.explainLine);
     if (overflow.length) {
       lines.push("");
@@ -382,7 +414,7 @@ export function askBuildText(question: string, body: string, reactable: string[]
  *  decision was made against) and the option line that was chosen. Reported
  *  from real use 2026-10-05: collecting an answer replaced the whole message
  *  with question + answer, and the context of the decision was gone. Only what
- *  no longer applies goes — the options NOT chosen, the ❓ line, the answering
+ *  no longer applies goes — the options NOT chosen, the ➕ (or ❓) line, the answering
  *  instructions.
  *
  *  The head is unchanged on purpose: ✅ prefix, question, stamp, blank, quoted
@@ -453,7 +485,7 @@ export function askSalvageUnreadable(text: string): { question: string; body: st
     for (const instr of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere]) {
       if (body.includes(instr)) wasAsk = true;
     }
-    for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere, c.explainLine]) {
+    for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere, ...ASK_LEGACY_OTHER_LINES, c.explainLine]) {
       body = body.split(fixed).join(" ");
     }
     const at = body.indexOf(c.invalidPrefix);
@@ -660,7 +692,7 @@ export function askParseMessage(text: string): AskParsed {
       i--;
     }
     if (askIsExplainLine(lines[i])) { explain = true; i--; }
-    if (askIsOtherLine(lines[i])) i--;
+    if (askOtherLineMarker(lines[i])) i--;
     const raw: string[] = [];
     while (i >= 0) {
       const line = lines[i]!;
@@ -695,6 +727,29 @@ export function askParseMessage(text: string): AskParsed {
 
   const body = lines.slice(end + 1, bodyEnd).join("\n").replace(/^\n+|\n+$/g, "");
   return { kind: "open", question, body, reactable, overflow, threadOnly, lang, explain };
+}
+
+/** The marker reaction `ask` seeded on an open question: ➕ when its other line
+ *  says ➕, else ❓ (a free-text question, or a pill posted before ➕ — with a ❓
+ *  other line or none at all). What void / edit / the ✅ swap take off. Read
+ *  from the line directly under the last numbered pill, the one place the
+ *  other line can be; null when the text is not an open ask.
+ *
+ *  Separate from `askParseMessage` so the parse result keeps its shape. */
+export function askSeedMarker(text: string): string | null {
+  const p = askParseMessage(text);
+  if (p.kind !== "open") return null;
+  if (!p.reactable.length) return ASK_MARKER;
+  const lines = text.split("\n");
+  const last = askPill(p.reactable.length - 1);
+  const k = ASK_KEYCAPS[p.reactable.length - 1]!.glyph;
+  // The last pill line is the LAST line opening with that keycap: the block is
+  // anchored to the bottom, and a body line can start with the same keycap.
+  let at = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i]!.startsWith(`${last} `) || lines[i] === last || lines[i]!.startsWith(`${k} `) || lines[i] === k) { at = i; break; }
+  }
+  return (at >= 0 ? askOtherLineMarker(lines[at + 1]) : null) ?? ASK_MARKER;
 }
 
 /** Did a free-text reply actually PICK one of the offered choices?

@@ -217,9 +217,26 @@ has::pushpin:        ← 誤り。ただの単語検索に落ちて本文にマ�
 "unrelated reactions on the message are not votes" で検証済み)。よって実害はない。
 
 これで:
-- `has::question:` → 未回答/回答済みを問わず全ての ask
+- `(has::question: OR has::heavy_plus_sign:)` → 未回答の ask (下記 ➕ の注を参照。
+  回答済みは ✅ に、無効化したものは 🚫 に付け替わる)
 - `has::ballot_box:` → 全ての poll
 - `has::white_check_mark:` → 解決済み (todo の done と共有)
+
+### ➕ が「その他」ピルになった (2026-10-14, #56)
+
+選択肢付きの質問は「その他」ピルとして ❓ ではなく ➕ (`:heavy_plus_sign:`) を
+最後に付けるようになった (❓ は「質問がある」と読まれてしまうため)。本文先頭の
+`:question:` (HEAD マーカー) は変わらない。自由回答の質問 (選択肢なし) と、
+➕ 導入前に投稿されたピルは引き続き ❓ リアクションを持つ。
+
+したがって **`has::question:` だけでは選択肢付きの新しい質問が漏れる**。
+未回答の ask を引くには `(has::question: OR has::heavy_plus_sign:)` と両方を
+OR で書く。
+
+トレードオフ: ➕ は ❓ よりずっと汎用的な絵文字なので、`has::heavy_plus_sign:`
+は ask と無関係な投稿 (「+1」の意味で付けられたものなど) も拾いうる。
+検索結果は本文先頭の `:question:` で絞り込むこと。自分が送った質問の一覧なら
+`slack ask --ls` を使う — こちらはローカルの送信ログを読むので影響を受けない。
 
 ## 5. 判断が要るところ
 

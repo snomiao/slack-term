@@ -20,6 +20,8 @@ import { agentCommands } from "./agent.ts";
 import {
   ASK_KEYCAPS,
   ASK_MARKER,
+  ASK_OTHER_MARKER,
+  ASK_OTHER_MARKERS,
   ASK_EXPLAIN_MARKER,
   ASK_RESOLVED_MARKER,
   ASK_MAX_REACTION_CHOICES,
@@ -27,6 +29,7 @@ import {
   askIsExplainNote,
   askBuildResolvedText,
   askParseMessage,
+  askSeedMarker,
   askExplainReject,
   askFlatten,
   askMatchChoice,
@@ -2612,6 +2615,9 @@ interface AskWaitCtx {
    *  nothing". */
   overflow: string[];
   threadOnly: boolean;
+  /** The marker reaction this question was seeded with (➕, or ❓ on a
+   *  free-text question or one posted before ➕) — what the ✅ swap takes off. */
+  seedMarker: string;
   /** The language the question's copy is in — the ✅ stamp and the
    *  invalid-ballot line are written in the same one. */
   lang: AskLang;
@@ -2869,17 +2875,21 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
     }
   }
 
-  /** Who has pressed ❓ ("other"). Not an answer — ❓ carries no text — so it
-   *  never resolves anything; the reply that should follow it does. Reported
-   *  once per person so the operator knows a reply is on its way rather than
-   *  reading the silence as "nobody looked". */
+  /** Who has pressed ➕ ("other") — or ❓, the other pill on questions posted
+   *  before ➕, which is still pressed out of habit. Not an answer — neither
+   *  carries text — so it never resolves anything; the reply that should
+   *  follow it does. Reported once per person so the operator knows a reply is
+   *  on its way rather than reading the silence as "nobody looked". */
   const otherReported = new Set<string>();
   function noteOther(msg: Record<string, Json>): void {
-    const r = asArray(msg.reactions).map(asRecord).find((x) => x.name === ASK_MARKER);
-    for (const u of r ? asArray(r.users).filter(isAnswerer) : []) {
-      if (otherReported.has(u)) continue;
-      otherReported.add(u);
-      if (!readOnly) console.error(`  (<@${u}> が ❓ その他 を押しました。返信を待ちます)`);
+    for (const r of asArray(msg.reactions).map(asRecord)) {
+      if (typeof r.name !== "string" || !ASK_OTHER_MARKERS.includes(r.name)) continue;
+      const glyph = r.name === ASK_OTHER_MARKER ? "➕" : "❓";
+      for (const u of asArray(r.users).filter(isAnswerer)) {
+        if (otherReported.has(u)) continue;
+        otherReported.add(u);
+        if (!readOnly) console.error(`  (<@${u}> が ${glyph} その他 を押しました。返信を待ちます)`);
+      }
     }
   }
 
@@ -3158,12 +3168,12 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       const keep = state.ownText ? askResolvedKeep(state.ownText, found.choice) : undefined;
       await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who, ctx.lang, keep), cookie, true);
       // Swap the marker for the resolved one so search reflects reality:
-      // `has::question:` should list what still needs answering, not everything
-      // ever asked. Removal last — a crash between the two leaves the question
+      // `has::question: OR has::heavy_plus_sign:` should list what still needs
+      // answering, not everything ever asked. Removal last — a crash between the two leaves the question
       // findable under BOTH, which is recoverable; the reverse loses it.
       try {
         await reactionAdd(token, channelId, ts, ASK_RESOLVED_MARKER, cookie);
-        await reactionRemove(token, channelId, ts, ASK_MARKER, cookie);
+        await reactionRemove(token, channelId, ts, ctx.seedMarker, cookie);
       } catch {
         // Cosmetic: the ✅ in the body is what actually marks it resolved.
       }
@@ -3513,10 +3523,12 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   const ts = await slackSend(token, channelId, message, threadTs, false, cookie, true, attr.metadata);
 
   // The marker goes on LAST, after 1,2,3, because it doubles as the "other"
-  // choice the body lists under the numbered ones (people were already pressing
-  // ❓ for "none of these fit"). It is a reaction so
-  // `has::question:` lists every question the way `has::pushpin:` lists every
-  // todo. Body text cannot do that job: Slack's index splits on punctuation, so
+  // choice the body lists under the numbered ones: ➕ (ASK_OTHER_MARKER). A
+  // free-text question has no other choice and seeds ❓. It is a reaction so
+  // `has::question: OR has::heavy_plus_sign:` lists every open question the
+  // way `has::pushpin:` lists every todo — though ➕ is a common emoji, so that
+  // search can also match unrelated messages (`slack ask --ls` reads the local
+  // sent-log and is unaffected). Body text cannot do that job: Slack's index splits on punctuation, so
   // a `:question:` written in the text is indexed as the word "question" and
   // matches unrelated messages (measured). Only a real reaction is searchable.
   //
@@ -3527,14 +3539,15 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // enough: measured on two real questions from the same build, one came back
   // `two|one|question|three`. See ts/reactionSeed.ts for the evidence and for
   // SLACK_REACTION_SEED_GAP_MS.
+  const seedMarker = reactable.length ? ASK_OTHER_MARKER : ASK_MARKER;
   await seedReactionsInOrder(
-    [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER, ...(explain ? [ASK_EXPLAIN_MARKER] : [])],
+    [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), seedMarker, ...(explain ? [ASK_EXPLAIN_MARKER] : [])],
     (name) => reactionAdd(token, channelId, ts, name, cookie),
     (name, e) => {
       const why = e instanceof Error ? e.message : String(e);
       // The marker is cosmetic + searchability; a keycap only costs the
       // answerer a trip to the emoji picker. Neither abandons a posted question.
-      if (name === ASK_MARKER) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
+      if (name === seedMarker) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
       else console.error(`  (リアクション ${name} を付けられませんでした: ${why})`);
     },
   );
@@ -3575,6 +3588,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     reactable,
     overflow,
     threadOnly,
+    seedMarker,
     lang,
     audience,
     broadcast,
@@ -3667,7 +3681,7 @@ async function askLoadOwnOpen(token: string, link: string, self: Self | null, as
   if (parsed.kind === "void") return "void";
   if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問です（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）— 変更できません`); return null; }
   if (parsed.kind !== "open") { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); return null; }
-  const out: AskVoidTarget & { msg: Record<string, Json>; threadTs?: string } = { link, channelId: got.channelId, ts: got.ts, parsed, msg };
+  const out: AskVoidTarget & { msg: Record<string, Json>; threadTs?: string } = { link, channelId: got.channelId, ts: got.ts, parsed, seedMarker: askSeedMarker(text) ?? ASK_MARKER, msg };
   if (got.threadTs) out.threadTs = got.threadTs;
   return out;
 }
@@ -3695,7 +3709,7 @@ async function askHasResponses(token: string, t: { channelId: string; ts: string
 }
 
 /** `slack ask --edit=<link> ["new question" [choices…]] [--body …]` — change an
- *  open question THROUGH the ask builder, so pills, ❓, the instructions and the
+ *  open question THROUGH the ask builder, so pills, ➕, the instructions and the
  *  body stay in the layout collect reads back (a free-hand `slack edit` is what
  *  this replaces; `edit` now refuses ask messages without --force).
  *
@@ -3778,17 +3792,32 @@ async function cmdAskEdit(token: string, args: {
   }
 
   await editMessage(token, t.channelId, t.ts, next, args.cookie, true);
+  // The body was rebuilt, so its other line now says ➕ (or there is none, on
+  // a free-text question) — the marker seed follows it.
+  const seedMarker = reactable.length ? ASK_OTHER_MARKER : ASK_MARKER;
+  const oldSeed = askSeedMarker(oldText) ?? ASK_MARKER;
   if (choicesChanged) {
-    // Re-seed in order: 1..n then ❓ last, as a fresh question has them.
-    const tail = old.explain ? [ASK_MARKER, ASK_EXPLAIN_MARKER] : [ASK_MARKER];
-    for (const name of [...old.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail]) {
+    // Re-seed in order: 1..n then ➕ last, as a fresh question has them. The
+    // old marker comes off as whatever it was seeded as (❓ on an old pill).
+    const tail = (m: string) => old.explain ? [m, ASK_EXPLAIN_MARKER] : [m];
+    for (const name of [...old.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail(oldSeed)]) {
       try { await reactionRemove(token, t.channelId, t.ts, name, args.cookie); } catch { /* already gone */ }
     }
     await seedReactionsInOrder(
-      [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail],
+      [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail(seedMarker)],
       (name) => reactionAdd(token, t.channelId, t.ts, name, args.cookie),
       (name, e) => console.error(`  (リアクション ${name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`),
     );
+  } else if (oldSeed !== seedMarker) {
+    // An old ❓ pill edited without touching its choices: the body now lists
+    // ➕, so swap the seed to match. Add before remove, as the ✅ swap does —
+    // a failure in between leaves both, which still collects.
+    try {
+      await reactionAdd(token, t.channelId, t.ts, seedMarker, args.cookie);
+      await reactionRemove(token, t.channelId, t.ts, oldSeed, args.cookie);
+    } catch (e: unknown) {
+      console.error(`  (marker を ${seedMarker} に替えられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
   }
   console.error(`✓ 編集しました: ${stripTerminalControls(args.link)}`);
 }
@@ -4031,9 +4060,12 @@ interface AskVoidTarget {
   channelId: string;
   ts: string;
   parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>;
+  /** The marker reaction it was seeded with (➕, or ❓ on an old pill / free
+   *  text) — what the void takes off. */
+  seedMarker: string;
 }
 
-/** Void one question: the 🚫 text (body kept), our seeds and ❓ off, 🚫 on.
+/** Void one question: the 🚫 text (body kept), our seeds and marker (➕, or ❓) off, 🚫 on.
  *  The text is what marks it void; the reactions are cleanup + searchability,
  *  so a failure there is reported and does not undo the void. */
 async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, supersededBy: string | undefined, cookie?: string): Promise<boolean> {
@@ -4045,7 +4077,7 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
     console.error(`✗ ${shown}: 書き換えに失敗しました: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
-  for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER, ...(t.parsed.explain ? [ASK_EXPLAIN_MARKER] : [])]) {
+  for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), t.seedMarker, ...(t.parsed.explain ? [ASK_EXPLAIN_MARKER] : [])]) {
     try { await reactionRemove(token, t.channelId, t.ts, name, cookie); } catch { /* not ours / already gone */ }
   }
   try {
@@ -4068,7 +4100,7 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
  *
  *  What voiding does, per question: the text becomes the 🚫 form (head, void
  *  stamp with the reason, optional pointer to the replacement, the body); our
- *  seeded pills and the ❓ marker come off; a 🚫 reaction goes on. Pills someone
+ *  seeded pills and the marker (➕, or ❓) come off; a 🚫 reaction goes on. Pills someone
  *  already pressed stay — Slack lets only their owner remove them — and are
  *  never collected, because a void is never polled again.
  *
@@ -4101,7 +4133,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       process.exit(ASK_EXIT_ERROR);
     }
   }
-  type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; pressed: string[]; unreadable?: boolean };
+  type Target = { link: string; channelId: string; ts: string; text: string; parsed: Extract<ReturnType<typeof askParseMessage>, { kind: "open" }>; seedMarker: string; pressed: string[]; unreadable?: boolean };
   const targets: Target[] = [];
   let refused = 0;
   for (const link of args.links) {
@@ -4144,11 +4176,16 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       };
       unreadable = true;
     }
+    // Our marker: what the body names, or — for an unreadable body — ➕ if we
+    // seeded one, else ❓ (an old pill, or free text).
+    const seedMarker = unreadable
+      ? (asArray(msg.reactions).map(asRecord).some((r) => r.name === ASK_OTHER_MARKER && asArray(r.users).includes(self?.userId ?? "\u0000")) ? ASK_OTHER_MARKER : ASK_MARKER)
+      : askSeedMarker(text) ?? ASK_MARKER;
     const pressed = asArray(msg.reactions).map(asRecord)
       .filter((r) => typeof r.name === "string" && ASK_KEYCAPS.some((k) => k.name === r.name))
       .filter((r) => asArray(r.users).some((u) => u !== self?.userId))
       .map((r) => `:${String(r.name)}:`);
-    targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, pressed, ...(unreadable ? { unreadable } : {}) });
+    targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, seedMarker, pressed, ...(unreadable ? { unreadable } : {}) });
   }
   if (!targets.length) {
     console.error(refused ? "無効化できる質問がありません。" : "何もすることがありません。");
@@ -4166,7 +4203,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       ...targets.map((t) => `   • ${stripTerminalControls(t.link)}\n     ${stripTerminalControls(t.parsed.question.split("\n")[0] ?? "").slice(0, 100)}` +
         (t.pressed.length ? `\n     (already pressed: ${t.pressed.join(" ")} — left in place, never collected)` : "") +
         (t.unreadable ? `\n     ⚠ its layout no longer reads as an ask (edited by hand?) — voided from a best-effort read: question and the rest of the text kept as they are` : "")),
-      `  Each becomes 🚫 (body kept, options and instructions removed); our pills and ❓ come off; a 🚫 reaction is added.`,
+      `  Each becomes 🚫 (body kept, options and instructions removed); our pills and marker (➕, or ❓) come off; a 🚫 reaction is added.`,
       ...(refused ? [`  (${refused} link(s) above were refused and will be skipped)`] : []),
       `----------------------------------------------`,
     ]);
@@ -4350,6 +4387,7 @@ function askWaitCtxFrom(
     reactable: parsed.reactable,
     overflow: parsed.overflow,
     threadOnly: parsed.threadOnly,
+    seedMarker: askSeedMarker(q.text) ?? ASK_MARKER,
     lang: parsed.lang,
     audience: q.audience,
     broadcast: q.broadcast,
@@ -5919,7 +5957,7 @@ async function main(): Promise<void> {
         .option("limit", { type: "number", default: 50, describe: "With --ls: how many recent asks to check" })
         .option("reason", { type: "string", describe: "With --void: why it is void (written into the message)" })
         .option("superseded-by", { type: "string", describe: "With --void: permalink of the question that replaces it" })
-        .option("explain", { type: "boolean", describe: "Also offer an ℹ️ 'explain' pill (seeded after ❓): pressing it asks YOU to explain the question in its thread and is never an answer — the question stays open. --wait/--waitFor report it on stderr (and as `explain` in --json), and post one thread note per question. Default: $SLACK_TERM_ASK_EXPLAIN=1 turns it on; --no-explain turns it off." })
+        .option("explain", { type: "boolean", describe: "Also offer an ℹ️ 'explain' pill (seeded after ➕): pressing it asks YOU to explain the question in its thread and is never an answer — the question stays open. --wait/--waitFor report it on stderr (and as `explain` in --json), and post one thread note per question. Default: $SLACK_TERM_ASK_EXPLAIN=1 turns it on; --no-explain turns it off." })
         .option("explain-exit", { type: "boolean", default: false, describe: "With --wait / --waitFor: exit 7 (stdout empty; --json status \"explain\") when someone presses ℹ️ — once per question, on the run that posts the thread note. The question stays open: explain, then collect again." })
         .option("json", { type: "boolean", default: false, describe: "With --pending: one JSON object per answered question (sender, answer, collect command). With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })

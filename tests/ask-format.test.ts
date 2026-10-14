@@ -444,7 +444,7 @@ describe("ask lists ❓ as the standing 'other' choice", () => {
       const text = askBuildText("q", "", ["A", "B", "C"], [], threadOnly);
       const lines = text.split("\n");
       const at = lines.indexOf(":three: C");
-      expect(lines[at + 1]!.startsWith(":question: その他")).toBe(true);
+      expect(lines[at + 1]!.startsWith(":heavy_plus_sign: その他")).toBe(true);
       expect(lines[at + 1]).toContain(threadOnly ? "スレッド" : "このメッセージに返信");
       const parsed = askParseMessage(text);
       expect(parsed.kind).toBe("open");
@@ -466,7 +466,7 @@ describe("ask lists ❓ as the standing 'other' choice", () => {
   });
 
   test("the glyph spelling of the other line parses too (hand-edited in the Slack UI)", () => {
-    const edited = askBuildText("q", "", ["A"], [], true).replace(":question: その他", "❓ その他");
+    const edited = askBuildText("q", "", ["A"], [], true).replace(":heavy_plus_sign: その他", "➕ その他");
     const parsed = askParseMessage(edited);
     expect(parsed.kind).toBe("open");
     if (parsed.kind !== "open") return;
@@ -514,7 +514,7 @@ describe("ask copy is translated and every language round-trips", () => {
 
   test("English copy really is English", () => {
     const text = askBuildText("Ship it?", "", ["yes", "wait"], [], true, "en");
-    expect(text).toContain(":question: Other — reply in the thread");
+    expect(text).toContain(":heavy_plus_sign: Other — reply in the thread");
     expect(text).not.toMatch(/[\p{Script=Hiragana}\p{Script=Katakana}]/u);
   });
 
