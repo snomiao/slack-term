@@ -164,13 +164,16 @@ without losing clicks. A reaction is durable state anyone can read back later.
   the other party counts automatically.
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
-- **❓ is the standing "other" choice.** Every question with choices lists it last
-  (`1️⃣ … 2️⃣ … 3️⃣ … ❓ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
+- **➕ is the standing "other" choice.** Every question with choices lists it last
+  (`1️⃣ … 2️⃣ … 3️⃣ … ➕ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
   is not an answer — `--wait` notes it on stderr and keeps waiting for the reply, which
-  arrives as free text (exit `5`).
+  arrives as free text (exit `5`). Questions posted before 2026-10-14 carry ❓ as this
+  pill (line and seed); they keep working, and a ❓ press counts as "other" on either kind.
+  The head marker stays `:question:` — only the pill moved. A free-text question has no
+  other choice and still seeds ❓.
 - **ℹ️ is the "explain first" pill** — offered with `--explain` (or
-  `SLACK_TERM_ASK_EXPLAIN=1`; `--no-explain` overrides), listed under ❓ and seeded after
-  it. ❓ means "none fit, my answer follows"; ℹ️ means "I can't answer yet — explain".
+  `SLACK_TERM_ASK_EXPLAIN=1`; `--no-explain` overrides), listed under ➕ and seeded after
+  it. ➕ means "none fit, my answer follows"; ℹ️ means "I can't answer yet — explain".
   It **never answers or closes** the question: no ✅, the pills stay. `--wait`/`--waitFor`
   print who pressed it on stderr (`--json`: `explain: [user ids]`) and post ONE thread
   note per question saying an explanation is coming (the thread is the record — re-presses
@@ -208,7 +211,7 @@ never get the same note twice. Only the question's audience counts; the asker, b
 bystanders are never notes.
 
 **Answering keeps the context.** The ✅ rewrite keeps the question's body (its background)
-and the chosen option; only the options not chosen, the ❓ line and the instructions go.
+and the chosen option; only the options not chosen, the ➕ (or ❓) line and the instructions go.
 The head is unchanged (`:white_check_mark:` prefix, question, stamp, quoted answer), so
 anything that keys on the prefix or re-reads the answer works on old and new ✅ bodies alike.
 
@@ -218,7 +221,9 @@ anything that keys on the prefix or re-reads the answer works on old and new ✅
 (repeatable `--void=`; alias `slack ask void <link…>`; same `--code` gate; own questions
 only, `--as-bot` for the bot's). The text becomes `:no_entry_sign:` + reason with the body
 kept, our pills come off, and a 🚫 reaction is added. Three states, three prefixes:
-`:question:` open, `:white_check_mark:` answered, `:no_entry_sign:` void. `--wait` /
+`:question:` open, `:white_check_mark:` answered, `:no_entry_sign:` void (the text prefix;
+the open question's marker REACTION is ➕ on a question with choices, ❓ on free text and
+on questions posted before ➕ — search `has::heavy_plus_sign:` and `has::question:`). `--wait` /
 `--waitFor` on a void question **exit 6** (`--json` → `status: "void"`): stop waiting.
 Answered questions cannot be voided.
 

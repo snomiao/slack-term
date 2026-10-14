@@ -89,7 +89,7 @@ function fx(reactions: unknown[], thread: unknown[] = []): InlineFixtures {
     [`conversations.replies__channel=${CHAN}&limit=200&oldest=${QTS}&ts=${QTS}`]: { ok: true, messages: [q, ...thread] },
   };
 }
-const SEEDS = [{ name: "one", users: [SELF], count: 1 }, { name: "two", users: [SELF], count: 1 }, { name: "question", users: [SELF], count: 1 }];
+const SEEDS = [{ name: "one", users: [SELF], count: 1 }, { name: "two", users: [SELF], count: 1 }, { name: "heavy_plus_sign", users: [SELF], count: 1 }];
 const explainBy = (...users: string[]) => ({ name: "information_source", users: [SELF, ...users], count: users.length + 1 });
 const ourNote = (ts: string) => ({ type: "message", user: SELF, ts, thread_ts: QTS, text: ASK_COPY.ja.explainNote });
 
@@ -136,7 +136,7 @@ describe("ask --explain seeds (CLI)", { timeout: 60_000 }, () => {
         const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl, env);
         expect(r.exitCode).toBe(0);
         const seeds = m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name);
-        expect(seeds).toEqual(want ? ["one", "two", "question", "information_source"] : ["one", "two", "question"]);
+        expect(seeds).toEqual(want ? ["one", "two", "heavy_plus_sign", "information_source"] : ["one", "two", "heavy_plus_sign"]);
         expect((posts(m)[0]!.text as string).includes(ASK_COPY.ja.explainLine)).toBe(want);
       } finally {
         await m.stop();
@@ -335,7 +335,7 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
       const text = body(m.requests.find((q) => q.method === "chat.update")!).text as string;
       expect(text.startsWith(":no_entry_sign: ")).toBe(true);
       expect(text).not.toContain("説明して");
-      expect(m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name)).toEqual(["one", "two", "question", "information_source"]);
+      expect(m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name)).toEqual(["one", "two", "heavy_plus_sign", "information_source"]);
     } finally {
       await m.stop();
     }

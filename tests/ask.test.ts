@@ -222,7 +222,7 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
       expect(r.exitCode).toBe(0);
       const post = m.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
       const posted = JSON.parse(post.body).text as string;
-      expect(posted).toContain(":question: Other — reply to this message");
+      expect(posted).toContain(":heavy_plus_sign: Other — reply to this message");
       expect(posted).toContain("_Press one of the reactions below to answer.");
 
       // --lang overrides it.
@@ -429,9 +429,9 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       // parallel/out-of-order seed would show the choices shuffled.
       // The marker goes LAST: it doubles as the "other" choice the body lists
       // under the numbered ones, so the pill row reads 1 2 3 ❓ like the body.
-      expect(seeds).toEqual(["one", "two", "three", "question"]);
+      expect(seeds).toEqual(["one", "two", "three", "heavy_plus_sign"]);
       const posted = JSON.parse(reqs[post]!.body).text as string;
-      expect(posted).toMatch(/:three: [^\n]*\n:question: その他/);
+      expect(posted).toMatch(/:three: [^\n]*\n:heavy_plus_sign: その他/);
       // And every seed must come after the message it is attached to.
       expect(reqs.findIndex((q) => q.method === "reactions.add")).toBeGreaterThan(post);
     } finally {
@@ -1294,7 +1294,7 @@ describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
       const p = askParseMessage(text);
       expect(p.kind === "void" && p.supersededBy).toBe("https://acme.slack.com/archives/C00000001/p1700000000000900");
       const removed = m.requests.filter((q) => q.method === "reactions.remove").map((q) => body(q).name);
-      expect(removed).toEqual(["one", "two", "question"]);
+      expect(removed).toEqual(["one", "two", "heavy_plus_sign"]);
       expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["no_entry_sign"]);
     } finally {
       await m.stop();
@@ -1498,7 +1498,7 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
       expect(dry.stdout).toContain("+ 3. 明日にする");
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(0);
-      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["one", "two", "three", "question"]);
+      expect(m.requests.filter((q) => q.method === "reactions.add").map((q) => body(q).name)).toEqual(["one", "two", "three", "heavy_plus_sign"]);
     } finally {
       await m.stop();
     }
