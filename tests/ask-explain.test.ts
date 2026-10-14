@@ -86,6 +86,7 @@ function fx(reactions: unknown[], thread: unknown[] = []): InlineFixtures {
     [`conversations.history__channel=${CHAN}&limit=1`]: { ok: true, messages: [] },
     [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [q, ...thread] },
     [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [q, ...thread] },
+    [`conversations.replies__channel=${CHAN}&limit=200&oldest=${QTS}&ts=${QTS}`]: { ok: true, messages: [q, ...thread] },
   };
 }
 const SEEDS = [{ name: "one", users: [SELF], count: 1 }, { name: "two", users: [SELF], count: 1 }, { name: "question", users: [SELF], count: 1 }];
@@ -188,8 +189,37 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
       [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] },
       [`conversations.history__channel=${CHAN}&inclusive=true&limit=30&oldest=${QTS}`]: { ok: true, messages: [msg] },
       [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [msg, prior] },
+      [`conversations.replies__channel=${CHAN}&limit=200&oldest=${QTS}&ts=${QTS}`]: { ok: true, messages: [msg, prior] },
       [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [msg, prior] },
     } });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(posts(m).length).toBe(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the note is found past the first page of a long thread — no duplicate", async () => {
+    const page1 = { ok: true, messages: [{ type: "message", user: BOB, ts: T(150), thread_ts: QTS, text: "chatter" }], response_metadata: { next_cursor: "c2" } };
+    const page2 = { ok: true, messages: [ourNote(T(900))] };
+    const m = await startMock({ inline: {
+      ...fx([...SEEDS, explainBy(BOB)]),
+      [`conversations.replies__channel=${CHAN}&limit=200&oldest=${QTS}&ts=${QTS}`]: page1,
+      [`conversations.replies__channel=${CHAN}&cursor=c2&limit=200&oldest=${QTS}&ts=${QTS}`]: page2,
+    } });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(posts(m).length).toBe(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a presser who cannot be checked for bot-ness does not count yet (no note, no exit 7)", async () => {
+    const m = await startMock({ inline: { ...fx([...SEEDS, explainBy(BOB)]), "users.info__user=U00000BOB": { ok: false, error: "ratelimited" } } });
     try {
       const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
       expect(r.exitCode).toBe(2);

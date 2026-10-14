@@ -87,6 +87,7 @@ import {
   openDm,
   parseSlackPermalink,
   replies,
+  repliesPage,
   resolveChannel,
   resolveUserId,
   search,
@@ -2351,6 +2352,8 @@ const ASK_EXIT_VOID = 6;
  *  but a caller parked on `--waitFor` cannot explain anything until it hears.
  *  Opt-in, so no existing caller meets a code it does not know. */
 const ASK_EXIT_EXPLAIN = 7;
+/** How many 200-reply pages the explain-note lookup reads before giving up. */
+const ASK_EXPLAIN_NOTE_MAX_PAGES = 10;
 
 /** Whether a new question offers the ℹ️ explain pill when neither --explain nor
  *  --no-explain is given: `SLACK_TERM_ASK_EXPLAIN=1` turns it on for every ask
@@ -2716,25 +2719,31 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   let explainNoted = false;
   /** THIS run posted the note — the one run `--explain-exit` stops on. */
   let explainPosted = false;
-  async function isBotUser(u: string): Promise<boolean> {
+  /** Null when it cannot be told — not cached, so the next pass asks again.
+   *  Until then the press does not count: a bot must never post the note or
+   *  wake an --explain-exit caller, and a person is only delayed a tick. */
+  async function isBotUser(u: string): Promise<boolean | null> {
     if (u === "USLACKBOT") return true;
     const hit = botCache.get(u);
     if (hit !== undefined) return hit;
-    let bot = false;
     try {
-      bot = asRecord(asRecord((await userInfo(token, u, cookie)) as Json).user).is_bot === true;
+      const bot = asRecord(asRecord((await userInfo(token, u, cookie)) as Json).user).is_bot === true;
+      botCache.set(u, bot);
+      return bot;
     } catch {
-      // Unknown reads as human: a missed bot costs one stderr line, while a
-      // human dropped here would ask for an explanation nobody hears.
+      return null;
     }
-    botCache.set(u, bot);
-    return bot;
   }
   /** One thread note per QUESTION, however many presses and runs: the thread
    *  itself is the record, so there is no local state to lose. The note is
    *  recognised by its exact copy (either language), whoever posted it — the
    *  identity that collects now need not be the one that collected before, and
    *  under @here it may even be in the audience.
+   *
+   *  The whole thread after the question is read (paged), not one page: a
+   *  question posted into a long thread may have more than a page before its
+   *  note. Past the page cap it is not posted at all ("exists") rather than
+   *  risk a duplicate.
    *
    *  "unread": the thread could not be read — nothing is posted, and the next
    *  pass tries again rather than risk a duplicate. "failed": the post itself
@@ -2743,10 +2752,15 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   async function postExplainNote(): Promise<"exists" | "posted" | "unread" | "failed"> {
     const root = ctx.threadParentTs ?? ts;
     try {
-      const rep = asRecord((await replies(token, channelId, root, 100, cookie)) as Json);
-      const already = asArray(rep.messages).map(asRecord).some((m) =>
-        Number(m.ts) > Number(ts) && askIsExplainNote(m.text));
-      if (already) return "exists";
+      let cursor: string | undefined;
+      let pages = 0;
+      for (;;) {
+        const rep = asRecord((await repliesPage(token, channelId, root, { oldest: ts, ...(cursor ? { cursor } : {}) }, cookie)) as Json);
+        if (asArray(rep.messages).map(asRecord).some((m) => Number(m.ts) > Number(ts) && askIsExplainNote(m.text))) return "exists";
+        cursor = String(asRecord(rep.response_metadata).next_cursor ?? "") || undefined;
+        if (!cursor) break;
+        if (++pages >= ASK_EXPLAIN_NOTE_MAX_PAGES) return "exists";
+      }
     } catch (e: unknown) {
       console.error(`  (スレッドを読めないため、説明リクエストの案内はまだ出していません: ${e instanceof Error ? e.message : String(e)})`);
       return "unread";
@@ -2764,7 +2778,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const r = asArray(msg.reactions).map(asRecord).find((x) => x.name === ASK_EXPLAIN_MARKER);
     const now: string[] = [];
     for (const u of r ? asArray(r.users).filter(isAnswerer) : []) {
-      if (await isBotUser(u)) continue;
+      if ((await isBotUser(u)) !== false) continue;
       now.push(u);
       if (explainReported.has(u)) continue;
       explainReported.add(u);
