@@ -219,13 +219,16 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
   });
 
   test("a presser who cannot be checked for bot-ness does not count yet (no note, no exit 7)", async () => {
-    const m = await startMock({ inline: { ...fx([...SEEDS, explainBy(BOB)]), "users.info__user=U00000BOB": { ok: false, error: "ratelimited" } } });
-    try {
-      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
-      expect(r.exitCode).toBe(2);
-      expect(posts(m).length).toBe(0);
-    } finally {
-      await m.stop();
+    // A failed lookup, and a reply that does not say.
+    for (const info of [{ ok: false, error: "ratelimited" }, { ok: true, user: { id: BOB } }]) {
+      const m = await startMock({ inline: { ...fx([...SEEDS, explainBy(BOB)]), "users.info__user=U00000BOB": info } });
+      try {
+        const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
+        expect(r.exitCode).toBe(2);
+        expect(posts(m).length).toBe(0);
+      } finally {
+        await m.stop();
+      }
     }
   });
 

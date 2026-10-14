@@ -2727,7 +2727,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const hit = botCache.get(u);
     if (hit !== undefined) return hit;
     try {
-      const bot = asRecord(asRecord((await userInfo(token, u, cookie)) as Json).user).is_bot === true;
+      // A reply with no boolean is_bot tells us nothing — unknown, not human.
+      const bot = asRecord(asRecord((await userInfo(token, u, cookie)) as Json).user).is_bot;
+      if (typeof bot !== "boolean") return null;
       botCache.set(u, bot);
       return bot;
     } catch {
