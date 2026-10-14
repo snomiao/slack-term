@@ -2797,7 +2797,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   }
 
   async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
-    await noteExplain(msg);
+    // Only a question that offers ℹ️ treats it as a request — on any other,
+    // ℹ️ is just an emoji somebody added.
+    if (ctx.explain) await noteExplain(msg);
     if (reactable.length) noteOther(msg);
     const picks = humanChoices(msg);
     // Nothing ambiguous any more — take the notice back down if one is up.
@@ -2847,7 +2849,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
       if (Number(m.ts) >= before) break;
       const t = typeof m.text === "string" ? m.text.trim() : "";
-      if (!t || askIsExplainNote(t)) continue;
+      // Our ℹ️ note is bookkeeping — only on a question that offers ℹ️, so an
+      // older question's reply is never second-guessed.
+      if (!t || (ctx.explain && askIsExplainNote(t))) continue;
       // A question asked WITHOUT choices is answered by whatever comes back —
       // there is nothing to match against, and every reply is the answer.
       if (!candidates.length) return { answer: t, how: copy.howReply, who: m.user, ts: String(m.ts) };

@@ -310,6 +310,20 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
     }
   });
 
+  test("on a question that never offered ℹ️, a ℹ️ reaction is just an emoji", async () => {
+    const plain = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
+    const msg = { type: "message", user: SELF, ts: QTS, text: plain, reactions: [...SEEDS, explainBy(BOB)] };
+    const m = await startMock({ inline: { ...fx([]), [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] }, [`conversations.history__channel=${CHAN}&inclusive=true&limit=30&oldest=${QTS}`]: { ok: true, messages: [msg] } } });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).not.toContain("説明して を押しました");
+      expect(posts(m).length).toBe(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("--void on an explain-pressed question still works, and takes our ℹ️ seed off", async () => {
     const m = await startMock({ inline: fx([...SEEDS, explainBy(BOB)], [ourNote(T(200))]) });
     try {
