@@ -20,6 +20,8 @@ import { agentCommands } from "./agent.ts";
 import {
   ASK_KEYCAPS,
   ASK_MARKER,
+  ASK_EXPLAIN_MARKER,
+  ASK_EXPLAIN_PREFIX,
   ASK_RESOLVED_MARKER,
   ASK_MAX_REACTION_CHOICES,
   askBuildText,
@@ -2323,6 +2325,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 //      pressed later still settles it (`--waitFor … --after=<reply ts>`).
 //   6  the question was VOIDED (作废, `slack ask --void`) — it will never be
 //      answered; stop waiting. stdout stays empty.
+//   7  only with --explain-exit: someone pressed ℹ️ (explain) — the question is
+//      STILL OPEN; explain in its thread, then collect again. stdout stays empty.
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
 const ASK_EXIT_TIMEOUT = 2;
@@ -2342,6 +2346,18 @@ const ASK_EXIT_FREETEXT = 5;
  *  Neither "open" nor "answered": a monitor that kept waiting on it would wait
  *  forever, and one that read it as answered would act on nothing. */
 const ASK_EXIT_VOID = 6;
+/** `--explain-exit` only: an audience member pressed ℹ️ and asked for an
+ *  explanation. Not an answer and not a state of the question — it stays open —
+ *  but a caller parked on `--waitFor` cannot explain anything until it hears.
+ *  Opt-in, so no existing caller meets a code it does not know. */
+const ASK_EXIT_EXPLAIN = 7;
+
+/** Whether a new question offers the ℹ️ explain pill when neither --explain nor
+ *  --no-explain is given: `SLACK_TERM_ASK_EXPLAIN=1` turns it on for every ask
+ *  from a fleet, without every caller having to remember the flag. */
+function askExplainDefault(): boolean {
+  return /^(1|true|yes|on)$/i.test(process.env.SLACK_TERM_ASK_EXPLAIN ?? "");
+}
 
 const ASK_PHI = 1.618033988749895;
 const ASK_POLL_MIN_MS = 1000;
@@ -2366,6 +2382,10 @@ interface AskArgs {
   userId?: string;
   asBot?: boolean;
   wait?: boolean;
+  /** `--explain`: offer the ℹ️ pill — "explain this first", never an answer. */
+  explain?: boolean;
+  /** `--explain-exit` with `--wait`: exit 7 when an explanation is requested. */
+  explainExit?: boolean;
   /** `--json` with `--wait`: one JSON object on stdout (answer, notes, cursor). */
   json?: boolean;
   timeout?: number;
@@ -2464,6 +2484,11 @@ interface AskWaitCtx {
   /** `--json`: stdout is one JSON object (answer + notes + cursor) instead of
    *  the bare answer. Exit codes are the same either way. */
   json: boolean;
+  /** `--explain-exit`: stop with exit 7 the first time an explanation is
+   *  requested (the run that posts the thread note), instead of waiting on. */
+  explainExit?: boolean;
+  /** The question offers the ℹ️ pill — so the ✅ rewrite takes our seed off. */
+  explain?: boolean;
 }
 
 /** A reply from the question's audience that is NOT the answer — an extra
@@ -2562,12 +2587,15 @@ function askNextCursor(...tss: (string | undefined)[]): string {
 async function askEmit(
   token: string,
   o: { json: boolean; shown: string; asBot: boolean; cookie?: string | undefined },
-  r: { status: "answered" | "freetext" | "ambiguous" | "timeout" | "void"; answer: string | null; how?: string; who?: string; reason?: string; supersededBy?: string; notes: AskNote[]; cursor: string },
+  r: { status: "answered" | "freetext" | "ambiguous" | "timeout" | "void" | "explain"; answer: string | null; how?: string; who?: string; reason?: string; supersededBy?: string; notes: AskNote[]; cursor: string; explain?: string[] },
 ): Promise<void> {
   if (o.json) {
     console.log(JSON.stringify({
       status: r.status, answer: r.answer, how: r.how ?? null, who: r.who ?? null,
       ...(r.status === "void" ? { reason: r.reason ?? "", supersededBy: r.supersededBy ?? null } : {}),
+      // Who is asking for an explanation right now. Only when someone is, so
+      // the object every existing caller reads is unchanged otherwise.
+      ...(r.explain?.length ? { explain: r.explain } : {}),
       notes: r.notes, cursor: r.cursor, permalink: o.shown,
     }));
     return;
@@ -2679,7 +2707,77 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
   }
 
+  /** Who is on ℹ️ (explain) right now — audience only, never a bot, never the
+   *  asker. Recomputed every pass, so a press taken back stops counting. */
+  let explainNow: string[] = [];
+  const explainReported = new Set<string>();
+  const botCache = new Map<string, boolean>();
+  /** The thread note is settled for this run (found already there, or posted). */
+  let explainNoted = false;
+  /** THIS run posted the note — the one run `--explain-exit` stops on. */
+  let explainPosted = false;
+  async function isBotUser(u: string): Promise<boolean> {
+    if (u === "USLACKBOT") return true;
+    const hit = botCache.get(u);
+    if (hit !== undefined) return hit;
+    let bot = false;
+    try {
+      bot = asRecord(asRecord((await userInfo(token, u, cookie)) as Json).user).is_bot === true;
+    } catch {
+      // Unknown reads as human: a missed bot costs one stderr line, while a
+      // human dropped here would ask for an explanation nobody hears.
+    }
+    botCache.set(u, bot);
+    return bot;
+  }
+  /** One thread note per QUESTION, however many presses and runs: the thread
+   *  itself is the record, so there is no local state to lose. Anything already
+   *  there that starts with ℹ️ and is not from the audience (the asker, or
+   *  whichever identity collected last time) counts as the note. False when the
+   *  thread could not be read — nothing is posted then, and the next pass
+   *  tries again rather than risk a duplicate. */
+  async function postExplainNote(): Promise<boolean | null> {
+    const root = ctx.threadParentTs ?? ts;
+    try {
+      const rep = asRecord((await replies(token, channelId, root, 100, cookie)) as Json);
+      const already = asArray(rep.messages).map(asRecord).some((m) =>
+        Number(m.ts) > Number(ts) && typeof m.text === "string" && m.text.startsWith(ASK_EXPLAIN_PREFIX) &&
+        (!isAnswerer(m.user) || !!m.bot_id));
+      if (already) return false;
+    } catch (e: unknown) {
+      console.error(`  (スレッドを読めないため、説明リクエストの案内はまだ出していません: ${e instanceof Error ? e.message : String(e)})`);
+      return null;
+    }
+    try {
+      await slackSend(token, channelId, copy.explainNote, root, false, cookie, true);
+    } catch (e: unknown) {
+      // The press is still reported on stderr; the note is a courtesy.
+      console.error(`  (説明リクエストの案内をスレッドに出せませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    }
+    return true;
+  }
+  async function noteExplain(msg: Record<string, Json>): Promise<void> {
+    const r = asArray(msg.reactions).map(asRecord).find((x) => x.name === ASK_EXPLAIN_MARKER);
+    const now: string[] = [];
+    for (const u of r ? asArray(r.users).filter(isAnswerer) : []) {
+      if (await isBotUser(u)) continue;
+      now.push(u);
+      if (explainReported.has(u)) continue;
+      explainReported.add(u);
+      console.error(`  (<@${u}> が ℹ️ 説明して を押しました — 回答ではありません。スレッドで説明してください。回答は待ち続けます)`);
+    }
+    explainNow = now;
+    if (now.length && !explainNoted) {
+      const posted = await postExplainNote();
+      if (posted !== null) {
+        explainNoted = true;
+        explainPosted = posted;
+      }
+    }
+  }
+
   async function answerFromReactions(msg: Record<string, Json>): Promise<AskFound | null> {
+    await noteExplain(msg);
     if (reactable.length) noteOther(msg);
     const picks = humanChoices(msg);
     // Nothing ambiguous any more — take the notice back down if one is up.
@@ -2861,6 +2959,12 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       } catch {
         // Cosmetic: the ✅ in the body is what actually marks it resolved.
       }
+      try {
+        // Asking for an explanation is over once it is answered.
+        if (ctx.explain) await reactionRemove(token, channelId, ts, ASK_EXPLAIN_MARKER, cookie);
+      } catch {
+        // Cosmetic: the ✅ in the body is what actually marks it resolved.
+      }
     } catch (e: unknown) {
       // The edit is bookkeeping, not the answer. It fails whenever the resuming
       // token is not the one that posted (Slack lets only the author update), and
@@ -2916,6 +3020,15 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       await askEmit(token, ctx, r);
       process.exit(0);
     }
+    // ℹ️ is never an answer: the question stays open, ✅ is not written, the
+    // seeds stay. Only a caller that asked to hear about it stops here — and
+    // only on the run that posted the thread note, so a `--timeout 0` poller is
+    // woken once per question, not on every look.
+    if (explainPosted && ctx.explainExit) {
+      console.error(`  説明を求められています (質問はまだ開いています)。スレッドで説明してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
+      if (ctx.json) await askEmit(token, ctx, { status: "explain", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: explainNow });
+      process.exit(ASK_EXIT_EXPLAIN);
+    }
     // A free-text reply that picks nothing is delivered NOW, not held until the
     // deadline: it is usually an instruction or a question back, and the only
     // one who can act on it is the caller. Left unstamped — a pill pressed
@@ -2933,7 +3046,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.error(`  ${shown}`);
       console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
       if (ctx.json) {
-        await askEmit(token, ctx, { status: "freetext", answer: unchosen.text, who: unchosen.who, notes: [], cursor: askNextCursor(ts, ctx.after, unchosen.ts) });
+        await askEmit(token, ctx, { status: "freetext", answer: unchosen.text, who: unchosen.who, notes: [], cursor: askNextCursor(ts, ctx.after, unchosen.ts), explain: explainNow });
       } else {
         console.log(unchosen.text);
       }
@@ -2978,7 +3091,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
     console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
-    if (ctx.json) await askEmit(token, ctx, { status: "ambiguous", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after) });
+    if (ctx.json) await askEmit(token, ctx, { status: "ambiguous", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: explainNow });
     process.exit(ASK_EXIT_UNCHOSEN);
   }
   if (timeout === 0) {
@@ -2988,7 +3101,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     console.error(`  ${shown}`);
     console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
   }
-  if (ctx.json) await askEmit(token, ctx, { status: "timeout", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after) });
+  if (ctx.json) await askEmit(token, ctx, { status: "timeout", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: explainNow });
   process.exit(ASK_EXIT_TIMEOUT);
 }
 
@@ -3120,7 +3233,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     process.exit(ASK_EXIT_ERROR);
   }
   const lang = picked.lang;
-  const message = askBuildText(question, body, reactable, overflow, threadOnly, lang);
+  const explain = args.explain ?? askExplainDefault();
+  const message = askBuildText(question, body, reactable, overflow, threadOnly, lang, explain);
   guardUrlBoundaries(message, args.allowUrlAdjacent);
 
   // Preview the destination's last message, exactly as `send` does — the gate's
@@ -3171,6 +3285,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       // shown as its own line rather than left to be inferred from the body.
       `  Answerable by: ${audienceLabel}`,
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
+      ...(explain ? [`  Explain:  ℹ️ pill offered — pressing it asks you to explain; it is never an answer`] : []),
       ...(args.voidAfter ? [`  Then 作废: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
       `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_TERM_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
       `--------------------------------────────────`,
@@ -3199,7 +3314,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // `two|one|question|three`. See ts/reactionSeed.ts for the evidence and for
   // SLACK_REACTION_SEED_GAP_MS.
   await seedReactionsInOrder(
-    [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER],
+    [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER, ...(explain ? [ASK_EXPLAIN_MARKER] : [])],
     (name) => reactionAdd(token, channelId, ts, name, cookie),
     (name, e) => {
       const why = e instanceof Error ? e.message : String(e);
@@ -3255,6 +3370,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     shown,
     asBot: !!args.asBot,
     json: !!args.json,
+    explain,
+    explainExit: !!args.explainExit,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (cookie) ctx.cookie = cookie;
@@ -3402,7 +3519,7 @@ async function cmdAskEdit(token: string, args: {
   const reactable = choices.slice(0, ASK_MAX_REACTION_CHOICES);
   const overflow = choices.slice(ASK_MAX_REACTION_CHOICES);
   const oldText = typeof t.msg.text === "string" ? t.msg.text : "";
-  let next = askBuildText(question, body, reactable, overflow, old.threadOnly, lang);
+  let next = askBuildText(question, body, reactable, overflow, old.threadOnly, lang, old.explain);
   // An invalid-ballot notice still in force stays (it names the people who
   // have to fix their vote); it is only possible when the options did not change.
   const invalid = readInvalidNotice(oldText);
@@ -3437,11 +3554,12 @@ async function cmdAskEdit(token: string, args: {
   await editMessage(token, t.channelId, t.ts, next, args.cookie, true);
   if (choicesChanged) {
     // Re-seed in order: 1..n then ❓ last, as a fresh question has them.
-    for (const name of [...old.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER]) {
+    const tail = old.explain ? [ASK_MARKER, ASK_EXPLAIN_MARKER] : [ASK_MARKER];
+    for (const name of [...old.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail]) {
       try { await reactionRemove(token, t.channelId, t.ts, name, args.cookie); } catch { /* already gone */ }
     }
     await seedReactionsInOrder(
-      [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER],
+      [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail],
       (name) => reactionAdd(token, t.channelId, t.ts, name, args.cookie),
       (name, e) => console.error(`  (リアクション ${name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`),
     );
@@ -3548,7 +3666,7 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
     console.error(`✗ ${shown}: 書き換えに失敗しました: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
-  for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER]) {
+  for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ASK_MARKER, ...(t.parsed.explain ? [ASK_EXPLAIN_MARKER] : [])]) {
     try { await reactionRemove(token, t.channelId, t.ts, name, cookie); } catch { /* not ours / already gone */ }
   }
   try {
@@ -3642,6 +3760,8 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
         // Placeholders: only the COUNT is used — which of our keycap seeds to take off.
         reactable: Array.from({ length: seeded.length ? Math.max(...seeded) + 1 : 0 }, () => ""),
         overflow: [], threadOnly: true, lang: askDetectLang(text) ?? "ja",
+        // Our ℹ️ seed comes off too, if we put one on.
+        explain: asArray(msg.reactions).map(asRecord).some((r) => r.name === ASK_EXPLAIN_MARKER && asArray(r.users).includes(self?.userId ?? "\u0000")),
       };
       unreadable = true;
     }
@@ -3688,7 +3808,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
  *  file to go stale, lose, or disagree with Slack, and any machine holding the
  *  permalink can collect — at the cost of the body being a parseable format
  *  (`askBuildText` ⇄ `askParseMessage`). */
-async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string }): Promise<void> {
+async function cmdAskWaitFor(token: string, args: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string; explainExit?: boolean }): Promise<void> {
   const url = parseSlackPermalink(args.link);
   let channelId: string;
   let ts: string;
@@ -3840,6 +3960,8 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     shown: args.link,
     asBot: args.asBot,
     json: args.json,
+    explain: parsed.explain,
+    explainExit: !!args.explainExit,
   };
   if (threadTs) ctx.threadParentTs = threadTs;
   if (args.cookie) ctx.cookie = args.cookie;
@@ -5105,7 +5227,7 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (作废, `slack ask void`) — stop waiting." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (作废, `slack ask void`) — stop waiting. 7 = only with --explain-exit: ℹ️ pressed, explain and collect again (the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
         .option("void", { type: "string", array: true, describe: "作废: void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
@@ -5118,6 +5240,8 @@ async function main(): Promise<void> {
         .option("limit", { type: "number", default: 50, describe: "With --ls: how many recent asks to check" })
         .option("reason", { type: "string", describe: "With --void: why it is void (written into the message)" })
         .option("superseded-by", { type: "string", describe: "With --void: permalink of the question that replaces it" })
+        .option("explain", { type: "boolean", describe: "Also offer an ℹ️ 'explain' pill (seeded after ❓): pressing it asks YOU to explain the question in its thread and is never an answer — the question stays open. --wait/--waitFor report it on stderr (and as `explain` in --json), and post one thread note per question. Default: $SLACK_TERM_ASK_EXPLAIN=1 turns it on; --no-explain turns it off." })
+        .option("explain-exit", { type: "boolean", default: false, describe: "With --wait / --waitFor: exit 7 (stdout empty; --json status \"explain\") when someone presses ℹ️ — once per question, on the run that posts the thread note. The question stays open: explain, then collect again." })
         .option("json", { type: "boolean", default: false, describe: "With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
@@ -5216,6 +5340,8 @@ async function main(): Promise<void> {
           argv.choices = newChoices.length ? newChoices : [...t.parsed.reactable, ...t.parsed.overflow];
           if (argv.body === undefined && t.parsed.body) argv.body = t.parsed.body;
           if (!argv.lang) argv.lang = t.parsed.lang;
+          // A re-ask offers what the old question offered, unless told otherwise.
+          if (argv.explain === undefined && t.parsed.explain) argv.explain = true;
           argv.void = undefined;
         }
         if (!voidAfter && (argv.target === "void" || voidFlag.length)) {
@@ -5305,7 +5431,8 @@ async function main(): Promise<void> {
             waitCookie = ck(argv as W);
           }
           try {
-            const a: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string } = { link: waitFor, timeout, asBot: !!argv["as-bot"], json: !!argv.json };
+            const a: { link: string; timeout: number; asBot: boolean; json: boolean; cookie?: string; after?: string; explainExit?: boolean } = { link: waitFor, timeout, asBot: !!argv["as-bot"], json: !!argv.json };
+            if (argv["explain-exit"]) a.explainExit = true;
             if (waitCookie) a.cookie = waitCookie;
             if (argv.after) {
               const after = String(argv.after);
@@ -5343,6 +5470,8 @@ async function main(): Promise<void> {
         if (argv.lang) args.lang = String(argv.lang);
         if (argv.wait) args.wait = true;
         if (argv.json) args.json = true;
+        if (typeof argv.explain === "boolean") args.explain = argv.explain;
+        if (argv["explain-exit"]) args.explainExit = true;
         if (voidAfter) args.voidAfter = voidAfter;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
