@@ -178,6 +178,40 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
     }
   });
 
+  test("the note is recognised by its copy, whoever posted it — @here, collected by someone in the audience", async () => {
+    const here = askBuildText(`<!here> 出してよい?`, "", ["A", "B"], [], true, "en", true);
+    const msg = { type: "message", user: SELF, ts: QTS, text: here, reply_count: 1, reactions: [...SEEDS, explainBy(BOB)] };
+    // An earlier run as another identity (ALICE — in the @here audience) posted the en note.
+    const prior = { type: "message", user: ALICE, ts: T(200), thread_ts: QTS, text: ASK_COPY.en.explainNote };
+    const m = await startMock({ inline: {
+      ...fx([]),
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=1&oldest=${QTS}`]: { ok: true, messages: [msg] },
+      [`conversations.history__channel=${CHAN}&inclusive=true&limit=30&oldest=${QTS}`]: { ok: true, messages: [msg] },
+      [`conversations.replies__channel=${CHAN}&limit=100&ts=${QTS}`]: { ok: true, messages: [msg, prior] },
+      [`conversations.replies__channel=${CHAN}&limit=30&ts=${QTS}`]: { ok: true, messages: [msg, prior] },
+    } });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(posts(m).length).toBe(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a note that failed to post is no reason for exit 7 — stderr says so, the wait goes on", async () => {
+    const m = await startMock({ inline: { ...fx([...SEEDS, explainBy(BOB)]), "chat.postMessage": { ok: false, error: "not_in_channel" } } });
+    try {
+      const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "3", "--explain-exit"], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("説明リクエストの案内をスレッドに出せませんでした");
+      // Tried once this run, not on every tick.
+      expect(m.requests.filter((q) => q.method === "chat.postMessage").length).toBe(1);
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("--explain-exit: exit 7 on the run that posts the note; stdout empty; question stays open", async () => {
     const m = await startMock({ inline: fx([...SEEDS, explainBy(BOB)]) });
     try {

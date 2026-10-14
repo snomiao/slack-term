@@ -249,6 +249,14 @@ export function applyInvalidNotice(text: string, invalid: string[], lang: AskLan
   return out === text ? text : out;
 }
 
+/** True for the thread note `--wait`/`--waitFor` posts when ℹ️ is pressed, in
+ *  either language. Our own bookkeeping: never an answer, never a note — even
+ *  when the identity that posted it is in the audience (an @here question
+ *  collected with another token). */
+export function askIsExplainNote(text: unknown): boolean {
+  return typeof text === "string" && ASK_LANGS.some((l) => ASK_COPY[l].explainNote === text.trim());
+}
+
 /** True if this line is the notice — parsers skip it when walking up. */
 export function isInvalidNotice(line: string | undefined): boolean {
   return invalidLang(line) !== null;

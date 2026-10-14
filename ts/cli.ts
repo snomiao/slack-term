@@ -21,10 +21,10 @@ import {
   ASK_KEYCAPS,
   ASK_MARKER,
   ASK_EXPLAIN_MARKER,
-  ASK_EXPLAIN_PREFIX,
   ASK_RESOLVED_MARKER,
   ASK_MAX_REACTION_CHOICES,
   askBuildText,
+  askIsExplainNote,
   askBuildResolvedText,
   askParseMessage,
   askExplainReject,
@@ -2557,7 +2557,7 @@ async function askCollectNotes(token: string, sc: AskNoteScope, after: string | 
     // integration's) is excluded here, so nothing echoes back as a "note".
     .filter((m) => sc.isAnswerer(m.user) && !m.bot_id)
     .filter((m) => typeof m.subtype !== "string" || ASK_ANSWERABLE_SUBTYPES.has(m.subtype))
-    .filter((m) => typeof m.text === "string" && m.text.trim() !== "")
+    .filter((m) => typeof m.text === "string" && m.text.trim() !== "" && !askIsExplainNote(m.text))
     // Sorted BEFORE `skip`, which may be stateful ("the first reply that …").
     .sort((a, b) => Number(a.ts) - Number(b.ts))
     .filter((m) => !skip(m));
@@ -2731,30 +2731,34 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     return bot;
   }
   /** One thread note per QUESTION, however many presses and runs: the thread
-   *  itself is the record, so there is no local state to lose. Anything already
-   *  there that starts with ℹ️ and is not from the audience (the asker, or
-   *  whichever identity collected last time) counts as the note. False when the
-   *  thread could not be read — nothing is posted then, and the next pass
-   *  tries again rather than risk a duplicate. */
-  async function postExplainNote(): Promise<boolean | null> {
+   *  itself is the record, so there is no local state to lose. The note is
+   *  recognised by its exact copy (either language), whoever posted it — the
+   *  identity that collects now need not be the one that collected before, and
+   *  under @here it may even be in the audience.
+   *
+   *  "unread": the thread could not be read — nothing is posted, and the next
+   *  pass tries again rather than risk a duplicate. "failed": the post itself
+   *  failed — not retried this run (no error every tick) and NOT a reason for
+   *  --explain-exit, which promises a note is up; the next run tries again. */
+  async function postExplainNote(): Promise<"exists" | "posted" | "unread" | "failed"> {
     const root = ctx.threadParentTs ?? ts;
     try {
       const rep = asRecord((await replies(token, channelId, root, 100, cookie)) as Json);
       const already = asArray(rep.messages).map(asRecord).some((m) =>
-        Number(m.ts) > Number(ts) && typeof m.text === "string" && m.text.startsWith(ASK_EXPLAIN_PREFIX) &&
-        (!isAnswerer(m.user) || !!m.bot_id));
-      if (already) return false;
+        Number(m.ts) > Number(ts) && askIsExplainNote(m.text));
+      if (already) return "exists";
     } catch (e: unknown) {
       console.error(`  (スレッドを読めないため、説明リクエストの案内はまだ出していません: ${e instanceof Error ? e.message : String(e)})`);
-      return null;
+      return "unread";
     }
     try {
       await slackSend(token, channelId, copy.explainNote, root, false, cookie, true);
     } catch (e: unknown) {
       // The press is still reported on stderr; the note is a courtesy.
       console.error(`  (説明リクエストの案内をスレッドに出せませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      return "failed";
     }
-    return true;
+    return "posted";
   }
   async function noteExplain(msg: Record<string, Json>): Promise<void> {
     const r = asArray(msg.reactions).map(asRecord).find((x) => x.name === ASK_EXPLAIN_MARKER);
@@ -2768,10 +2772,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
     explainNow = now;
     if (now.length && !explainNoted) {
-      const posted = await postExplainNote();
-      if (posted !== null) {
+      const r = await postExplainNote();
+      if (r !== "unread") {
         explainNoted = true;
-        explainPosted = posted;
+        explainPosted = r === "posted";
       }
     }
   }
@@ -2827,7 +2831,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       if (typeof m.subtype === "string" && !ASK_ANSWERABLE_SUBTYPES.has(m.subtype)) continue;
       if (Number(m.ts) >= before) break;
       const t = typeof m.text === "string" ? m.text.trim() : "";
-      if (!t) continue;
+      if (!t || askIsExplainNote(t)) continue;
       // A question asked WITHOUT choices is answered by whatever comes back —
       // there is nothing to match against, and every reply is the answer.
       if (!candidates.length) return { answer: t, how: copy.howReply, who: m.user, ts: String(m.ts) };
