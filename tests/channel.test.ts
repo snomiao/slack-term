@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startMock } from "./mock.ts";
+import { startMock, type MockHandle } from "./mock.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -197,7 +197,7 @@ describe("channel rename (CLI)", { timeout: 60_000 }, () => {
   };
   const INFO = { "conversations.info__channel=C00000042": { ok: true, channel: { id: "C00000042", name: "old-name" } } };
   const RENAMED = { "conversations.rename": { ok: true, channel: { id: "C00000042", name: "new-name" } } };
-  const renameCalls = (m: { requests: { method: string }[] }) => m.requests.filter((q) => q.method === "conversations.rename");
+  const renameCalls = (m: MockHandle) => m.requests.filter((q) => q.method === "conversations.rename");
 
   test("gate: no --code previews old -> new and does not call the API; the code then renames", async () => {
     const m = await startMock({ inline: { "auth.test": AUTH, ...LIST, ...INFO, ...RENAMED } });
