@@ -541,6 +541,20 @@ export async function createChannel(
   return { id: resp.channel?.id ?? "", name: resp.channel?.name ?? name };
 }
 
+// Rename a channel via conversations.rename. Needs channels:manage (public) or
+// groups:write (private) — and, for a user token, rights to rename it.
+export async function renameChannel(
+  token: string,
+  channel: string,
+  name: string,
+  cookie?: string,
+): Promise<{ id: string; name: string }> {
+  const resp = (await post(token, "conversations.rename", { channel, name }, cookie)) as {
+    channel?: { id?: string; name?: string };
+  };
+  return { id: resp.channel?.id ?? channel, name: resp.channel?.name ?? name };
+}
+
 // Invite users to a channel via conversations.invite (up to ~1000 ids).
 export async function inviteToChannel(
   token: string,
