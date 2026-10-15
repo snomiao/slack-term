@@ -120,7 +120,7 @@ plus `[as bot]` under `--as-bot`) and the resolved destination (`→ ... — THR
 `→ ... — NEW top-level message`); verify both before re-running with `--code`.
 
 **Every** gated write opens its preview with that same `From:` line — `send`, `edit`,
-`delete`, `upload`, `schedule send`, `schedule rm`, `channel create`, `drafts edit`,
+`delete`, `upload`, `schedule send`, `schedule rm`, `channel create`, `channel rename`, `drafts edit`,
 `drafts delete` — and the identity is part of the confirm hash: switching
 profile/token between preview and confirm invalidates the code instead of acting as
 someone else. It matters most on `schedule send`, where the message goes out later,

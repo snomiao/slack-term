@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { startMock } from "./mock.ts";
+import { startMock, type MockHandle } from "./mock.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
@@ -181,6 +181,107 @@ describe("channel create --invite (CLI)", { timeout: 60_000 }, () => {
       const invite = reqs.find((q) => q.method === "conversations.invite");
       expect(create?.headers.cookie).toBe("d=xoxd-secret");
       expect(invite?.headers.cookie).toBe("d=xoxd-secret");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+describe("channel rename (CLI)", { timeout: 60_000 }, () => {
+  const AUTH = { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" };
+  const LIST = {
+    "conversations.list__exclude_archived=true&limit=200&types=public_channel_private_channel": {
+      ok: true,
+      channels: [{ id: "C00000042", name: "old-name" }],
+    },
+  };
+  const INFO = { "conversations.info__channel=C00000042": { ok: true, channel: { id: "C00000042", name: "old-name" } } };
+  const RENAMED = { "conversations.rename": { ok: true, channel: { id: "C00000042", name: "new-name" } } };
+  const renameCalls = (m: MockHandle) => m.requests.filter((q) => q.method === "conversations.rename");
+
+  test("gate: no --code previews old -> new and does not call the API; the code then renames", async () => {
+    const m = await startMock({ inline: { "auth.test": AUTH, ...LIST, ...INFO, ...RENAMED } });
+    try {
+      const dry = await run(["channel", "rename", "#old-name", "new-name"], { baseUrl: m.baseUrl });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("from:    #old-name");
+      expect(dry.stdout).toContain("to:      #new-name");
+      expect(dry.stdout).toContain("From:    @user1 (U00000001)");
+      expect(renameCalls(m)).toHaveLength(0);
+
+      const r = await run(["channel", "rename", "#old-name", "new-name", `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("✓ Renamed #old-name -> #new-name  (C00000042)");
+      const calls = renameCalls(m);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.body).toContain("C00000042");
+      expect(calls[0]!.body).toContain("new-name");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a wrong --code is rejected without renaming", async () => {
+    const m = await startMock({ inline: { "auth.test": AUTH, ...INFO, ...RENAMED } });
+    try {
+      const r = await run(["channel", "rename", "C00000042", "new-name", "--code=0000"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(renameCalls(m)).toHaveLength(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the code is bound to the new name", async () => {
+    const m = await startMock({ inline: { "auth.test": AUTH, ...INFO, ...RENAMED } });
+    try {
+      const dry = await run(["channel", "rename", "C00000042", "new-name"], { baseUrl: m.baseUrl });
+      const r = await run(["channel", "rename", "C00000042", "other-name", `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("Code mismatch");
+      expect(renameCalls(m)).toHaveLength(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("--dry-run resolves a bare name and prints old -> new without calling the API", async () => {
+    const m = await startMock({ inline: { "auth.test": AUTH, ...LIST, ...INFO, ...RENAMED } });
+    try {
+      const r = await run(["channels", "rename", "old-name", "#New-Name", "--dry-run"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("#old-name -> #new-name  (C00000042)");
+      expect(r.stderr).not.toContain("--code=");
+      expect(renameCalls(m)).toHaveLength(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an unresolvable channel fails clearly", async () => {
+    const m = await startMock({ inline: { "auth.test": AUTH, ...LIST } });
+    try {
+      const r = await run(["channel", "rename", "#no-such-channel", "new-name"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("could not resolve channel #no-such-channel");
+      expect(renameCalls(m)).toHaveLength(0);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("missing_scope names channels:manage / groups:write", async () => {
+    const m = await startMock({
+      inline: { "auth.test": AUTH, ...INFO, "conversations.rename": { ok: false, error: "missing_scope" } },
+    });
+    try {
+      const env = { SLACK_MCP_XOXP_TOKEN: "xoxb-fake" };
+      const dry = await run(["channel", "rename", "C00000042", "new-name"], { baseUrl: m.baseUrl, env });
+      const r = await run(["channel", "rename", "C00000042", "new-name", `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("channels:manage");
+      expect(r.stderr).toContain("groups:write");
     } finally {
       await m.stop();
     }

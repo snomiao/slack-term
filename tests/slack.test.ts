@@ -7,6 +7,8 @@ import * as slack from "../ts/slack.ts";
 let mock: MockHandle;
 
 const fixtures = {
+  "conversations.rename": { ok: true, channel: { id: "C00000042", name: "renamed-channel" } },
+
   "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
 
   "conversations.history__channel=C00000001&limit=20": {
@@ -224,6 +226,15 @@ describe("slack.ts", () => {
     const ch = await slack.createChannel(token, "new-channel", true);
     expect(ch.id).toBe("C00000042");
     expect(ch.name).toBe("new-channel");
+  });
+
+  test("renameChannel posts conversations.rename and returns the new id/name", async () => {
+    const before = mock.requests.length;
+    const ch = await slack.renameChannel(token, "C00000042", "renamed-channel");
+    expect(ch).toEqual({ id: "C00000042", name: "renamed-channel" });
+    const req = mock.requests.slice(before).find((q) => q.method === "conversations.rename");
+    expect(req?.body).toContain("C00000042");
+    expect(req?.body).toContain("renamed-channel");
   });
 
   test("inviteToChannel posts conversations.invite", async () => {
