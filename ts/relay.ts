@@ -25,7 +25,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { authTest, conversationsJoin, history, reactionAdd, replies, send } from "./slack.ts";
@@ -480,6 +480,19 @@ export async function main(argv: string[]): Promise<void> {
     log("stream configured but no RELAY_STREAM_KEY — polling only");
   }
 
+  // Outbound must not wait for the (stream-lengthened) poll either: an agent appending to
+  // its outbox wakes the loop. The 1.5 s settle check in the cycle still applies, so
+  // wake again shortly after the last write.
+  let outboxTimer: ReturnType<typeof setTimeout> | undefined;
+  const outboxWatch = (() => {
+    try {
+      return watch(outbox, () => {
+        if (outboxTimer) clearTimeout(outboxTimer);
+        outboxTimer = setTimeout(() => sleeper.wake(), 1600);
+      });
+    } catch { return undefined; }
+  })();
+
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stop = true; log("stopping"); save(); process.exit(0); });
   while (!stop && cyclesLeft-- > 0) {
     try {
@@ -517,6 +530,8 @@ export async function main(argv: string[]): Promise<void> {
     await sleeper.sleep(streamUp ? (cfg.streamIntervalMs ?? 30_000) : intervalMs);
   }
   stopStream?.();
+  outboxWatch?.close();
+  if (outboxTimer) clearTimeout(outboxTimer);
 }
 
 if (import.meta.main) {

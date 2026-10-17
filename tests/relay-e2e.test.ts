@@ -284,10 +284,15 @@ describe("relay e2e", () => {
     for (const ws of sockets) ws.send(JSON.stringify({ type: "wake", channel: CH, ts: mine }));
     await waitFor(() => sends(s0.sendLog).length === 1, 10_000);
     const took = Date.now() - t0;
-    hub.stop(true);
     expect(took).toBeLessThan(5_000);
     expect(sends(s0.sendLog)[0]).toContain("realtime");
     expect(r.log()).toContain("⚡ wake");
+    // …and an agent's reply goes out without waiting for the 60 s poll either.
+    const t1 = Date.now();
+    writeFileSync(join(s0.stateDir, "outbox", "103.md"), "on it\n");
+    await waitFor(() => fake.posted.length === 1, 10_000);
+    expect(Date.now() - t1).toBeLessThan(5_000);
+    hub.stop(true);
     r.kill(); // it would otherwise sleep out its 60 s polls
     await r.done;
   });
