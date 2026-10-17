@@ -10,3 +10,5 @@ bun.lockb
 tests/fixtures/raw/
 coverage/
 tmp/
+.playwright-cli/
+.rechrome/
