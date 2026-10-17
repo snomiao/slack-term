@@ -30,6 +30,7 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { authTest, conversationsJoin, history, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
+import { connectRelayStream, wakeableSleep } from "./relayStream.ts";
 
 const run = promisify(execFile);
 
@@ -171,6 +172,9 @@ type Config = {
   intervalMs?: number;
   stateDir?: string;
   botTokenFile?: string; // dotenv file with SLACK_RELAY_BOT_TOKEN=xoxb-… (default ~/.config/slack-cli/relay-bot.env)
+  stream?: string;       // wss://<relay-worker>/stream — realtime wake-ups (relay-worker/)
+  streamKeyFile?: string; // dotenv file with RELAY_STREAM_KEY=… (default ~/.config/slack-cli/relay-stream.env)
+  streamIntervalMs?: number; // poll interval while the stream is up (default 30 s; it is only the safety net then)
 };
 
 const AUTH_ERROR = /invalid_auth|not_authed|token_revoked|token_expired|account_inactive|needs its session cookie/;
@@ -382,7 +386,7 @@ export async function main(argv: string[]): Promise<void> {
         save();
       }
       if (!m.reply_count || !m.latest_reply) continue;
-      const seen = st.replySeen[m.ts] ?? st.floor;
+      const seen = String(Math.max(Number(st.replySeen[m.ts] ?? 0), Number(st.floor) || 0));
       if (Number(m.latest_reply) <= Number(seen)) continue;
       const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
       for (const x of r.messages ?? []) {
@@ -445,6 +449,37 @@ export async function main(argv: string[]): Promise<void> {
   let cyclesLeft = cyi >= 0 ? Number(argv[cyi + 1]) : Infinity;
   let stop = false;
   let backoff = 0;
+
+  // Realtime: a wake frame for this channel ends the sleep, so a message is picked up
+  // within one API round trip instead of up to one poll interval. Every (re)connect
+  // also wakes once, to catch up on whatever arrived while the socket was down.
+  const sleeper = wakeableSleep();
+  let streamUp = false;
+  let stopStream: (() => void) | undefined;
+  const streamKey = (() => {
+    try {
+      return readFileSync(cfg.streamKeyFile ?? join(homedir(), ".config", "slack-cli", "relay-stream.env"), "utf8").match(/^RELAY_STREAM_KEY=(\S+)/m)?.[1];
+    } catch { return undefined; }
+  })();
+  if (cfg.stream && streamKey) {
+    stopStream = connectRelayStream({
+      url: cfg.stream,
+      key: streamKey,
+      onWake: (w) => {
+        if (w.channel !== CHANNEL) return;
+        log(`⚡ wake ts=${w.ts}${w.thread_ts ? ` thread=${w.thread_ts}` : ""} transport=${(Date.now() / 1000 - Number(w.ts)).toFixed(2)}s`);
+        sleeper.wake();
+      },
+      onState: (s, why) => {
+        streamUp = s === "open";
+        log(`stream ${s}${why ? ` (${why})` : ""}`);
+        if (streamUp) sleeper.wake();
+      },
+    });
+  } else if (cfg.stream) {
+    log("stream configured but no RELAY_STREAM_KEY — polling only");
+  }
+
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stop = true; log("stopping"); save(); process.exit(0); });
   while (!stop && cyclesLeft-- > 0) {
     try {
@@ -479,8 +514,9 @@ export async function main(argv: string[]): Promise<void> {
       }
       log("cycle error", msg.slice(0, 300));
     }
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await sleeper.sleep(streamUp ? (cfg.streamIntervalMs ?? 30_000) : intervalMs);
   }
+  stopStream?.();
 }
 
 if (import.meta.main) {

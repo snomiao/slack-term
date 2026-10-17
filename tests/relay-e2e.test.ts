@@ -109,7 +109,7 @@ async function startFake(): Promise<Fake> {
   };
 }
 
-function setup(opts: { bot?: boolean; sendExit?: number } = {}): { tmp: string; cfg: string; bin: string; sendLog: string; stateDir: string } {
+function setup(opts: { bot?: boolean; sendExit?: number; extra?: Record<string, unknown> } = {}): { tmp: string; cfg: string; bin: string; sendLog: string; stateDir: string } {
   const tmp = mkdtempSync(join(tmpdir(), "slack-relay-e2e-"));
   tmps.push(tmp);
   const bin = join(tmp, "bin");
@@ -127,11 +127,11 @@ exit 1
   const cfg = join(tmp, "relay.json");
   const botFile = join(tmp, "relay-bot.env");
   if (opts.bot) writeFileSync(botFile, "SLACK_RELAY_BOT_TOKEN=xoxb-fake\n");
-  writeFileSync(cfg, JSON.stringify({ channel: CH, team: "T00000001", owner: SELF, defaultAgent: "103", intervalMs: 150, stateDir, botTokenFile: botFile }));
+  writeFileSync(cfg, JSON.stringify({ channel: CH, team: "T00000001", owner: SELF, defaultAgent: "103", intervalMs: 150, stateDir, botTokenFile: botFile, ...opts.extra }));
   return { tmp, cfg, bin, sendLog, stateDir };
 }
 
-function startRelay(fake: Fake, s: ReturnType<typeof setup>, cycles: number): { done: Promise<void>; log: () => string } {
+function startRelay(fake: Fake, s: ReturnType<typeof setup>, cycles: number): { done: Promise<void>; log: () => string; kill: () => void } {
   const child = spawn("bun", ["run", join(ROOT, "ts", "relay.ts"), "--config", s.cfg, "--cycles", String(cycles)], {
     cwd: ROOT,
     env: { ...process.env, HOME: s.tmp, SLACK_TOKEN: "xoxp-fake", SLACK_API_BASE: fake.base, PATH: `${s.bin}:${process.env.PATH}`, SLACK_TERM_ATTRIBUTION: "off" },
@@ -140,7 +140,7 @@ function startRelay(fake: Fake, s: ReturnType<typeof setup>, cycles: number): { 
   child.stdout.on("data", (d) => { log += String(d); });
   child.stderr.on("data", (d) => { log += String(d); });
   lastLog = () => log;
-  return { done: new Promise<void>((r) => child.on("close", () => r())), log: () => log };
+  return { done: new Promise<void>((r) => child.on("close", () => r())), log: () => log, kill: () => { child.kill("SIGTERM"); } };
 }
 
 const waitFor = async (cond: () => boolean, ms = 20_000): Promise<void> => {
@@ -252,5 +252,60 @@ describe("relay e2e", () => {
     await r.done;
     expect(r.log().match(/relay up/g)?.length).toBe(2);
     expect(sends(s.sendLog)[0]).toContain("after the outage");
+  });
+
+  test("a stream wake delivers at once, long before the next poll", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    // A stand-in for the relay Worker's /stream: checks the key frame, then lets the test push wakes.
+    const sockets: { send: (s: string) => void }[] = [];
+    const hub = Bun.serve({
+      port: 0,
+      fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+      websocket: {
+        message(ws, msg) {
+          if (msg === "ping") return;
+          if ((JSON.parse(String(msg)) as { auth?: string }).auth !== "k-e2e") { ws.close(4001, "unauthorized"); return; }
+          ws.send(JSON.stringify({ type: "hello" }));
+          sockets.push(ws);
+        },
+      },
+    });
+    const s0 = setup({ extra: { stream: `ws://127.0.0.1:${hub.port}/stream`, streamKeyFile: "", intervalMs: 60_000, streamIntervalMs: 60_000 } });
+    const keyFile = join(s0.tmp, "relay-stream.env");
+    writeFileSync(keyFile, "RELAY_STREAM_KEY=k-e2e\n");
+    const cfgJson = JSON.parse(readFileSync(s0.cfg, "utf8")) as Record<string, unknown>;
+    writeFileSync(s0.cfg, JSON.stringify({ ...cfgJson, streamKeyFile: keyFile }));
+    const r = startRelay(fake, s0, 4);
+    await waitFor(() => r.log().includes("stream open") && fake.historyCalls() >= 2);
+    await new Promise((res) => setTimeout(res, 300)); // the connect-time catch-up poll is done; now asleep for 60 s
+    const mine = nextTs();
+    fake.top.push({ ts: mine, user: SELF, text: "@otoji realtime" });
+    const t0 = Date.now();
+    for (const ws of sockets) ws.send(JSON.stringify({ type: "wake", channel: CH, ts: mine }));
+    await waitFor(() => sends(s0.sendLog).length === 1, 10_000);
+    const took = Date.now() - t0;
+    hub.stop(true);
+    expect(took).toBeLessThan(5_000);
+    expect(sends(s0.sendLog)[0]).toContain("realtime");
+    expect(r.log()).toContain("⚡ wake");
+    r.kill(); // it would otherwise sleep out its 60 s polls
+    await r.done;
+  });
+
+  test("a reply under a thread root older than the floor is seen; older replies are not replayed", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true });
+    const root = nextTs();
+    fake.top.push({ ts: root, user: SELF, text: "an old thread" });
+    fake.thread.push({ ts: nextTs(), user: SELF, text: "reply from before the relay started", thread_ts: root });
+    fake.top.push({ ts: nextTs(), user: SELF, text: "newest top-level, becomes the floor" });
+    const r = startRelay(fake, s0, 30);
+    await waitFor(() => fake.historyCalls() >= 2);
+    fake.thread.push({ ts: nextTs(), user: SELF, text: "fresh reply under the old root", thread_ts: root });
+    await waitFor(() => sends(s0.sendLog).length >= 1);
+    await r.done;
+    const got = sends(s0.sendLog);
+    expect(got.length).toBe(1);
+    expect(got[0]).toContain("fresh reply under the old root");
   });
 });

@@ -18,7 +18,9 @@ bot events `message.channels` (+ `message.groups` for private channels).
 
 Relay side (outside the repo): `~/.config/slack-cli/relay-stream.env` holds
 `RELAY_STREAM_KEY=…` (0600), and `relay.json` gets
-`"stream": "wss://<worker>/stream"`.
+`"stream": "wss://<worker>/stream"`. While the socket is up the relay polls only
+every `streamIntervalMs` (default 30 s) as a safety net; when it drops, back to
+`intervalMs`. Each reconnect triggers one immediate catch-up poll.
 
 Alternative without a public URL: Slack Socket Mode (an app-level `xapp-` token,
 `apps.connections.open`) gives the same realtime delivery straight to the Mac.
