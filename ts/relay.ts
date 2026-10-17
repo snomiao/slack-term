@@ -119,7 +119,9 @@ export function mentionGate(m: SlackMsg, opts: { mentionsOnly: boolean; botId: s
 
 /** "~/ws/<owner>/<repo>/tree/<branch>" → { repo, branch }; else basename. */
 export function agentNames(cwd: string): { repo: string; branch: string } {
-  const parts = cwd.split("/").filter(Boolean);
+  // `ay ls` reports Windows cwds with backslashes; split on both so a route like
+  // "bradiy" still resolves instead of every agent collapsing to repo "main".
+  const parts = cwd.split(/[\\/]/).filter(Boolean);
   const t = parts.lastIndexOf("tree");
   if (t > 0 && t < parts.length - 1) return { repo: parts[t - 1]!.toLowerCase(), branch: parts.slice(t + 1).join("/").toLowerCase() };
   return { repo: basename(cwd).toLowerCase(), branch: "" };

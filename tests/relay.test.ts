@@ -62,6 +62,16 @@ describe("matchAgent", () => {
     expect(matchAgent("bradiy", lanes).agent).toBeUndefined();
   });
   test("unknown", () => expect(matchAgent("nope", agents).agent).toBeUndefined());
+  test("Windows cwds (backslashes, as `ay ls` reports them) resolve the same way", () => {
+    const win: Agent[] = [
+      { pid: 201, cwd: "C:\\Users\\alice\\ws\\acme\\bradiy\\tree\\main", status: "active", cli: "claude" },
+      { pid: 202, cwd: "C:\\Users\\alice\\ws\\acme\\bradiy\\tree\\lane\\stt", status: "idle", cli: "claude" },
+    ];
+    expect(matchAgent("bradiy", win).agent?.pid).toBe(201);
+    expect(matchAgent("bradiy/lane/stt", win).agent?.pid).toBe(202);
+    expect(agentLabel(win[0]!)).toBe("bradiy");
+    expect(agentLabel(win[1]!)).toBe("bradiy/lane/stt");
+  });
   test("labels", () => {
     expect(agentLabel(agents[0]!)).toBe("bradiy");
     expect(agentLabel(agents[1]!)).toBe("bradiy/mac-neck-load");
