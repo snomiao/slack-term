@@ -338,7 +338,7 @@ agents on this machine. Config lives outside the repo, in
 `~/.config/slack-cli/relay.json`:
 
 ```json
-{ "workspace": "acme", "channel": "C00000001", "defaultAgent": "12345" }
+{ "workspace": "acme", "channel": "C00000001", "team": "T00000001", "owner": "U00000001", "defaultAgent": "12345" }
 ```
 
 Routing — only messages **you** (the token owner, matched by user ID) post are
@@ -357,6 +357,21 @@ Each message reaches the agent through `ay send --force <pid>` behind a
 answers by appending to `~/.config/slack-cli/relay/outbox/<pid>.md`; the relay
 posts that text (clipped) into the message's thread, plus one line when the agent
 needs input, goes idle without answering, or exits.
+
+**Bot mode.** Create an app with a bot user (scopes `channels:history`,
+`channels:read`, `channels:join`, `groups:history`, `chat:write`,
+`reactions:write`, `users:read`), install it, copy its Bot User OAuth Token and
+run `bun run relay set-bot-token` — it reads the token from the clipboard (or
+stdin), checks it belongs to `"team"`, and saves it 0600 to
+`~/.config/slack-cli/relay-bot.env`. A running relay switches to the bot within
+one cycle: it then reads and posts as the bot (joining the channel itself), still
+acting only on `"owner"`'s messages. A bot token does not expire like a browser
+session does.
+
+The relay survives auth failures (logged as `!!! AUTH FAILED`, retried with
+backoff, credentials re-read from disk each time — re-importing a cookie needs no
+restart), and it persists both its cursor and every delivered message ts, so
+neither a restart nor a queued `ay send` delivers anything twice.
 
 It writes only to the configured channel, and without the confirm gate — that is
 the point of a relay, so it is scoped to one channel instead. Its own posts start

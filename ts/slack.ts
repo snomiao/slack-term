@@ -486,6 +486,11 @@ export async function pinsAdd(token: string, channel: string, ts: string, cookie
 // without colons (e.g. "eyes", "white_check_mark"). Slack's reactions.add
 // returns already_reacted when the reaction exists; reactions.remove returns
 // no_reaction when it doesn't — both surface to the caller as API errors.
+/** Join a public channel (bot tokens need `channels:join`). Idempotent. */
+export async function conversationsJoin(token: string, channel: string, cookie?: string): Promise<void> {
+  await post(token, "conversations.join", { channel }, cookie);
+}
+
 export async function reactionAdd(
   token: string,
   channel: string,

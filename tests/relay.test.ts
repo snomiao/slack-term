@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -79,5 +79,26 @@ describe("forwardText / clip", () => {
     const long = Array.from({ length: 30 }, (_, i) => `l${i}`).join("\n");
     expect(clip(long, 5).split("\n").length).toBe(6);
     expect(clip("x".repeat(100), 15, 10)).toBe("x".repeat(10) + "…");
+  });
+});
+
+describe("readBotToken / markDelivered", () => {
+  test("reads only an xoxb- token from the dotenv file", async () => {
+    const { mkdtempSync, writeFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { tmpdir } = await import("node:os");
+    const d = mkdtempSync(join(tmpdir(), "relay-bot-"));
+    writeFileSync(join(d, "a.env"), "# c\nSLACK_RELAY_BOT_TOKEN=xoxb-1-abc\n");
+    writeFileSync(join(d, "b.env"), "SLACK_RELAY_BOT_TOKEN=xoxp-1-abc\n");
+    expect(readBotToken(join(d, "a.env"))).toBe("xoxb-1-abc");
+    expect(readBotToken(join(d, "b.env"))).toBeUndefined();
+    expect(readBotToken(join(d, "missing.env"))).toBeUndefined();
+  });
+  test("a ts is delivered once; the list is capped", () => {
+    const d: string[] = [];
+    expect(markDelivered(d, "1.1")).toBe(true);
+    expect(markDelivered(d, "1.1")).toBe(false);
+    for (let i = 0; i < 10; i++) markDelivered(d, `2.${i}`, 5);
+    expect(d.length).toBe(5);
   });
 });

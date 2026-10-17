@@ -25,10 +25,10 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { authTest, history, reactionAdd, replies, send } from "./slack.ts";
+import { authTest, conversationsJoin, history, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
 
 const run = promisify(execFile);
@@ -121,13 +121,14 @@ type State = {
   ownTs: string[];                        // ts the relay posted (loop guard)
   outboxOffset: Record<string, number>;   // pid → bytes consumed
   replied: Record<string, boolean>;       // pid → wrote outbox since last forward
+  delivered: string[];                    // message ts already forwarded (restart-proof dedupe)
 };
 
 const THREAD_TTL_MS = 24 * 3600_000;
 
 function loadState(path: string): State {
   try { return JSON.parse(readFileSync(path, "utf8")) as State; } catch {
-    return { cursor: "", threads: {}, agentThread: {}, ownTs: [], outboxOffset: {}, replied: {} };
+    return { cursor: "", threads: {}, agentThread: {}, ownTs: [], outboxOffset: {}, replied: {}, delivered: [] };
   }
 }
 
@@ -145,48 +146,146 @@ function log(...a: unknown[]): void {
   console.log(new Date().toISOString(), ...a);
 }
 
-export async function main(argv: string[]): Promise<void> {
+type Config = {
+  workspace?: string;    // slack-term profile holding the owner's user session (optional with a bot)
+  channel: string;
+  team?: string;         // expected team id — a bot token for another workspace is refused
+  owner?: string;        // the user whose messages are instructions (default: the user token's owner)
+  defaultAgent?: string;
+  intervalMs?: number;
+  stateDir?: string;
+  botTokenFile?: string; // dotenv file with SLACK_RELAY_BOT_TOKEN=xoxb-… (default ~/.config/slack-cli/relay-bot.env)
+};
+
+const AUTH_ERROR = /invalid_auth|not_authed|token_revoked|token_expired|account_inactive|needs its session cookie/;
+
+function loadConfig(argv: string[]): Config {
   const ci = argv.indexOf("--config");
   const cfgPath = ci >= 0 && argv[ci + 1] ? argv[ci + 1]! : join(homedir(), ".config", "slack-cli", "relay.json");
-  const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as { workspace?: string; channel: string; defaultAgent?: string; intervalMs?: number; stateDir?: string };
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8")) as Config;
   if (!/^[CDG][A-Z0-9]{6,}$/.test(cfg.channel)) throw new Error(`relay.json: "channel" must be a channel ID, got ${cfg.channel}`);
+  return cfg;
+}
+
+function botTokenPath(cfg: Config): string {
+  return cfg.botTokenFile ?? join(homedir(), ".config", "slack-cli", "relay-bot.env");
+}
+
+export function readBotToken(path: string): string | undefined {
+  try {
+    const m = readFileSync(path, "utf8").match(/^SLACK_RELAY_BOT_TOKEN=(xoxb-\S+)\s*$/m);
+    return m?.[1];
+  } catch { return undefined; }
+}
+
+type Creds = {
+  token: string;        // reads AND writes — the bot when there is one
+  cookie?: string;
+  owner: string;        // whose messages are instructions
+  ownerName: string;
+  selfId: string;       // who the relay posts as (loop guard)
+  mode: "bot" | "user";
+};
+
+async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
+  const bot = readBotToken(botTokenPath(cfg));
+  let user: { token: string; cookie?: string; id: string; name: string; team: string } | undefined;
+  let userErr = "";
+  try {
+    const token = resolveToken(cfg.workspace);
+    const cookie = resolveCookie(cfg.workspace);
+    const a = await authTest(token, cookie);
+    user = { token, ...(cookie ? { cookie } : {}), id: a.userId, name: a.user, team: a.teamId };
+  } catch (e: unknown) { userErr = String(e).split("\n")[0]!; }
+  if (bot) {
+    const b = await authTest(bot);
+    if (cfg.team && b.teamId !== cfg.team) throw new Error(`bot token is for team ${b.teamId}, relay.json expects ${cfg.team}`);
+    const owner = cfg.owner ?? user?.id;
+    if (!owner) throw new Error(`bot mode needs "owner" in relay.json (user session unavailable: ${userErr})`);
+    try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
+    return { token: bot, owner, ownerName: user?.name ?? owner, selfId: b.userId, mode: "bot" };
+  }
+  if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
+  if (cfg.team && user.team !== cfg.team) throw new Error(`user session is for team ${user.team}, relay.json expects ${cfg.team}`);
+  return { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}), owner: cfg.owner ?? user.id, ownerName: user.name, selfId: user.id, mode: "user" };
+}
+
+/** Record a delivered message ts; false when it was already delivered. */
+export function markDelivered(delivered: string[], ts: string, cap = 2000): boolean {
+  if (delivered.includes(ts)) return false;
+  delivered.push(ts);
+  if (delivered.length > cap) delivered.splice(0, delivered.length - cap);
+  return true;
+}
+
+/** Prompt-free token pickup: `bun run relay set-bot-token` reads the clipboard (macOS) or
+ *  stdin, checks it is a bot token for the configured team, and saves it 0600. The token
+ *  itself is never printed. */
+async function setBotToken(cfg: Config): Promise<void> {
+  let tok = "";
+  try { tok = (await run("pbpaste", [])).stdout.trim(); } catch { /* not macOS */ }
+  if (!tok.startsWith("xoxb-")) {
+    process.stderr.write("Paste the Bot User OAuth Token (xoxb-…), then Enter: ");
+    tok = await new Promise<string>((res) => {
+      let buf = "";
+      process.stdin.on("data", (d) => { buf += String(d); if (buf.includes("\n")) res(buf.trim()); });
+    });
+  }
+  if (!tok.startsWith("xoxb-")) { console.error("Not a bot token (expected xoxb-…)."); process.exit(1); }
+  const a = await authTest(tok);
+  if (cfg.team && a.teamId !== cfg.team) { console.error(`That bot token is for team ${a.teamId}, not ${cfg.team}.`); process.exit(1); }
+  const path = botTokenPath(cfg);
+  writeFileSync(path, `SLACK_RELAY_BOT_TOKEN=${tok}\n`, { mode: 0o600 });
+  chmodSync(path, 0o600);
+  console.log(`Saved bot token for @${a.user} (${a.userId}, team ${a.teamId}) to ${path}. A running relay switches to it within one cycle.`);
+  process.exit(0);
+}
+
+export async function main(argv: string[]): Promise<void> {
+  const cfg = loadConfig(argv);
+  if (argv[0] === "set-bot-token") return setBotToken(cfg);
   const CHANNEL = cfg.channel; // the ONLY channel this process ever reads or writes
-  const token = resolveToken(cfg.workspace);
-  const cookie = resolveCookie(cfg.workspace);
-  const me = await authTest(token, cookie);
-  if (!me.userId) throw new Error("auth.test returned no user_id");
   const stateDir = cfg.stateDir ?? join(homedir(), ".config", "slack-cli", "relay");
   const outbox = join(stateDir, "outbox");
   mkdirSync(outbox, { recursive: true });
   const statePath = join(stateDir, "state.json");
   const st = loadState(statePath);
+  st.delivered ??= [];
   const ownTs = new Set(st.ownTs);
   const save = (): void => {
     st.ownTs = [...ownTs].slice(-500);
     writeFileSync(statePath, JSON.stringify(st, null, 1));
   };
   const intervalMs = cfg.intervalMs ?? 5000;
-  log(`relay up: user=${me.userId} team=${me.teamId} channel=${CHANNEL} default=${cfg.defaultAgent ?? "-"} outbox=${outbox}`);
 
-  if (!st.cursor) {
-    // Start from "now": never replay old history as instructions.
-    const h = (await history(token, CHANNEL, 1, undefined, undefined, cookie)) as { messages?: SlackMsg[] };
-    st.cursor = h.messages?.[0]?.ts ?? String(Date.now() / 1000);
-    save();
-  }
+  let creds: Creds | undefined;
+  let botFileMtime = 0;
+  const botFileChanged = (): boolean => {
+    let m = 0;
+    try { m = statSync(botTokenPath(cfg)).mtimeMs; } catch { /* absent */ }
+    const changed = m !== botFileMtime;
+    botFileMtime = m;
+    return changed;
+  };
+  botFileChanged();
 
   const post = async (text: string, threadTs?: string): Promise<string> => {
-    const ts = await send(token, CHANNEL, `${RELAY_MARK} ${text}`, threadTs, false, cookie, true);
+    const c = creds!;
+    // A bot has its own name and avatar; a relay posting as the user marks its text.
+    const ts = await send(c.token, CHANNEL, c.mode === "bot" ? text : `${RELAY_MARK} ${text}`, threadTs, false, c.cookie, true);
     if (ts) ownTs.add(ts);
     return ts;
   };
   const react = (ts: string, name: string): Promise<void> =>
-    reactionAdd(token, CHANNEL, ts, name, cookie).catch((e: unknown) => log("react failed", name, String(e)));
+    reactionAdd(creds!.token, CHANNEL, ts, name, creds!.cookie).catch((e: unknown) => {
+      if (!String(e).includes("already_reacted")) log("react failed", name, String(e));
+    });
 
   let agents: Agent[] = [];
   const lastStatus = new Map<number, string>();
 
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
+    if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
     const text = m.text ?? "";
     const bound = st.threads[threadTs];
     const { route, body } = parseRoute(text);
@@ -195,6 +294,7 @@ export async function main(argv: string[]): Promise<void> {
       const r = matchAgent(route, agents, cfg.defaultAgent ? Number(cfg.defaultAgent) : undefined);
       agent = r.agent;
       if (!agent) {
+        markDelivered(st.delivered, m.ts); save();
         const names = (r.candidates.length ? r.candidates : agents).map((a) => `\`@${a.pid}\` ${agentLabel(a)}`).join(", ");
         await post(`no unique agent for \`@${route}\` — try one of: ${names}`, threadTs);
         return;
@@ -205,11 +305,12 @@ export async function main(argv: string[]): Promise<void> {
       agent = agents.find((a) => a.pid === Number(cfg.defaultAgent));
     }
     if (!agent) {
+      markDelivered(st.delivered, m.ts); save();
       await post(`agent ${bound?.pid ?? cfg.defaultAgent ?? "?"} is not running — address one with \`@name …\``, threadTs);
       return;
     }
     await react(m.ts, "eyes");
-    const msg = forwardText(route ? body : text.trim(), { from: `@${me.user}`, agentPid: agent.pid, outbox });
+    const msg = forwardText(route ? body : text.trim(), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
     // `ay send` exit 4 = QUEUED: accepted while the agent is busy, delivered when its
     // input box frees up. That is a delivery, and resending it would duplicate.
     let queued = false;
@@ -220,35 +321,42 @@ export async function main(argv: string[]): Promise<void> {
       if (err.code === 4) queued = true;
       else {
         log("ay send failed", agent.pid, `exit=${err.code}`, (err.stderr ?? String(e)).trim().slice(-500));
+        markDelivered(st.delivered, m.ts); save();
         await post(`could not deliver to ${agentLabel(agent)} (${agent.pid}): ay send exit ${err.code ?? "?"}`, threadTs);
         return;
       }
     }
-    st.threads[threadTs] = { pid: agent.pid, seen: st.threads[threadTs]?.seen ?? threadTs, touched: Date.now() };
+    markDelivered(st.delivered, m.ts);
+    // Mutate in place: the replies loop holds this same object and advances its `seen`.
+    const th = (st.threads[threadTs] ??= { pid: agent.pid, seen: threadTs, touched: Date.now() });
+    th.pid = agent.pid;
+    th.touched = Date.now();
     st.agentThread[String(agent.pid)] = threadTs;
     st.replied[String(agent.pid)] = false;
+    save(); // persist before anything else can fail
     await react(m.ts, queued ? "hourglass_flowing_sand" : "white_check_mark");
     log(`→ ${agentLabel(agent)} (${agent.pid})${queued ? " [queued]" : ""} ts=${m.ts} ${JSON.stringify(body.slice(0, 80))}`);
   };
 
   const cycle = async (): Promise<void> => {
+    const c = creds!;
     agents = await listAgents().catch((e: unknown) => { log("ay ls failed", String(e)); return agents; });
 
     // 1) top-level messages
-    const h = (await history(token, CHANNEL, 50, st.cursor, undefined, cookie)) as { messages?: SlackMsg[] };
+    const h = (await history(c.token, CHANNEL, 50, st.cursor, undefined, c.cookie)) as { messages?: SlackMsg[] };
     for (const m of (h.messages ?? []).slice().reverse()) {
-      if (Number(m.ts) > Number(st.cursor)) st.cursor = m.ts;
-      if (isInstruction(m, me.userId, ownTs)) await deliver(m, m.ts);
+      if (isInstruction(m, c.owner, ownTs)) await deliver(m, m.ts);
+      if (Number(m.ts) > Number(st.cursor)) { st.cursor = m.ts; save(); }
     }
 
     // 2) replies in threads the relay is tracking
     for (const [tts, th] of Object.entries(st.threads)) {
       if (Date.now() - th.touched > THREAD_TTL_MS) { delete st.threads[tts]; continue; }
-      const r = (await replies(token, CHANNEL, tts, 100, cookie)) as { messages?: SlackMsg[] };
+      const r = (await replies(c.token, CHANNEL, tts, 100, c.cookie)) as { messages?: SlackMsg[] };
       for (const m of r.messages ?? []) {
         if (m.ts === tts || Number(m.ts) <= Number(th.seen)) continue;
+        if (isInstruction(m, c.owner, ownTs)) await deliver(m, tts);
         th.seen = m.ts;
-        if (isInstruction(m, me.userId, ownTs)) await deliver(m, tts);
       }
     }
 
@@ -261,14 +369,16 @@ export async function main(argv: string[]): Promise<void> {
       if (size <= off) { if (size < off) st.outboxOffset[pid] = 0; continue; }
       if (Date.now() - statSync(path).mtimeMs < 1500) continue; // let the write finish
       const chunk = readFileSync(path).subarray(off).toString("utf8");
-      st.outboxOffset[pid] = size;
       const threadTs = st.agentThread[pid];
       const a = agents.find((x) => String(x.pid) === pid);
       const who = a ? agentLabel(a) : pid;
-      if (!chunk.trim()) continue;
-      await post(`*${who}*: ${clip(chunk)}`, threadTs);
-      st.replied[pid] = true;
-      log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
+      if (chunk.trim()) {
+        await post(`*${who}*: ${clip(chunk)}`, threadTs);
+        st.replied[pid] = true;
+        log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
+      }
+      st.outboxOffset[pid] = size;
+      save();
     }
 
     // 4) status edges for agents that own a thread
@@ -299,12 +409,37 @@ export async function main(argv: string[]): Promise<void> {
   const cyi = argv.indexOf("--cycles");
   let cyclesLeft = cyi >= 0 ? Number(argv[cyi + 1]) : Infinity;
   let stop = false;
+  let backoff = 0;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stop = true; log("stopping"); save(); process.exit(0); });
   while (!stop && cyclesLeft-- > 0) {
-    try { await cycle(); } catch (e: unknown) {
+    try {
+      // (Re)resolve on start, after an auth failure, and when a bot token is dropped in —
+      // credentials are re-read from disk, so a re-imported cookie needs no restart.
+      if (!creds || botFileChanged()) {
+        const prev = creds?.mode;
+        creds = await resolveCreds(cfg, CHANNEL);
+        log(`relay up: mode=${creds.mode} owner=${creds.owner} posts-as=${creds.selfId} channel=${CHANNEL} default=${cfg.defaultAgent ?? "-"} outbox=${outbox}${prev && prev !== creds.mode ? ` (was ${prev})` : ""}`);
+        if (!st.cursor) {
+          // Start from "now": never replay old history as instructions.
+          const h = (await history(creds.token, CHANNEL, 1, undefined, undefined, creds.cookie)) as { messages?: SlackMsg[] };
+          st.cursor = h.messages?.[0]?.ts ?? String(Date.now() / 1000);
+          save();
+        }
+      }
+      await cycle();
+      backoff = 0;
+    } catch (e: unknown) {
       const msg = String(e);
+      if (AUTH_ERROR.test(msg)) {
+        creds = undefined;
+        backoff = Math.min(backoff ? backoff * 2 : 15_000, 300_000);
+        log(`!!! AUTH FAILED — ${msg.split("\n")[0]!.slice(0, 200)}. Retrying in ${backoff / 1000}s. ` +
+          `Fix: set a bot token (bun run relay set-bot-token) or re-import the session (slack auth chrome -w ${cfg.workspace ?? "<ws>"}).`);
+        save();
+        await new Promise((r) => setTimeout(r, backoff));
+        continue;
+      }
       log("cycle error", msg.slice(0, 300));
-      if (/invalid_auth|not_authed|token_revoked|needs its session cookie/.test(msg)) process.exit(2);
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
