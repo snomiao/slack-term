@@ -57,6 +57,7 @@
   },
   "scripts": {
     "dev": "bun run ts/cli.ts",
+    "relay": "bun run ts/relay.ts",
     "build": "bun build ts/cli.ts --target=node --outfile dist/cli.js --minify",
     "typecheck": "tsgo --noEmit",
     "typecheck:tsc": "tsc --noEmit",

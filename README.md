@@ -330,6 +330,42 @@ into a second board.
 - Stateless: the only local files are short-lived per-board locks, held while a `set` runs,
   so two writers on one machine cannot interleave.
 
+### relay — drive a local agent-yes fleet from one Slack channel
+
+`bun run relay` (TypeScript checkout only — not a `slack` subcommand) turns one
+channel into a remote control for the [agent-yes](https://github.com/snomiao/agent-yes)
+agents on this machine. Config lives outside the repo, in
+`~/.config/slack-cli/relay.json`:
+
+```json
+{ "workspace": "acme", "channel": "C00000001", "defaultAgent": "12345" }
+```
+
+Routing — only messages **you** (the token owner, matched by user ID) post are
+instructions; everyone else in the channel is ignored:
+
+```text
+@otoji fix the build            → the otoji agent (repo name = its main tree)
+@bradiy/mac-neck-load status?   → repo/branch, a bare branch, or a pid: @12345
+anything without a route        → defaultAgent
+a reply in a relay thread       → the agent that thread belongs to
+```
+
+Each message reaches the agent through `ay send --force <pid>` behind a
+`[slack-relay]` prefix, and gets 👀 on receipt and ✅ once delivered. The agent
+answers by appending to `~/.config/slack-cli/relay/outbox/<pid>.md`; the relay
+posts that text (clipped) into the message's thread, plus one line when the agent
+needs input, goes idle without answering, or exits.
+
+It writes only to the configured channel, and without the confirm gate — that is
+the point of a relay, so it is scoped to one channel instead. Its own posts start
+with 🤖 and are never read back as instructions. Run it in the background:
+
+```sh
+nohup bun run relay > /tmp/slack-relay.log 2>&1 &   # start
+pkill -f ts/relay.ts                                # stop
+```
+
 ### tail — real-time message stream
 
 `slack tail` polls a channel every 3 seconds (configurable via `--interval`) and
