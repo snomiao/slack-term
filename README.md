@@ -352,7 +352,8 @@ a reply in a relay thread       → the agent that thread belongs to
 ```
 
 Each message reaches the agent through `ay send --force <pid>` behind a
-`[slack-relay]` prefix, and gets 👀 on receipt and ✅ once delivered. The agent
+`[slack-relay]` prefix, and gets 👀 on receipt, then ✅ once delivered (⏳ when
+`ay` queued it because the agent was busy — still delivered, never resent). The agent
 answers by appending to `~/.config/slack-cli/relay/outbox/<pid>.md`; the relay
 posts that text (clipped) into the message's thread, plus one line when the agent
 needs input, goes idle without answering, or exits.

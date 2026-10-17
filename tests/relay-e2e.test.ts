@@ -86,7 +86,7 @@ describe("relay e2e", () => {
     const stub = join(bin, "ay");
     writeFileSync(stub, `#!/bin/sh
 if [ "$1" = ls ]; then echo '[{"pid":103,"cwd":"/home/alice/ws/acme/otoji/tree/main","status":"active","cli":"claude"}]'; exit 0; fi
-if [ "$1" = send ]; then printf '%s\\n---\\n' "$4" >> "${sendLog}"; exit 0; fi
+if [ "$1" = send ]; then printf '%s\\n---\\n' "$4" >> "${sendLog}"; exit 4; fi
 exit 1
 `);
     chmodSync(stub, 0o755);
@@ -124,7 +124,7 @@ exit 1
     expect(sends[0]).toContain("\nping\n");
     expect(sends[0]).not.toContain("old message");
     expect(posted).toEqual([{ text: "🤖 *otoji*: pong", thread_ts: mine }]);
-    expect(reactions).toEqual([`${mine}:eyes`, `${mine}:white_check_mark`]);
+    expect(reactions).toEqual([`${mine}:eyes`, `${mine}:hourglass_flowing_sand`]); // exit 4 = queued, still delivered
     expect(log).not.toContain("cycle error");
   });
 });

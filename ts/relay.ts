@@ -210,18 +210,25 @@ export async function main(argv: string[]): Promise<void> {
     }
     await react(m.ts, "eyes");
     const msg = forwardText(route ? body : text.trim(), { from: `@${me.user}`, agentPid: agent.pid, outbox });
+    // `ay send` exit 4 = QUEUED: accepted while the agent is busy, delivered when its
+    // input box frees up. That is a delivery, and resending it would duplicate.
+    let queued = false;
     try {
       await run("ay", ["send", "--force", String(agent.pid), msg], { timeout: 60_000 });
     } catch (e: unknown) {
-      log("ay send failed", agent.pid, String(e).slice(0, 300));
-      await post(`could not deliver to ${agentLabel(agent)} (${agent.pid}): ay send failed`, threadTs);
-      return;
+      const err = e as { code?: number; stderr?: string };
+      if (err.code === 4) queued = true;
+      else {
+        log("ay send failed", agent.pid, `exit=${err.code}`, (err.stderr ?? String(e)).trim().slice(-500));
+        await post(`could not deliver to ${agentLabel(agent)} (${agent.pid}): ay send exit ${err.code ?? "?"}`, threadTs);
+        return;
+      }
     }
     st.threads[threadTs] = { pid: agent.pid, seen: st.threads[threadTs]?.seen ?? threadTs, touched: Date.now() };
     st.agentThread[String(agent.pid)] = threadTs;
     st.replied[String(agent.pid)] = false;
-    await react(m.ts, "white_check_mark");
-    log(`→ ${agentLabel(agent)} (${agent.pid}) ts=${m.ts} ${JSON.stringify(body.slice(0, 80))}`);
+    await react(m.ts, queued ? "hourglass_flowing_sand" : "white_check_mark");
+    log(`→ ${agentLabel(agent)} (${agent.pid})${queued ? " [queued]" : ""} ts=${m.ts} ${JSON.stringify(body.slice(0, 80))}`);
   };
 
   const cycle = async (): Promise<void> => {
