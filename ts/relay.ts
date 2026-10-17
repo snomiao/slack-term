@@ -417,7 +417,14 @@ export async function main(argv: string[]): Promise<void> {
 
   const defaultAgent = (): Agent | undefined => (cfg.defaultAgent ? matchAgent(cfg.defaultAgent, agents).agent : undefined);
 
+  // Latency trace, per message: Slack post → seen (wake/poll) → ay send done → the agent's
+  // outbox write → reply posted. Logged as `trace …` lines (seconds, relative to the post).
+  const wakeAt = new Map<string, number>();
+  const lastForward = new Map<number, { ts: string; sent: number }>();
+  const secs = (ms: number): string => (ms / 1000).toFixed(2);
+
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
+    const tDetect = Date.now();
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
     const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName)
       .replace(new RegExp(`<@${creds!.selfId}(\\|[^>]*)?>`, "g"), `@${creds!.selfName || "bot"}`);
@@ -470,6 +477,11 @@ export async function main(argv: string[]): Promise<void> {
     save(); // persist before anything else can fail
     await react(m.ts, queued ? "hourglass_flowing_sand" : "white_check_mark");
     log(`→ ${agentLabel(agent)} (${agent.pid})${queued ? " [queued]" : ""} ts=${m.ts} ${JSON.stringify(body.slice(0, 80))}`);
+    const t0 = Number(m.ts) * 1000;
+    const tSent = Date.now();
+    lastForward.set(agent.pid, { ts: m.ts, sent: tSent });
+    const w = wakeAt.get(m.ts) ?? (m.thread_ts ? wakeAt.get(m.thread_ts) : undefined);
+    log(`trace ts=${m.ts} wake=${w ? `+${secs(w - t0)}` : "-"} seen=+${secs(tDetect - t0)} via=${w ? "stream" : "poll"} ay-send=+${secs(tSent - t0)} (${secs(tSent - tDetect)}s)`);
   };
 
   const cycle = async (): Promise<void> => {
@@ -520,6 +532,13 @@ export async function main(argv: string[]): Promise<void> {
         else await post(`*${who}*: ${clip(chunk)}`, threadTs, Number(pid));
         st.replied[pid] = true;
         log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
+        const lf = lastForward.get(Number(pid));
+        if (lf) {
+          const t0 = Number(lf.ts) * 1000;
+          const wrote = statSync(path).mtimeMs;
+          log(`trace reply-to=${lf.ts} agent=${secs(wrote - lf.sent)}s posted=+${secs(Date.now() - t0)} (outbox→slack ${secs(Date.now() - wrote)}s)`);
+          lastForward.delete(Number(pid));
+        }
       }
       st.outboxOffset[pid] = size;
       save();
@@ -572,6 +591,8 @@ export async function main(argv: string[]): Promise<void> {
       key: streamKey,
       onWake: (w) => {
         if (w.channel !== CHANNEL) return;
+        wakeAt.set(w.ts, Date.now());
+        if (wakeAt.size > 500) wakeAt.delete(wakeAt.keys().next().value!);
         log(`⚡ wake ts=${w.ts}${w.thread_ts ? ` thread=${w.thread_ts}` : ""} transport=${(Date.now() / 1000 - Number(w.ts)).toFixed(2)}s`);
         sleeper.wake();
       },
