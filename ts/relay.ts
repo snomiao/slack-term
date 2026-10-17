@@ -76,12 +76,13 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
 
 const AGENT_EMOJI = ["robot_face", "gear", "rocket", "brain", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
 
-/** Who an agent is, for the post's sender name: `host:repo/branch` (the git branch the
- *  agent works on, else the worktree name), with an emoji stable per repo. */
-export function agentIdentity(host: string, repo: string, branch: string): { username: string; icon_emoji: string } {
+/** Who an agent is, for the post's sender name: `host:repo#worktree` (the checkout's
+ *  folder under tree/, which stays put while the lane switches branches), with an emoji
+ *  stable per repo. */
+export function agentIdentity(host: string, repo: string, worktree: string): { username: string; icon_emoji: string } {
   let h = 0;
   for (const ch of repo) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return { username: `${host}:${repo}${branch ? `/${branch}` : ""}`.slice(0, 80), icon_emoji: `:${AGENT_EMOJI[h % AGENT_EMOJI.length]}:` };
+  return { username: `${host}:${repo}${worktree ? `#${worktree}` : ""}`.slice(0, 80), icon_emoji: `:${AGENT_EMOJI[h % AGENT_EMOJI.length]}:` };
 }
 
 /** `ay send` can exit 1 for a busy agent although the text did reach its input box (the
@@ -388,14 +389,9 @@ export async function main(argv: string[]): Promise<void> {
   // An agent's own words go out under its identity (bot mode, chat:write.customize);
   // the relay's notices stay plain Snobot.
   const host = hostname().split(".")[0] ?? "host";
-  const branchCache = new Map<number, string>();
   const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string; icon_url?: string }> => {
-    if (!branchCache.has(a.pid)) {
-      const b = await run("git", ["-C", a.cwd, "branch", "--show-current"]).then((r) => r.stdout.trim(), () => "");
-      branchCache.set(a.pid, b || agentNames(a.cwd).branch);
-    }
     const repo = agentNames(a.cwd).repo;
-    const id = agentIdentity(host, repo, branchCache.get(a.pid)!);
+    const id = agentIdentity(host, repo, agentNames(a.cwd).branch);
     const icon = Object.entries(cfg.agentIcons ?? {}).find(([k]) => k.toLowerCase() === repo)?.[1];
     return icon ? { ...id, icon_url: icon } : id;
   };

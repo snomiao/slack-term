@@ -121,9 +121,9 @@ describe("mention mode", () => {
 });
 
 describe("agentIdentity", () => {
-  test("host:repo/branch with a stable per-repo emoji", () => {
-    const a = agentIdentity("tak", "bradiy", "lane/mac-metal-solver");
-    expect(a.username).toBe("tak:bradiy/lane/mac-metal-solver");
+  test("host:repo#worktree with a stable per-repo emoji", () => {
+    const a = agentIdentity("tak", "bradiy", "main");
+    expect(a.username).toBe("tak:bradiy#main");
     expect(agentIdentity("box", "bradiy", "main").icon_emoji).toBe(a.icon_emoji);
     expect(a.icon_emoji).toMatch(/^:[a-z_]+:$/);
     expect(agentIdentity("tak", "x", "y".repeat(200)).username.length).toBe(80);
