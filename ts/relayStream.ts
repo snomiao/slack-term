@@ -22,18 +22,35 @@ export function connectRelayStream(o: StreamOpts): () => void {
   let backoff = 1000;
   let ping: ReturnType<typeof setInterval> | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
+  let lastSeen = 0;
 
   const open = (): void => {
     if (stopped) return;
     ws = new WebSocket(o.url);
     ws.onopen = () => { ws!.send(JSON.stringify({ auth: o.key })); };
     ws.onmessage = (ev) => {
+      lastSeen = Date.now(); // any frame, including the server's "pong"
       let f: { type?: string; channel?: string; ts?: string; thread_ts?: string };
       try { f = JSON.parse(String(ev.data)); } catch { return; }
       if (f.type === "hello") {
         backoff = 1000;
         o.onState?.("open");
-        ping = setInterval(() => { try { ws?.send("ping"); } catch { /* closing */ } }, o.pingMs ?? 30_000);
+        // A socket can die without a close frame (NAT/proxy idle drop, a Worker redeploy);
+        // without this the relay would sit on its slow safety-net poll indefinitely.
+        const every = o.pingMs ?? 30_000;
+        ping = setInterval(() => {
+          if (Date.now() - lastSeen > every * 2 + 5_000) {
+            o.onState?.("closed", "no pong — reconnecting");
+            const dead = ws;
+            ws = undefined;
+            if (dead) { dead.onclose = null; dead.onmessage = null; try { dead.close(); } catch { /* gone */ } }
+            if (ping) clearInterval(ping);
+            ping = undefined;
+            if (!stopped) retry = setTimeout(open, 0);
+            return;
+          }
+          try { ws?.send("ping"); } catch { /* closing */ }
+        }, every);
       } else if (f.type === "wake" && f.channel && f.ts) {
         o.onWake(f as WakeFrame);
       }

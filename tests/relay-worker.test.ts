@@ -76,4 +76,29 @@ describe("relay stream client", () => {
     await s.sleep(5_000);
     expect(Date.now() - t0).toBeLessThan(1_000);
   });
+
+  test("a socket that stops answering pings is replaced", { timeout: 30_000 }, async () => {
+    let conns = 0;
+    let mute = true; // the first connection goes silent after hello
+    const server = Bun.serve({
+      port: 0,
+      fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+      websocket: {
+        open() { conns++; },
+        message(ws, msg) {
+          if (msg === "ping") { if (!mute) ws.send("pong"); return; }
+          ws.send(JSON.stringify({ type: "hello" }));
+          if (conns > 1) mute = false;
+        },
+      },
+    });
+    const states: string[] = [];
+    const stop = connectRelayStream({ url: `ws://127.0.0.1:${server.port}/stream`, key: "k", onWake: () => {}, onState: (s, w) => states.push(`${s}${w ? ":" + w : ""}`), pingMs: 100 });
+    const t0 = Date.now();
+    while (conns < 2 && Date.now() - t0 < 15_000) await new Promise((r) => setTimeout(r, 20));
+    stop();
+    server.stop(true);
+    expect(conns).toBe(2);
+    expect(states).toContain("closed:no pong — reconnecting");
+  });
 });
