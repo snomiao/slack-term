@@ -21,7 +21,7 @@ type Fake = {
   base: string;
   top: Msg[];
   thread: Msg[];
-  posted: { text: string; thread_ts?: string; as: string }[];
+  posted: { text: string; thread_ts?: string; as: string; username?: string }[];
   reactions: string[];
   historyCalls: () => number;
   failAuth: (n: number) => void;
@@ -88,7 +88,7 @@ async function startFake(): Promise<Fake> {
       if (method === "chat.postMessage") {
         const ts = nextTs();
         const as = isBot ? BOT : SELF;
-        posted.push({ text: b.text ?? "", ...(b.thread_ts ? { thread_ts: b.thread_ts } : {}), as });
+        posted.push({ text: b.text ?? "", ...(b.thread_ts ? { thread_ts: b.thread_ts } : {}), as, ...(b.username ? { username: b.username } : {}) });
         const m: Msg = { ts, user: as, text: b.text ?? "", ...(isBot ? { bot_id: "B00000009" } : {}) };
         if (b.thread_ts) thread.push({ ...m, thread_ts: b.thread_ts }); else top.push(m);
         return out({ ok: true, ts });
@@ -216,7 +216,8 @@ describe("relay e2e", () => {
 
     const got = sends(s.sendLog);
     expect(got.map((x) => x.split("\n")[1])).toEqual(["start", "one", "two", "three"]);
-    expect(fake.posted).toEqual([{ text: "*otoji*: done", thread_ts: root, as: BOT }]); // the bot posts, unmarked
+    // the bot posts the agent's words unmarked, under the agent's identity host:repo/branch
+    expect(fake.posted).toEqual([{ text: "done", thread_ts: root, as: BOT, username: expect.stringMatching(/^[^:]+:otoji\/main$/) }]);
     expect(r1.log()).toContain("mode=bot");
     expect(r2.log()).not.toContain("→ otoji");
   });
@@ -240,7 +241,8 @@ describe("relay e2e", () => {
     expect(got[0]).toContain("\nreply under the bot post\n");
     expect(got[1]).toContain("\nhello bot\n");
     expect(got[1]).not.toContain(BOT);
-    expect(fake.posted[0]).toEqual({ text: "*otoji*: announcement", as: BOT });
+    expect(fake.posted[0]).toMatchObject({ text: "announcement", as: BOT });
+    expect(fake.posted[0]!.username).toMatch(/:otoji\/main$/);
   });
 
   test("an auth failure is retried, not fatal", { timeout: 90_000 }, async () => {
@@ -339,7 +341,8 @@ describe("relay e2e", () => {
     expect(got.length).toBe(2);
     expect(got[0]).toContain("hey @ay-relay @otoji status?");
     expect(got[1]).toContain("and the logs too");
-    expect(fake.posted[0]).toEqual({ text: "*otoji*: all green", thread_ts: asked, as: BOT });
+    expect(fake.posted[0]).toMatchObject({ text: "all green", thread_ts: asked, as: BOT });
+    expect(fake.posted[0]!.username).toMatch(/:otoji\/main$/);
   });
 
   test("mention supervisor runs a mention-only relay for each non-home channel", { timeout: 60_000 }, async () => {

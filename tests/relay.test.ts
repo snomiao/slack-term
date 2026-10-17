@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -117,5 +117,15 @@ describe("mention mode", () => {
     expect(mentionGate(m, { mentionsOnly: true, botId: BOT, threadBound: false })).toBe(false);
     expect(mentionGate(m, { mentionsOnly: true, botId: BOT, threadBound: true })).toBe(true);
     expect(mentionGate({ ...m, text: "<@U00000009> go" }, { mentionsOnly: true, botId: BOT, threadBound: false })).toBe(true);
+  });
+});
+
+describe("agentIdentity", () => {
+  test("host:repo/branch with a stable per-repo emoji", () => {
+    const a = agentIdentity("tak", "bradiy", "lane/mac-metal-solver");
+    expect(a.username).toBe("tak:bradiy/lane/mac-metal-solver");
+    expect(agentIdentity("box", "bradiy", "main").icon_emoji).toBe(a.icon_emoji);
+    expect(a.icon_emoji).toMatch(/^:[a-z_]+:$/);
+    expect(agentIdentity("tak", "x", "y".repeat(200)).username.length).toBe(80);
   });
 });

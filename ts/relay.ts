@@ -26,7 +26,7 @@
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, join } from "node:path";
 import { authTest, conversationsJoin, history, memberChannels, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
@@ -72,6 +72,16 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
   if (selfName) t = t.replace(new RegExp(`^@${selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w./-])[\\s:,]*`, "i"), "");
   t = t.trim();
   return t || "(you were mentioned, no text)";
+}
+
+const AGENT_EMOJI = ["robot_face", "gear", "rocket", "brain", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
+
+/** Who an agent is, for the post's sender name: `host:repo/branch` (the git branch the
+ *  agent works on, else the worktree name), with an emoji stable per repo. */
+export function agentIdentity(host: string, repo: string, branch: string): { username: string; icon_emoji: string } {
+  let h = 0;
+  for (const ch of repo) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return { username: `${host}:${repo}${branch ? `/${branch}` : ""}`.slice(0, 80), icon_emoji: `:${AGENT_EMOJI[h % AGENT_EMOJI.length]}:` };
 }
 
 /** Does the text tag this user (`<@U…>` or `<@U…|name>`)? */
@@ -367,10 +377,28 @@ export async function main(argv: string[]): Promise<void> {
 
   // `pid`: a top-level post made for an agent opens a thread bound to that agent, so a
   // reply under it reaches that agent.
-  const post = async (text: string, threadTs?: string, pid?: number): Promise<string> => {
+  // An agent's own words go out under its identity (bot mode, chat:write.customize);
+  // the relay's notices stay plain Snobot.
+  const host = hostname().split(".")[0] ?? "host";
+  const branchCache = new Map<number, string>();
+  const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string }> => {
+    if (!branchCache.has(a.pid)) {
+      const b = await run("git", ["-C", a.cwd, "branch", "--show-current"]).then((r) => r.stdout.trim(), () => "");
+      branchCache.set(a.pid, b || agentNames(a.cwd).branch);
+    }
+    return agentIdentity(host, agentNames(a.cwd).repo, branchCache.get(a.pid)!);
+  };
+  const post = async (text: string, threadTs?: string, pid?: number, as?: { username: string; icon_emoji: string }): Promise<string> => {
     const c = creds!;
     // A bot has its own name and avatar; a relay posting as the user marks its text.
-    const ts = await send(c.token, CHANNEL, c.mode === "bot" ? text : `${RELAY_MARK} ${text}`, threadTs, false, c.cookie, true);
+    const body = c.mode === "bot" ? text : `${RELAY_MARK} ${text}`;
+    let ts: string;
+    try {
+      ts = await send(c.token, CHANNEL, body, threadTs, false, c.cookie, true, undefined, c.mode === "bot" ? as : undefined);
+    } catch (e: unknown) {
+      if (!as) throw e; // e.g. missing chat:write.customize: fall back to a labelled plain post
+      ts = await send(c.token, CHANNEL, `*${as.username}*: ${body}`, threadTs, false, c.cookie, true);
+    }
     if (ts) ownTs.add(ts);
     if (ts && !threadTs && pid !== undefined) {
       st.threads[ts] = { pid, seen: ts, touched: Date.now() };
@@ -488,7 +516,8 @@ export async function main(argv: string[]): Promise<void> {
       const a = agents.find((x) => String(x.pid) === pid);
       const who = a ? agentLabel(a) : pid;
       if (chunk.trim()) {
-        await post(`*${who}*: ${clip(chunk)}`, threadTs, Number(pid));
+        if (a && creds!.mode === "bot") await post(clip(chunk), threadTs, Number(pid), await identityOf(a));
+        else await post(`*${who}*: ${clip(chunk)}`, threadTs, Number(pid));
         st.replied[pid] = true;
         log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
       }
