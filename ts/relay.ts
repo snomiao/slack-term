@@ -223,7 +223,10 @@ async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
     if (cfg.team && b.teamId !== cfg.team) throw new Error(`bot token is for team ${b.teamId}, relay.json expects ${cfg.team}`);
     const owner = cfg.owner ?? user?.id;
     if (!owner) throw new Error(`bot mode needs "owner" in relay.json (user session unavailable: ${userErr})`);
-    try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
+    // A DM (D…) has no join; a private channel (G…/C…) needs an invite if the join fails.
+    if (!channel.startsWith("D")) {
+      try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
+    }
     return { token: bot, owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
   }
   if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
