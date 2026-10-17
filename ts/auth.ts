@@ -317,6 +317,57 @@ async function pickChromeCookieWindows(selected: { name: string; profile: Profil
   }
 }
 
+export type ChromeProfileChoice = {
+  profileDir: string;
+  profileName: string;   // "Name (email)" from Local State, or the folder when unknown
+  email?: string;
+  workspaces: string[];  // Slack workspaces this profile is signed in to
+  hasWorkspace: boolean; // signed in to the workspace being configured
+};
+
+/** `you@example.com (Work)  [Profile 2]  — Slack: acme, beta` — the email first, never a bare folder. */
+export function chromeProfileChoiceLabel(c: ChromeProfileChoice): string {
+  const name = c.profileName.replace(c.email ? ` (${c.email})` : "", "");
+  const who = c.email
+    ? (name && name !== c.email && name !== c.profileDir ? `${c.email} (${name})` : c.email)
+    : (name && name !== c.profileDir ? name : "(no name/email in Chrome)");
+  const ws = c.workspaces.length ? `  — Slack: ${c.workspaces.join(", ")}` : "";
+  return `${who}  [${c.profileDir}]${ws}`;
+}
+
+/** Match a selector against email, then Chrome profile name, then folder (case-insensitive,
+ *  exact). A bare number is not a selector here — folders are "Profile N", and N is easily
+ *  mistaken for a list index. Returns undefined when nothing (or more than one) matches. */
+export function matchChromeProfileChoice(choices: ChromeProfileChoice[], selector: string): number | undefined {
+  const needle = selector.trim().toLowerCase();
+  if (!needle) return undefined;
+  const fields: ((c: ChromeProfileChoice) => string)[] = [
+    (c) => c.email ?? "",
+    (c) => c.profileName.replace(c.email ? ` (${c.email})` : "", ""),
+    (c) => c.profileName,
+    (c) => c.profileDir,
+  ];
+  for (const f of fields) {
+    const hits = choices.map((c, i) => [f(c).trim().toLowerCase(), i] as const).filter(([v]) => v === needle);
+    if (hits.length === 1) return hits[0]![1];
+    if (hits.length > 1) return undefined;
+  }
+  return undefined;
+}
+
+/** Pick without asking when the answer is unambiguous: exactly one profile is signed in to
+ *  this workspace, or exactly one profile's email is the workspace's saved identity. */
+export function autoPickChromeProfile(choices: ChromeProfileChoice[], identity?: string): { idx: number; why: string } | undefined {
+  const byTeam = choices.flatMap((c, i) => (c.hasWorkspace ? [i] : []));
+  if (byTeam.length === 1) return { idx: byTeam[0]!, why: "signed in to this workspace" };
+  if (identity) {
+    const id = identity.toLowerCase();
+    const byEmail = choices.flatMap((c, i) => (c.email?.toLowerCase() === id ? [i] : []));
+    if (byEmail.length === 1) return { idx: byEmail[0]!, why: "matches the workspace's account" };
+  }
+  return undefined;
+}
+
 export async function cmdAuthChrome(opts: { workspace?: string; profile?: string; yes?: boolean } = {}): Promise<void> {
   if (process.platform !== "darwin" && process.platform !== "linux" && process.platform !== "win32") {
     console.error("Chrome cookie extraction is supported on macOS, Linux, and Windows.");
@@ -422,28 +473,62 @@ export async function cmdAuthChrome(opts: { workspace?: string; profile?: string
       process.exit(1);
     }
 
-    // Always prompt when multiple Chrome profiles exist, so users can confirm the right one.
-    if (candidates.length === 1 && totalProfiles <= 1) {
-      cookie = candidates[0]!.cookie;
-      console.log(`Found session in Chrome profile: ${candidates[0]!.profileName}`);
+    // Which Slack workspaces each Chrome profile is signed in to (LocalStorage, plaintext) —
+    // the one fact that tells two profiles apart for this purpose.
+    const sessionsByDir = new Map(discoverChromeSessions().map((p) => [p.profileDir, p.sessions]));
+    const numericTeamId = selected.profile.token.split("-")[1];
+    const choices: ChromeProfileChoice[] = candidates.map((c) => {
+      const sessions = sessionsByDir.get(c.profileDir) ?? [];
+      return {
+        profileDir: c.profileDir,
+        profileName: c.profileName,
+        ...(c.email ? { email: c.email } : {}),
+        workspaces: sessions.map((s) => s.teamName ?? s.teamId),
+        hasWorkspace: !!numericTeamId && sessions.some((s) => s.teamId === numericTeamId),
+      };
+    });
+
+    let idx: number | undefined;
+    let why = "";
+    if (opts.profile) {
+      idx = matchChromeProfileChoice(choices, opts.profile);
+      if (idx === undefined) {
+        console.error(`Chrome profile "${opts.profile}" has no Slack cookie. Available:`);
+        choices.forEach((c) => console.error(`  ${chromeProfileChoiceLabel(c)}`));
+        process.exit(1);
+      }
+      why = "--profile";
     } else {
-      const label = candidates.length === 1
-        ? `Found 1 Slack session across ${totalProfiles} Chrome profiles:`
-        : `Found ${candidates.length} Slack sessions across ${totalProfiles} Chrome profiles:`;
-      console.log(label);
-      candidates.forEach((c, i) => console.log(`  ${i + 1}) ${c.profileName}  [${c.profileDir}]`));
+      const auto = autoPickChromeProfile(choices, selected.profile.identity);
+      if (auto) ({ idx, why } = auto);
+      else if (candidates.length === 1 && totalProfiles <= 1) { idx = 0; why = "only profile"; }
+    }
+
+    if (idx === undefined) {
+      console.log(`Found ${candidates.length} Slack session${candidates.length !== 1 ? "s" : ""} across ${totalProfiles} Chrome profiles:`);
+      choices.forEach((c, i) => console.log(`  ${i + 1}) ${chromeProfileChoiceLabel(c)}`));
+      if (choices.every((c) => !c.email && c.profileName === c.profileDir)) {
+        console.log("  (Chrome's Local State could not be read, so profile names/emails are unavailable;");
+        console.log("   the Slack workspaces listed above still tell the profiles apart.)");
+      }
       console.log("");
       const rl = createInterface({ input: process.stdin, output: process.stdout });
       const defaultChoice = candidates.length === 1 ? " [Enter=1]" : "";
-      const choice = (await rl.question(`Choice [1-${candidates.length}]${defaultChoice}: `)).trim();
+      const answer = (await rl.question(`Choice — number, email, profile name or folder${defaultChoice}: `)).trim();
       rl.close();
-      const idx = choice === "" && candidates.length === 1 ? 0 : parseInt(choice, 10) - 1;
-      if (isNaN(idx) || idx < 0 || idx >= candidates.length) {
-        console.error("Invalid choice.");
+      idx = answer === "" && candidates.length === 1
+        ? 0
+        : /^\d+$/.test(answer) ? (Number(answer) - 1 >= 0 && Number(answer) <= choices.length ? Number(answer) - 1 : undefined)
+        : matchChromeProfileChoice(choices, answer);
+      if (idx === undefined) {
+        console.error(`Invalid choice "${answer}". Re-run with --profile "<email>", e.g.:`);
+        choices.forEach((c) => console.error(`  slack auth chrome -w ${profileName} --profile "${c.email ?? c.profileDir}"`));
         process.exit(1);
       }
-      cookie = candidates[idx]!.cookie;
+    } else {
+      console.log(`Using Chrome profile ${chromeProfileChoiceLabel(choices[idx]!)}  (${why})`);
     }
+    cookie = candidates[idx]!.cookie;
   }
 
   setCookie(profileName, cookie);

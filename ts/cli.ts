@@ -5447,7 +5447,7 @@ async function main(): Promise<void> {
           "Attach a Chrome xoxd cookie to a workspace (macOS/Linux/Windows). To import workspaces, use: slack auth login chrome",
           (y2) => y2
             .option("workspace", { type: "string", alias: "w", describe: "Workspace name to update (default: active)" })
-            .option("profile", { type: "string", alias: "p", describe: "Chrome profile email or dir (Windows, when several have a session)" })
+            .option("profile", { type: "string", alias: "p", describe: "Chrome profile email, name or folder (when several have a Slack session)" })
             .option("yes", { type: "boolean", default: false, describe: "Allow reading browser profiles without a confirmation prompt" }),
           async (argv) => {
             await cmdAuthChrome({

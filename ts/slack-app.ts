@@ -304,6 +304,7 @@ function decryptV10Cookie(enc: Buffer, aesKey: Buffer, hostKey: string, allowEmb
 export type ChromeCookieCandidate = {
   profileDir: string;  // "Default", "Profile 1", etc.
   profileName: string; // display name from Chrome Preferences, e.g. email address
+  email?: string;      // signed-in account email from Local State, when known
   cookie: string;      // decrypted xoxd-...
 };
 
@@ -440,7 +441,10 @@ export function discoverChromeCookies(): ChromeDiscoveryResult {
       } else if (prefix !== "v10") {
         throw new Error("Unknown cookie encryption prefix.");
       }
-      if (cookie) candidates.push({ profileDir, profileName: chromeProfileName(userDataDir, profileDir), cookie });
+      if (cookie) {
+        const email = chromeProfileEmail(userDataDir, profileDir);
+        candidates.push({ profileDir, profileName: chromeProfileName(userDataDir, profileDir), ...(email ? { email } : {}), cookie });
+      }
     } catch (e: unknown) {
       if (e instanceof Error && (e.message.includes("unsupported v20") || e.message.includes("Unknown cookie"))) throw e;
       // Skip unreadable profiles without exposing cookie or key material.
