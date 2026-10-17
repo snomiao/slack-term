@@ -21,7 +21,7 @@ type Fake = {
   base: string;
   top: Msg[];
   thread: Msg[];
-  posted: { text: string; thread_ts?: string; as: string; username?: string }[];
+  posted: { text: string; thread_ts?: string; as: string; username?: string; icon_url?: string }[];
   reactions: string[];
   historyCalls: () => number;
   failAuth: (n: number) => void;
@@ -88,7 +88,7 @@ async function startFake(): Promise<Fake> {
       if (method === "chat.postMessage") {
         const ts = nextTs();
         const as = isBot ? BOT : SELF;
-        posted.push({ text: b.text ?? "", ...(b.thread_ts ? { thread_ts: b.thread_ts } : {}), as, ...(b.username ? { username: b.username } : {}) });
+        posted.push({ text: b.text ?? "", ...(b.thread_ts ? { thread_ts: b.thread_ts } : {}), as, ...(b.username ? { username: b.username } : {}), ...(b.icon_url ? { icon_url: b.icon_url } : {}) });
         const m: Msg = { ts, user: as, text: b.text ?? "", ...(isBot ? { bot_id: "B00000009" } : {}) };
         if (b.thread_ts) thread.push({ ...m, thread_ts: b.thread_ts }); else top.push(m);
         return out({ ok: true, ts });
@@ -370,5 +370,19 @@ describe("relay e2e", () => {
     await r.done;
     expect(sends(s0.sendLog)).toHaveLength(1);
     expect(sends(s0.sendLog)[0]).toContain("no mention, still for otoji");
+  });
+
+  test("a repo listed in agentIcons posts with that image as its avatar", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true, extra: { agentIcons: { OtoJi: "https://example.com/otoji.png" } } });
+    const r = startRelay(fake, s0, 25);
+    await waitFor(() => fake.historyCalls() >= 2);
+    const mine = nextTs();
+    fake.top.push({ ts: mine, user: SELF, text: "@otoji hi" });
+    await waitFor(() => sends(s0.sendLog).length === 1);
+    writeOutbox(s0.stateDir, 103, "hello\n");
+    await waitFor(() => fake.posted.length === 1);
+    await r.done;
+    expect(fake.posted[0]).toMatchObject({ text: "hello", thread_ts: mine, icon_url: "https://example.com/otoji.png" });
   });
 });

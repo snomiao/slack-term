@@ -348,14 +348,15 @@ export async function send(
    *  and must never be the reason a message was not sent. */
   metadata?: MessageMetadata,
   /** Bot tokens with `chat:write.customize` may post under another name/icon. */
-  as?: { username?: string; icon_emoji?: string },
+  as?: { username?: string; icon_emoji?: string; icon_url?: string },
 ): Promise<string> {
   const body: Record<string, Json> = plain
     ? { channel, text }
     : { channel, text, blocks: [{ type: "markdown", text }] };
   if (threadTs !== undefined) body.thread_ts = threadTs;
   if (as?.username) body.username = as.username;
-  if (as?.icon_emoji) body.icon_emoji = as.icon_emoji;
+  if (as?.icon_url) body.icon_url = as.icon_url;
+  else if (as?.icon_emoji) body.icon_emoji = as.icon_emoji;
   // "Also send to channel": broadcast a threaded reply back to the channel.
   // Only meaningful alongside thread_ts; Slack ignores it on top-level sends.
   if (replyBroadcast && threadTs !== undefined) body.reply_broadcast = true;

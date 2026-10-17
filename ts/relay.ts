@@ -198,6 +198,7 @@ type Config = {
   team?: string;         // expected team id — a bot token for another workspace is refused
   owner?: string;        // the user whose messages are instructions (default: the user token's owner)
   defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
+  agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
   channelDefaults?: Record<string, string>; // mention mode: channel id → default route; those channels take every owner message
   intervalMs?: number;
   stateDir?: string;
@@ -388,14 +389,17 @@ export async function main(argv: string[]): Promise<void> {
   // the relay's notices stay plain Snobot.
   const host = hostname().split(".")[0] ?? "host";
   const branchCache = new Map<number, string>();
-  const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string }> => {
+  const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string; icon_url?: string }> => {
     if (!branchCache.has(a.pid)) {
       const b = await run("git", ["-C", a.cwd, "branch", "--show-current"]).then((r) => r.stdout.trim(), () => "");
       branchCache.set(a.pid, b || agentNames(a.cwd).branch);
     }
-    return agentIdentity(host, agentNames(a.cwd).repo, branchCache.get(a.pid)!);
+    const repo = agentNames(a.cwd).repo;
+    const id = agentIdentity(host, repo, branchCache.get(a.pid)!);
+    const icon = Object.entries(cfg.agentIcons ?? {}).find(([k]) => k.toLowerCase() === repo)?.[1];
+    return icon ? { ...id, icon_url: icon } : id;
   };
-  const post = async (text: string, threadTs?: string, pid?: number, as?: { username: string; icon_emoji: string }): Promise<string> => {
+  const post = async (text: string, threadTs?: string, pid?: number, as?: { username: string; icon_emoji: string; icon_url?: string }): Promise<string> => {
     const c = creds!;
     // A bot has its own name and avatar; a relay posting as the user marks its text.
     const body = c.mode === "bot" ? text : `${RELAY_MARK} ${text}`;
