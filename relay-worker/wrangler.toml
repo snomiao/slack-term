@@ -1,0 +1,13 @@
+# Deploy:  bunx wrangler@4 deploy   (from this directory)
+# Secrets: bunx wrangler@4 secret put SLACK_SIGNING_SECRET / RELAY_KEY
+name = "slack-relay"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
