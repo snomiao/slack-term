@@ -84,6 +84,13 @@ export function agentIdentity(host: string, repo: string, branch: string): { use
   return { username: `${host}:${repo}${branch ? `/${branch}` : ""}`.slice(0, 80), icon_emoji: `:${AGENT_EMOJI[h % AGENT_EMOJI.length]}:` };
 }
 
+/** `ay send` can exit 1 for a busy agent although the text did reach its input box (the
+ *  CLI collapsed it to "[Pasted text …]" or queued it). Its error output ends with the
+ *  target's screen; if that shows our forward there, it was delivered — never resend. */
+export function landedInInput(stderr: string): boolean {
+  return /paste again to expand|Press up to edit queued messages|To answer in Slack, append/.test(stderr);
+}
+
 /** Does the text tag this user (`<@U…>` or `<@U…|name>`)? */
 export function mentionsUser(text: string | undefined, uid: string): boolean {
   return !!uid && new RegExp(`<@${uid}(\\|[^>]*)?>`).test(text ?? "");
@@ -459,7 +466,7 @@ export async function main(argv: string[]): Promise<void> {
       await run("ay", ["send", "--force", String(agent.pid), msg], { timeout: 60_000 });
     } catch (e: unknown) {
       const err = e as { code?: number; stderr?: string };
-      if (err.code === 4) queued = true;
+      if (err.code === 4 || landedInInput(err.stderr ?? "")) queued = true;
       else {
         log("ay send failed", agent.pid, `exit=${err.code}`, (err.stderr ?? String(e)).trim().slice(-500));
         markDelivered(st.delivered, m.ts); save();

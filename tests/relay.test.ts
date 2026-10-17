@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -127,5 +127,13 @@ describe("agentIdentity", () => {
     expect(agentIdentity("box", "bradiy", "main").icon_emoji).toBe(a.icon_emoji);
     expect(a.icon_emoji).toMatch(/^:[a-z_]+:$/);
     expect(agentIdentity("tak", "x", "y".repeat(200)).username.length).toBe(80);
+  });
+});
+
+describe("landedInInput", () => {
+  test("a busy agent's screen showing the pasted forward counts as delivered", () => {
+    expect(landedInInput("exit 1 · last 10 lines ──\n  ✢ Garnishing…\n    paste again to expand\n")).toBe(true);
+    expect(landedInInput("Press up to edit queued messages")).toBe(true);
+    expect(landedInInput("target unreachable")).toBe(false);
   });
 });
