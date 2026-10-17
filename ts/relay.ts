@@ -372,8 +372,9 @@ export async function main(argv: string[]): Promise<void> {
     //    and every thread whose latest_reply moved — whoever started it (the owner, a
     //    bystander, or the relay itself). Thread roots older than a day are not watched.
     const dayAgo = Date.now() / 1000 - THREAD_TTL_MS / 1000;
-    const oldest = String(Math.max(dayAgo, Number(st.floor) || 0));
-    const h = (await history(c.token, CHANNEL, 200, oldest, undefined, c.cookie)) as { messages?: SlackMsg[] };
+    // The floor gates what is forwarded (cursor for top-level, `seen` for replies), not which
+    // roots are scanned: a thread started before a restart still gets new replies.
+    const h = (await history(c.token, CHANNEL, 200, String(dayAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
     for (const m of (h.messages ?? []).slice().reverse()) {
       if (Number(m.ts) > Number(st.cursor)) {
         if (isInstruction(m, c.owner, ownTs)) await deliver(m, m.ts);
