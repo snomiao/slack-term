@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -135,5 +135,18 @@ describe("landedInInput", () => {
     expect(landedInInput("exit 1 · last 10 lines ──\n  ✢ Garnishing…\n    paste again to expand\n")).toBe(true);
     expect(landedInInput("Press up to edit queued messages")).toBe(true);
     expect(landedInInput("target unreachable")).toBe(false);
+  });
+});
+
+describe("redactSecrets", () => {
+  test("Slack, Discord and GitHub tokens never reach the log", () => {
+    const discord = "MTAwMDAwMDAwMDAwMDAwMDAwMA.Gabcde.abcdefghijklmnopqrstuvwxyz0123";
+    expect(redactSecrets(`here ${discord} ok`)).toBe("here <redacted-secret> ok");
+    expect(redactSecrets("xoxb-0000000000-abcdefghijkl")).toBe("<redacted-secret>");
+    expect(redactSecrets("ghp_" + "a".repeat(36))).toBe("<redacted-secret>");
+    expect(redactSecrets("plain text 1.2.3")).toBe("plain text 1.2.3");
+    expect(hasSecret(discord)).toBe(true);
+    expect(hasSecret("no secret")).toBe(false);
+    expect(hasSecret(discord)).toBe(true); // no lastIndex carry-over
   });
 });

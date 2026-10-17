@@ -92,6 +92,19 @@ export function landedInInput(stderr: string): boolean {
   return /paste again to expand|Press up to edit queued messages|To answer in Slack, append/.test(stderr);
 }
 
+const SECRET_RX = /\b(xox[abcdeposr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|gh[pousr]_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{20,})\b/g;
+
+/** Token-shaped strings (Slack, Discord bot, GitHub, API keys) never reach the relay's log. */
+export function redactSecrets(text: string): string {
+  return text.replace(SECRET_RX, "<redacted-secret>");
+}
+export function hasSecret(text: string): boolean {
+  SECRET_RX.lastIndex = 0;
+  const r = SECRET_RX.test(text);
+  SECRET_RX.lastIndex = 0;
+  return r;
+}
+
 /** Does the text tag this user (`<@U…>` or `<@U…|name>`)? */
 export function mentionsUser(text: string | undefined, uid: string): boolean {
   return !!uid && new RegExp(`<@${uid}(\\|[^>]*)?>`).test(text ?? "");
@@ -495,7 +508,10 @@ export async function main(argv: string[]): Promise<void> {
     st.replied[String(agent.pid)] = false;
     save(); // persist before anything else can fail
     await react(m.ts, queued ? "hourglass_flowing_sand" : "white_check_mark");
-    log(`→ ${agentLabel(agent)} (${agent.pid})${queued ? " [queued]" : ""} ts=${m.ts} ${JSON.stringify(body.slice(0, 80))}`);
+    log(`→ ${agentLabel(agent)} (${agent.pid})${queued ? " [queued]" : ""} ts=${m.ts} ${JSON.stringify(redactSecrets(body).slice(0, 80))}`);
+    // The owner meant the agent to have it, so it is forwarded — but it now sits in Slack's
+    // history; flag that on the message itself.
+    if (hasSecret(body)) await react(m.ts, "closed_lock_with_key");
     const t0 = Number(m.ts) * 1000;
     const tSent = Date.now();
     lastForward.set(agent.pid, { ts: m.ts, sent: tSent });
