@@ -21,7 +21,7 @@
 // ts (every ts it posts is remembered) and by the RELAY_MARK prefix.
 //
 // Config: ~/.config/slack-cli/relay.json (or --config), never in this repo:
-//   { "workspace": "acme", "channel": "C00000001", "defaultAgent": "12345" }
+//   { "workspace": "acme", "channel": "C00000001", "defaultAgent": "slack-term" }
 
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -180,7 +180,8 @@ type Config = {
   channel: string;
   team?: string;         // expected team id — a bot token for another workspace is refused
   owner?: string;        // the user whose messages are instructions (default: the user token's owner)
-  defaultAgent?: string;
+  defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
+  channelDefaults?: Record<string, string>; // mention mode: channel id → default route; those channels take every owner message
   intervalMs?: number;
   stateDir?: string;
   botTokenFile?: string; // dotenv file with SLACK_RELAY_BOT_TOKEN=xoxb-… (default ~/.config/slack-cli/relay-bot.env)
@@ -296,7 +297,13 @@ async function superviseMentions(cfg: Config, argv: string[]): Promise<void> {
     const dir = join(root, id);
     mkdirSync(dir, { recursive: true });
     const childCfg = join(dir, "relay.json");
-    writeFileSync(childCfg, JSON.stringify({ ...cfg, channel: id, stateDir: dir, mentionsOnly: true, intervalMs: cfg.mentionIntervalMs ?? 15_000 }));
+    // A channel with its own default agent (channelDefaults) is a full relay for that agent;
+    // every other channel only answers mentions of the bot.
+    const own = cfg.channelDefaults?.[id];
+    writeFileSync(childCfg, JSON.stringify({
+      ...cfg, channel: id, stateDir: dir, mentionsOnly: !own, intervalMs: own ? cfg.intervalMs ?? 5000 : cfg.mentionIntervalMs ?? 15_000,
+      ...(own ? { defaultAgent: own } : {}),
+    }));
     const child = spawn(process.execPath, [self, "--config", childCfg], { stdio: ["ignore", "pipe", "pipe"] });
     const tag = `[#${name || id}]`;
     child.stdout?.on("data", (d) => process.stdout.write(String(d).split("\n").filter(Boolean).map((l) => `${tag} ${l}\n`).join("")));
@@ -307,7 +314,7 @@ async function superviseMentions(cfg: Config, argv: string[]): Promise<void> {
       setTimeout(() => { if (!children.has(id) && !stopping) startChild(id, name); }, 30_000);
     });
     children.set(id, child);
-    log(`${tag} watching for mentions`);
+    log(`${tag} ${cfg.channelDefaults?.[id] ? `relaying everything to ${cfg.channelDefaults[id]}` : "watching for mentions"}`);
   };
   let stopping = false;
   for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; for (const c of children.values()) c.kill("SIGTERM"); process.exit(0); });
@@ -380,6 +387,8 @@ export async function main(argv: string[]): Promise<void> {
   let agents: Agent[] = [];
   const lastStatus = new Map<number, string>();
 
+  const defaultAgent = (): Agent | undefined => (cfg.defaultAgent ? matchAgent(cfg.defaultAgent, agents).agent : undefined);
+
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
     const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName)
@@ -388,7 +397,7 @@ export async function main(argv: string[]): Promise<void> {
     const { route, body } = parseRoute(text);
     let agent: Agent | undefined;
     if (route) {
-      const r = matchAgent(route, agents, cfg.defaultAgent ? Number(cfg.defaultAgent) : undefined);
+      const r = matchAgent(route, agents, defaultAgent()?.pid);
       agent = r.agent;
       if (!agent) {
         markDelivered(st.delivered, m.ts); save();
@@ -399,7 +408,7 @@ export async function main(argv: string[]): Promise<void> {
     } else if (bound) {
       agent = agents.find((a) => a.pid === bound.pid);
     } else if (cfg.defaultAgent) {
-      agent = agents.find((a) => a.pid === Number(cfg.defaultAgent));
+      agent = defaultAgent();
     }
     if (!agent) {
       markDelivered(st.delivered, m.ts); save();

@@ -355,4 +355,17 @@ describe("relay e2e", () => {
     expect(sends(s0.sendLog)[0]).toContain("ping from another channel");
     expect(sends(s0.sendLog).length).toBe(1);
   });
+
+  test("a channel with its own default route takes every owner message, routed by repo name", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true, extra: { defaultAgent: "nope", channelDefaults: { C00000002: "otoji" }, mentionRescanMs: 8_000 } });
+    const r = startRelay(fake, s0, 1, ["mentions", "--rounds", "1"]);
+    await waitFor(() => r.log().includes("[#other] relaying everything to otoji") && fake.historyCalls() >= 2);
+    fake.top.push({ ts: nextTs(), user: SELF, text: "no mention, still for otoji" });
+    fake.top.push({ ts: nextTs(), user: "U00000002", text: "not the owner" });
+    await waitFor(() => sends(s0.sendLog).length === 1);
+    await r.done;
+    expect(sends(s0.sendLog)).toHaveLength(1);
+    expect(sends(s0.sendLog)[0]).toContain("no mention, still for otoji");
+  });
 });
