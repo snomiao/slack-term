@@ -486,6 +486,24 @@ export async function pinsAdd(token: string, channel: string, ts: string, cookie
 // without colons (e.g. "eyes", "white_check_mark"). Slack's reactions.add
 // returns already_reacted when the reaction exists; reactions.remove returns
 // no_reaction when it doesn't — both surface to the caller as API errors.
+/** Channels the token's user/bot is a member of (users.conversations). `types` defaults to
+ *  public channels; private ones need `groups:read`. */
+export async function memberChannels(token: string, types = "public_channel", cookie?: string): Promise<{ id: string; name: string }[]> {
+  const out: { id: string; name: string }[] = [];
+  let cursor = "";
+  while (true) {
+    const params: Record<string, string> = { limit: "200", types, exclude_archived: "true" };
+    if (cursor) params.cursor = cursor;
+    const resp = (await get(token, "users.conversations", params, cookie)) as {
+      channels?: { id?: string; name?: string }[]; response_metadata?: { next_cursor?: string };
+    };
+    for (const c of resp.channels ?? []) if (c.id) out.push({ id: c.id, name: c.name ?? "" });
+    cursor = resp.response_metadata?.next_cursor ?? "";
+    if (!cursor) break;
+  }
+  return out;
+}
+
 /** Join a public channel (bot tokens need `channels:join`). Idempotent. */
 export async function conversationsJoin(token: string, channel: string, cookie?: string): Promise<void> {
   await post(token, "conversations.join", { channel }, cookie);

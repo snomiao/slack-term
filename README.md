@@ -368,6 +368,13 @@ one cycle: it then reads and posts as the bot (joining the channel itself), stil
 acting only on `"owner"`'s messages. A bot token does not expire like a browser
 session does.
 
+**Mention mode.** `bun run relay mentions` runs one extra relay per channel the bot
+is a member of (except the configured channel and DMs), with `mentionsOnly`: there,
+only *your* messages that tag the bot (`@Snobot …`, an `@route` after it still works)
+start a conversation, the agent answers in that message's thread, and your further
+replies in that thread keep going to the same agent. Invite the bot to a channel and
+it is picked up within `mentionRescanMs` (5 min). Other people's mentions are ignored.
+
 The relay survives auth failures (logged as `!!! AUTH FAILED`, retried with
 backoff, credentials re-read from disk each time — re-importing a cookie needs no
 restart), and it persists both its cursor and every delivered message ts, so

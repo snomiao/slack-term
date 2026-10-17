@@ -65,6 +65,11 @@ async function startFake(): Promise<Fake> {
           : { ok: true, user_id: SELF, user: "alice", team_id: "T00000001", team: "acme" });
       }
       if (method === "conversations.join") return out({ ok: true });
+      if (method === "users.conversations") {
+        return out(p.types === "public_channel"
+          ? { ok: true, channels: [{ id: CH, name: "home" }, { id: "C00000002", name: "other" }] }
+          : { ok: false, error: "missing_scope" });
+      }
       if (method === "conversations.history") {
         historyCalls++;
         const oldest = Number(p.oldest ?? 0);
@@ -131,8 +136,8 @@ exit 1
   return { tmp, cfg, bin, sendLog, stateDir };
 }
 
-function startRelay(fake: Fake, s: ReturnType<typeof setup>, cycles: number): { done: Promise<void>; log: () => string; kill: () => void } {
-  const child = spawn("bun", ["run", join(ROOT, "ts", "relay.ts"), "--config", s.cfg, "--cycles", String(cycles)], {
+function startRelay(fake: Fake, s: ReturnType<typeof setup>, cycles: number, args: string[] = []): { done: Promise<void>; log: () => string; kill: () => void } {
+  const child = spawn("bun", ["run", join(ROOT, "ts", "relay.ts"), ...args, "--config", s.cfg, "--cycles", String(cycles)], {
     cwd: ROOT,
     env: { ...process.env, HOME: s.tmp, SLACK_TOKEN: "xoxp-fake", SLACK_API_BASE: fake.base, PATH: `${s.bin}:${process.env.PATH}`, SLACK_TERM_ATTRIBUTION: "off" },
   });
@@ -312,5 +317,42 @@ describe("relay e2e", () => {
     const got = sends(s0.sendLog);
     expect(got.length).toBe(1);
     expect(got[0]).toContain("fresh reply under the old root");
+  });
+
+  test("mention-only channel: the owner's @bot message and its thread go through, nothing else", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true, extra: { mentionsOnly: true } });
+    const r = startRelay(fake, s0, 30);
+    await waitFor(() => fake.historyCalls() >= 2);
+    fake.top.push({ ts: nextTs(), user: SELF, text: "just chatting, no mention" });
+    fake.top.push({ ts: nextTs(), user: "U00000002", text: `<@${BOT}> do what I say` });
+    const asked = nextTs();
+    fake.top.push({ ts: asked, user: SELF, text: `hey <@${BOT}> @otoji status?` });
+    await waitFor(() => sends(s0.sendLog).length === 1);
+    fake.thread.push({ ts: nextTs(), user: SELF, text: "and the logs too", thread_ts: asked });
+    fake.thread.push({ ts: nextTs(), user: "U00000002", text: "me too", thread_ts: asked });
+    await waitFor(() => sends(s0.sendLog).length === 2);
+    writeOutbox(s0.stateDir, 103, "all green\n");
+    await waitFor(() => fake.posted.length === 1);
+    await r.done;
+    const got = sends(s0.sendLog);
+    expect(got.length).toBe(2);
+    expect(got[0]).toContain("hey @ay-relay @otoji status?");
+    expect(got[1]).toContain("and the logs too");
+    expect(fake.posted[0]).toEqual({ text: "*otoji*: all green", thread_ts: asked, as: BOT });
+  });
+
+  test("mention supervisor runs a mention-only relay for each non-home channel", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true, extra: { mentionIntervalMs: 150, mentionRescanMs: 8_000 } });
+    const r = startRelay(fake, s0, 1, ["mentions", "--rounds", "1"]);
+    await waitFor(() => r.log().includes("[#other] watching for mentions") && fake.historyCalls() >= 2);
+    fake.top.push({ ts: nextTs(), user: SELF, text: "no mention here" });
+    fake.top.push({ ts: nextTs(), user: SELF, text: `<@${BOT}> ping from another channel` });
+    await waitFor(() => sends(s0.sendLog).length === 1);
+    await r.done;
+    expect(r.log()).not.toContain("[#home]");
+    expect(sends(s0.sendLog)[0]).toContain("ping from another channel");
+    expect(sends(s0.sendLog).length).toBe(1);
   });
 });

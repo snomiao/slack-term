@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -100,5 +100,22 @@ describe("readBotToken / markDelivered", () => {
     expect(markDelivered(d, "1.1")).toBe(false);
     for (let i = 0; i < 10; i++) markDelivered(d, `2.${i}`, 5);
     expect(d.length).toBe(5);
+  });
+});
+
+describe("mention mode", () => {
+  const BOT = "U00000009";
+  test("mentionsUser matches <@U…> and <@U…|name> anywhere", () => {
+    expect(mentionsUser("hey <@U00000009> look", BOT)).toBe(true);
+    expect(mentionsUser("<@U00000009|snobot> x", BOT)).toBe(true);
+    expect(mentionsUser("hey @snobot", BOT)).toBe(false);
+    expect(mentionsUser("<@U000000091> x", BOT)).toBe(false);
+  });
+  test("mentionGate: only a mention, or a bound thread, opens a mention-only channel", () => {
+    const m = { ts: "1", user: "U00000001", text: "plain" };
+    expect(mentionGate(m, { mentionsOnly: false, botId: BOT, threadBound: false })).toBe(true);
+    expect(mentionGate(m, { mentionsOnly: true, botId: BOT, threadBound: false })).toBe(false);
+    expect(mentionGate(m, { mentionsOnly: true, botId: BOT, threadBound: true })).toBe(true);
+    expect(mentionGate({ ...m, text: "<@U00000009> go" }, { mentionsOnly: true, botId: BOT, threadBound: false })).toBe(true);
   });
 });

@@ -23,12 +23,12 @@
 // Config: ~/.config/slack-cli/relay.json (or --config), never in this repo:
 //   { "workspace": "acme", "channel": "C00000001", "defaultAgent": "12345" }
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { authTest, conversationsJoin, history, reactionAdd, replies, send } from "./slack.ts";
+import { authTest, conversationsJoin, history, memberChannels, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
 import { connectRelayStream, wakeableSleep } from "./relayStream.ts";
 
@@ -72,6 +72,18 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
   if (selfName) t = t.replace(new RegExp(`^@${selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w./-])[\\s:,]*`, "i"), "");
   t = t.trim();
   return t || "(you were mentioned, no text)";
+}
+
+/** Does the text tag this user (`<@U…>` or `<@U…|name>`)? */
+export function mentionsUser(text: string | undefined, uid: string): boolean {
+  return !!uid && new RegExp(`<@${uid}(\\|[^>]*)?>`).test(text ?? "");
+}
+
+/** In a mention-only channel only a message that tags the bot starts a conversation;
+ *  once a thread is bound to an agent, the owner's further replies in it count too. */
+export function mentionGate(m: SlackMsg, opts: { mentionsOnly: boolean; botId: string; threadBound: boolean }): boolean {
+  if (!opts.mentionsOnly) return true;
+  return opts.threadBound || mentionsUser(m.text, opts.botId);
 }
 
 /** "~/ws/<owner>/<repo>/tree/<branch>" → { repo, branch }; else basename. */
@@ -172,6 +184,9 @@ type Config = {
   intervalMs?: number;
   stateDir?: string;
   botTokenFile?: string; // dotenv file with SLACK_RELAY_BOT_TOKEN=xoxb-… (default ~/.config/slack-cli/relay-bot.env)
+  mentionsOnly?: boolean;
+  mentionIntervalMs?: number; // poll interval of a mention-only child (default 15 s)
+  mentionRescanMs?: number;   // how often the supervisor re-lists the bot's channels (default 5 min) // only messages that tag the bot (and threads already bound) are instructions
   stream?: string;       // wss://<relay-worker>/stream — realtime wake-ups (relay-worker/)
   streamKeyFile?: string; // dotenv file with RELAY_STREAM_KEY=… (default ~/.config/slack-cli/relay-stream.env)
   streamIntervalMs?: number; // poll interval while the stream is up (default 30 s; it is only the safety net then)
@@ -265,9 +280,57 @@ async function setBotToken(cfg: Config): Promise<void> {
   process.exit(0);
 }
 
+/** Mention mode: run one mention-only relay per channel the bot is a member of (except
+ *  the home channel and DMs, which have full relays), re-listing every few minutes. Each
+ *  child is the ordinary single-channel relay with `mentionsOnly`, its own state and outbox.
+ *  Never acts on anyone but the owner — the children apply the same owner check. */
+async function superviseMentions(cfg: Config, argv: string[]): Promise<void> {
+  const bot = readBotToken(botTokenPath(cfg));
+  if (!bot) throw new Error("mention mode needs the bot token (bun run relay set-bot-token)");
+  const root = join(cfg.stateDir ?? join(homedir(), ".config", "slack-cli", "relay"), "mentions");
+  mkdirSync(root, { recursive: true });
+  const exclude = new Set([cfg.channel, ...(cfg as { mentionExclude?: string[] }).mentionExclude ?? []]);
+  const children = new Map<string, ReturnType<typeof spawn>>();
+  const self = process.argv[1]!;
+  const startChild = (id: string, name: string): void => {
+    const dir = join(root, id);
+    mkdirSync(dir, { recursive: true });
+    const childCfg = join(dir, "relay.json");
+    writeFileSync(childCfg, JSON.stringify({ ...cfg, channel: id, stateDir: dir, mentionsOnly: true, intervalMs: cfg.mentionIntervalMs ?? 15_000 }));
+    const child = spawn(process.execPath, [self, "--config", childCfg], { stdio: ["ignore", "pipe", "pipe"] });
+    const tag = `[#${name || id}]`;
+    child.stdout?.on("data", (d) => process.stdout.write(String(d).split("\n").filter(Boolean).map((l) => `${tag} ${l}\n`).join("")));
+    child.stderr?.on("data", (d) => process.stdout.write(`${tag} ${String(d)}`));
+    child.on("exit", (code) => {
+      children.delete(id);
+      log(`${tag} exited (${code}); restarting in 30 s`);
+      setTimeout(() => { if (!children.has(id) && !stopping) startChild(id, name); }, 30_000);
+    });
+    children.set(id, child);
+    log(`${tag} watching for mentions`);
+  };
+  let stopping = false;
+  for (const sig of ["SIGINT", "SIGTERM"] as const) process.on(sig, () => { stopping = true; for (const c of children.values()) c.kill("SIGTERM"); process.exit(0); });
+  const cyi = argv.indexOf("--rounds");
+  let rounds = cyi >= 0 ? Number(argv[cyi + 1]) : Infinity;
+  while (rounds-- > 0) {
+    try {
+      let chans = await memberChannels(bot, "public_channel");
+      try { chans = chans.concat(await memberChannels(bot, "private_channel")); } catch { /* no groups:read */ }
+      const want = new Map(chans.filter((c) => !exclude.has(c.id) && !c.id.startsWith("D")).map((c) => [c.id, c.name]));
+      for (const [id, name] of want) if (!children.has(id)) startChild(id, name);
+      for (const [id, c] of children) if (!want.has(id)) { log(`[${id}] bot left — stopping`); c.kill("SIGTERM"); }
+    } catch (e: unknown) { log("listing channels failed", String(e).slice(0, 200)); }
+    await new Promise((r) => setTimeout(r, cfg.mentionRescanMs ?? 300_000));
+  }
+  stopping = true;
+  for (const c of children.values()) c.kill("SIGTERM");
+}
+
 export async function main(argv: string[]): Promise<void> {
   const cfg = loadConfig(argv);
   if (argv[0] === "set-bot-token") return setBotToken(cfg);
+  if (argv[0] === "mentions") return superviseMentions(cfg, argv);
   const CHANNEL = cfg.channel; // the ONLY channel this process ever reads or writes
   const stateDir = cfg.stateDir ?? join(homedir(), ".config", "slack-cli", "relay");
   const outbox = join(stateDir, "outbox");
@@ -319,7 +382,8 @@ export async function main(argv: string[]): Promise<void> {
 
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
-    const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName);
+    const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName)
+      .replace(new RegExp(`<@${creds!.selfId}(\\|[^>]*)?>`, "g"), `@${creds!.selfName || "bot"}`);
     const bound = st.threads[threadTs];
     const { route, body } = parseRoute(text);
     let agent: Agent | undefined;
@@ -384,7 +448,7 @@ export async function main(argv: string[]): Promise<void> {
     const h = (await history(c.token, CHANNEL, 200, String(dayAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
     for (const m of (h.messages ?? []).slice().reverse()) {
       if (Number(m.ts) > Number(st.cursor)) {
-        if (isInstruction(m, c.owner, ownTs)) await deliver(m, m.ts);
+        if (isInstruction(m, c.owner, ownTs) && mentionGate(m, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: false })) await deliver(m, m.ts);
         st.cursor = m.ts;
         save();
       }
@@ -394,7 +458,7 @@ export async function main(argv: string[]): Promise<void> {
       const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
       for (const x of r.messages ?? []) {
         if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
-        if (isInstruction(x, c.owner, ownTs)) await deliver(x, m.ts);
+        if (isInstruction(x, c.owner, ownTs) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts);
         st.replySeen[m.ts] = x.ts;
         save();
       }
