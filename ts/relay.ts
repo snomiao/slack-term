@@ -37,7 +37,10 @@ export const RELAY_MARK = "🤖";
 export const FORWARD_PREFIX = "[slack-relay]";
 
 export type Agent = { pid: number; cwd: string; status: string; cli: string };
-export type SlackMsg = { ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string };
+export type SlackMsg = {
+  ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
+  reply_count?: number; latest_reply?: string;
+};
 
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
 
@@ -57,6 +60,17 @@ export function parseRoute(text: string): { route?: string; body: string } {
   const m = text.trim().match(/^@([\w.\/-]+)[\s:,]+([\s\S]+)$/);
   if (!m) return { body: text.trim() };
   return { route: m[1]!.toLowerCase(), body: m[2]!.trim() };
+}
+
+/** Addressing the relay's own bot ("<@BOT> do x", or a typed "@snobot do x") is the
+ *  same as no prefix: the mention is dropped and the message goes to the default /
+ *  thread agent. A bare mention still forwards, so the agent sees it was pinged. */
+export function stripSelfMention(text: string, selfId: string, selfName: string): string {
+  let t = text.trim();
+  if (selfId) t = t.replace(new RegExp(`^<@${selfId}(\\|[^>]*)?>[\\s:,]*`), "");
+  if (selfName) t = t.replace(new RegExp(`^@${selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w./-])[\\s:,]*`, "i"), "");
+  t = t.trim();
+  return t || "(you were mentioned, no text)";
 }
 
 /** "~/ws/<owner>/<repo>/tree/<branch>" → { repo, branch }; else basename. */
@@ -122,13 +136,15 @@ type State = {
   outboxOffset: Record<string, number>;   // pid → bytes consumed
   replied: Record<string, boolean>;       // pid → wrote outbox since last forward
   delivered: string[];                    // message ts already forwarded (restart-proof dedupe)
+  floor: string;                          // never forward anything at/before this ts
+  replySeen: Record<string, string>;      // thread root ts → newest reply ts looked at
 };
 
 const THREAD_TTL_MS = 24 * 3600_000;
 
 function loadState(path: string): State {
   try { return JSON.parse(readFileSync(path, "utf8")) as State; } catch {
-    return { cursor: "", threads: {}, agentThread: {}, ownTs: [], outboxOffset: {}, replied: {}, delivered: [] };
+    return { cursor: "", threads: {}, agentThread: {}, ownTs: [], outboxOffset: {}, replied: {}, delivered: [], floor: "", replySeen: {} };
   }
 }
 
@@ -184,6 +200,7 @@ type Creds = {
   owner: string;        // whose messages are instructions
   ownerName: string;
   selfId: string;       // who the relay posts as (loop guard)
+  selfName: string;
   mode: "bot" | "user";
 };
 
@@ -203,11 +220,11 @@ async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
     const owner = cfg.owner ?? user?.id;
     if (!owner) throw new Error(`bot mode needs "owner" in relay.json (user session unavailable: ${userErr})`);
     try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
-    return { token: bot, owner, ownerName: user?.name ?? owner, selfId: b.userId, mode: "bot" };
+    return { token: bot, owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
   }
   if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
   if (cfg.team && user.team !== cfg.team) throw new Error(`user session is for team ${user.team}, relay.json expects ${cfg.team}`);
-  return { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}), owner: cfg.owner ?? user.id, ownerName: user.name, selfId: user.id, mode: "user" };
+  return { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}), owner: cfg.owner ?? user.id, ownerName: user.name, selfId: user.id, selfName: "", mode: "user" };
 }
 
 /** Record a delivered message ts; false when it was already delivered. */
@@ -251,6 +268,8 @@ export async function main(argv: string[]): Promise<void> {
   const statePath = join(stateDir, "state.json");
   const st = loadState(statePath);
   st.delivered ??= [];
+  st.replySeen ??= {};
+  st.floor ??= "";
   const ownTs = new Set(st.ownTs);
   const save = (): void => {
     st.ownTs = [...ownTs].slice(-500);
@@ -269,11 +288,18 @@ export async function main(argv: string[]): Promise<void> {
   };
   botFileChanged();
 
-  const post = async (text: string, threadTs?: string): Promise<string> => {
+  // `pid`: a top-level post made for an agent opens a thread bound to that agent, so a
+  // reply under it reaches that agent.
+  const post = async (text: string, threadTs?: string, pid?: number): Promise<string> => {
     const c = creds!;
     // A bot has its own name and avatar; a relay posting as the user marks its text.
     const ts = await send(c.token, CHANNEL, c.mode === "bot" ? text : `${RELAY_MARK} ${text}`, threadTs, false, c.cookie, true);
     if (ts) ownTs.add(ts);
+    if (ts && !threadTs && pid !== undefined) {
+      st.threads[ts] = { pid, seen: ts, touched: Date.now() };
+      st.agentThread[String(pid)] = ts;
+      st.replySeen[ts] = ts;
+    }
     return ts;
   };
   const react = (ts: string, name: string): Promise<void> =>
@@ -286,7 +312,7 @@ export async function main(argv: string[]): Promise<void> {
 
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
-    const text = m.text ?? "";
+    const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName);
     const bound = st.threads[threadTs];
     const { route, body } = parseRoute(text);
     let agent: Agent | undefined;
@@ -342,23 +368,31 @@ export async function main(argv: string[]): Promise<void> {
     const c = creds!;
     agents = await listAgents().catch((e: unknown) => { log("ay ls failed", String(e)); return agents; });
 
-    // 1) top-level messages
-    const h = (await history(c.token, CHANNEL, 50, st.cursor, undefined, c.cookie)) as { messages?: SlackMsg[] };
+    // 1) one history call over the last day: new top-level messages (past the cursor),
+    //    and every thread whose latest_reply moved — whoever started it (the owner, a
+    //    bystander, or the relay itself). Thread roots older than a day are not watched.
+    const dayAgo = Date.now() / 1000 - THREAD_TTL_MS / 1000;
+    const oldest = String(Math.max(dayAgo, Number(st.floor) || 0));
+    const h = (await history(c.token, CHANNEL, 200, oldest, undefined, c.cookie)) as { messages?: SlackMsg[] };
     for (const m of (h.messages ?? []).slice().reverse()) {
-      if (isInstruction(m, c.owner, ownTs)) await deliver(m, m.ts);
-      if (Number(m.ts) > Number(st.cursor)) { st.cursor = m.ts; save(); }
-    }
-
-    // 2) replies in threads the relay is tracking
-    for (const [tts, th] of Object.entries(st.threads)) {
-      if (Date.now() - th.touched > THREAD_TTL_MS) { delete st.threads[tts]; continue; }
-      const r = (await replies(c.token, CHANNEL, tts, 100, c.cookie)) as { messages?: SlackMsg[] };
-      for (const m of r.messages ?? []) {
-        if (m.ts === tts || Number(m.ts) <= Number(th.seen)) continue;
-        if (isInstruction(m, c.owner, ownTs)) await deliver(m, tts);
-        th.seen = m.ts;
+      if (Number(m.ts) > Number(st.cursor)) {
+        if (isInstruction(m, c.owner, ownTs)) await deliver(m, m.ts);
+        st.cursor = m.ts;
+        save();
+      }
+      if (!m.reply_count || !m.latest_reply) continue;
+      const seen = st.replySeen[m.ts] ?? st.floor;
+      if (Number(m.latest_reply) <= Number(seen)) continue;
+      const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
+      for (const x of r.messages ?? []) {
+        if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
+        if (isInstruction(x, c.owner, ownTs)) await deliver(x, m.ts);
+        st.replySeen[m.ts] = x.ts;
+        save();
       }
     }
+    for (const [root, th] of Object.entries(st.threads)) if (Date.now() - th.touched > THREAD_TTL_MS) delete st.threads[root];
+    for (const root of Object.keys(st.replySeen)) if (Number(root) < dayAgo) delete st.replySeen[root];
 
     // 3) outbox → thread
     for (const f of readdirSync(outbox).filter((x) => /^\d+\.md$/.test(x))) {
@@ -373,7 +407,7 @@ export async function main(argv: string[]): Promise<void> {
       const a = agents.find((x) => String(x.pid) === pid);
       const who = a ? agentLabel(a) : pid;
       if (chunk.trim()) {
-        await post(`*${who}*: ${clip(chunk)}`, threadTs);
+        await post(`*${who}*: ${clip(chunk)}`, threadTs, Number(pid));
         st.replied[pid] = true;
         log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
       }
@@ -423,6 +457,9 @@ export async function main(argv: string[]): Promise<void> {
           // Start from "now": never replay old history as instructions.
           const h = (await history(creds.token, CHANNEL, 1, undefined, undefined, creds.cookie)) as { messages?: SlackMsg[] };
           st.cursor = h.messages?.[0]?.ts ?? String(Date.now() / 1000);
+        }
+        if (!st.floor) {
+          st.floor = st.cursor;
           save();
         }
       }

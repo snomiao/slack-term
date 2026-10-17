@@ -68,8 +68,13 @@ async function startFake(): Promise<Fake> {
       if (method === "conversations.history") {
         historyCalls++;
         const oldest = Number(p.oldest ?? 0);
-        const ms = top.filter((m) => Number(m.ts) > oldest).reverse();
-        return out({ ok: true, messages: p.oldest ? ms : top.slice(-1).reverse() });
+        // Like Slack: a thread root carries reply_count / latest_reply.
+        const withReplies = (m: Msg): Msg & { reply_count?: number; latest_reply?: string } => {
+          const rs = thread.filter((x) => x.thread_ts === m.ts);
+          return rs.length ? { ...m, reply_count: rs.length, latest_reply: rs[rs.length - 1]!.ts } : m;
+        };
+        const ms = top.filter((m) => Number(m.ts) > oldest).reverse().map(withReplies);
+        return out({ ok: true, messages: p.oldest ? ms : top.slice(-1).reverse().map(withReplies) });
       }
       if (method === "conversations.replies") {
         const root = top.find((m) => m.ts === p.ts);
@@ -209,6 +214,28 @@ describe("relay e2e", () => {
     expect(fake.posted).toEqual([{ text: "*otoji*: done", thread_ts: root, as: BOT }]); // the bot posts, unmarked
     expect(r1.log()).toContain("mode=bot");
     expect(r2.log()).not.toContain("→ otoji");
+  });
+
+  test("bot mode: a reply under the relay's own top-level post reaches that agent; <@BOT> routes like no prefix", { timeout: 90_000 }, async () => {
+    const fake = await startFake();
+    const s = setup({ bot: true });
+    const r = startRelay(fake, s, 30);
+    await waitFor(() => fake.historyCalls() >= 2);
+    // The agent speaks first: no thread yet, so the bot posts top-level.
+    writeOutbox(s.stateDir, 103, "announcement\n");
+    await waitFor(() => fake.posted.length === 1);
+    const ann = fake.top[fake.top.length - 1]!.ts;
+    fake.thread.push({ ts: nextTs(), user: SELF, text: "reply under the bot post", thread_ts: ann });
+    await waitFor(() => sends(s.sendLog).length === 1);
+    fake.top.push({ ts: nextTs(), user: SELF, text: `<@${BOT}> hello bot` });
+    await waitFor(() => sends(s.sendLog).length === 2);
+    await r.done;
+
+    const got = sends(s.sendLog);
+    expect(got[0]).toContain("\nreply under the bot post\n");
+    expect(got[1]).toContain("\nhello bot\n");
+    expect(got[1]).not.toContain(BOT);
+    expect(fake.posted[0]).toEqual({ text: "*otoji*: announcement", as: BOT });
   });
 
   test("an auth failure is retried, not fatal", { timeout: 90_000 }, async () => {
