@@ -89,7 +89,7 @@ export function agentIdentity(host: string, repo: string, worktree: string): { u
  *  CLI collapsed it to "[Pasted text …]" or queued it). Its error output ends with the
  *  target's screen; if that shows our forward there, it was delivered — never resend. */
 export function landedInInput(stderr: string): boolean {
-  return /paste again to expand|Press up to edit queued messages|To answer in Slack, append/.test(stderr);
+  return /paste again to expand|Press up to edit queued messages|To answer in Slack, append|couldn't confirm the CLI acted on this message/.test(stderr);
 }
 
 const SECRET_RX = /\b(xox[abcdeposr]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}|[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}|gh[pousr]_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{20,})\b/g;

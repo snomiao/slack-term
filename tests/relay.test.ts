@@ -134,6 +134,7 @@ describe("landedInInput", () => {
   test("a busy agent's screen showing the pasted forward counts as delivered", () => {
     expect(landedInInput("exit 1 · last 10 lines ──\n  ✢ Garnishing…\n    paste again to expand\n")).toBe(true);
     expect(landedInInput("Press up to edit queued messages")).toBe(true);
+    expect(landedInInput("warning: couldn't confirm the CLI acted on this message — it may still be sitting unsubmitted")).toBe(true);
     expect(landedInInput("target unreachable")).toBe(false);
   });
 });
