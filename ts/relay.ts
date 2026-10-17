@@ -199,6 +199,7 @@ type Config = {
   team?: string;         // expected team id — a bot token for another workspace is refused
   owner?: string;        // the user whose messages are instructions (default: the user token's owner)
   defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
+  warnChannel?: string;  // the instance watching this channel posts realtime-degraded warnings there (others only log)
   agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
   channelDefaults?: Record<string, string>; // mention mode: channel id → default route; those channels take every owner message
   intervalMs?: number;
@@ -430,6 +431,17 @@ export async function main(argv: string[]): Promise<void> {
   const lastForward = new Map<number, { ts: string; sent: number }>();
   const secs = (ms: number): string => (ms / 1000).toFixed(2);
 
+  // Polling is the slow fallback. Whenever the relay is relying on it, say so loudly in
+  // the log, and (from the warnChannel instance only, at most hourly) in Slack.
+  let lastWarn = 0;
+  const degraded = (why: string): void => {
+    log(`!!! REALTIME DEGRADED: ${why} — falling back to slow polling`);
+    if (cfg.warnChannel !== CHANNEL || Date.now() - lastWarn < 3600_000) return;
+    lastWarn = Date.now();
+    post(`:warning: Realtime relay degraded: ${why}. Messages still arrive, but by polling (seconds instead of under a second).`)
+      .catch((e: unknown) => log("warn post failed", String(e)));
+  };
+
   const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
     const tDetect = Date.now();
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
@@ -488,6 +500,9 @@ export async function main(argv: string[]): Promise<void> {
     const tSent = Date.now();
     lastForward.set(agent.pid, { ts: m.ts, sent: tSent });
     const w = wakeAt.get(m.ts) ?? (m.thread_ts ? wakeAt.get(m.thread_ts) : undefined);
+    if (!w && cfg.stream) degraded(streamUp
+      ? "a message arrived with no Slack event (Slack may have stopped delivering: Event Subscriptions → toggle Enable Events off/on)"
+      : "the realtime stream is down");
     log(`trace ts=${m.ts} wake=${w ? `+${secs(w - t0)}` : "-"} seen=+${secs(tDetect - t0)} via=${w ? "stream" : "poll"} ay-send=+${secs(tSent - t0)} (${secs(tSent - tDetect)}s)`);
   };
 
@@ -587,6 +602,7 @@ export async function main(argv: string[]): Promise<void> {
   const sleeper = wakeableSleep();
   let streamUp = false;
   let stopStream: (() => void) | undefined;
+  let streamDownTimer: ReturnType<typeof setTimeout> | undefined;
   const streamKey = (() => {
     try {
       return readFileSync(cfg.streamKeyFile ?? join(homedir(), ".config", "slack-cli", "relay-stream.env"), "utf8").match(/^RELAY_STREAM_KEY=(\S+)/m)?.[1];
@@ -606,11 +622,18 @@ export async function main(argv: string[]): Promise<void> {
       onState: (s, why) => {
         streamUp = s === "open";
         log(`stream ${s}${why ? ` (${why})` : ""}`);
+        if (!streamUp) {
+          if (streamDownTimer) clearTimeout(streamDownTimer);
+          streamDownTimer = setTimeout(() => { if (!streamUp) degraded(`the realtime stream has been down for 60 s (${why ?? "closed"})`); }, 60_000);
+          streamDownTimer.unref?.(); // never what keeps the process alive at shutdown
+        }
         if (streamUp) sleeper.wake();
       },
     });
+  } else if (!cfg.stream) {
+    log("!!! no realtime stream configured (\"stream\" in relay.json) — polling only, which is slow; see relay-worker/README.md");
   } else if (cfg.stream) {
-    log("stream configured but no RELAY_STREAM_KEY — polling only");
+    degraded("stream configured but no RELAY_STREAM_KEY");
   }
 
   // Outbound must not wait for the (stream-lengthened) poll either: an agent appending to
@@ -663,6 +686,7 @@ export async function main(argv: string[]): Promise<void> {
     await sleeper.sleep(streamUp ? (cfg.streamIntervalMs ?? 30_000) : intervalMs);
   }
   stopStream?.();
+  if (streamDownTimer) clearTimeout(streamDownTimer);
   outboxWatch?.close();
   if (outboxTimer) clearTimeout(outboxTimer);
 }

@@ -385,4 +385,27 @@ describe("relay e2e", () => {
     await r.done;
     expect(fake.posted[0]).toMatchObject({ text: "hello", thread_ts: mine, icon_url: "https://example.com/otoji.png" });
   });
+
+  test("polling while the stream is up but silent is flagged: logged and warned once in warnChannel", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const hub = Bun.serve({
+      port: 0,
+      fetch(req, srv) { return srv.upgrade(req) ? undefined : new Response("no", { status: 400 }); },
+      websocket: { message(ws, msg) { if (msg !== "ping") ws.send(JSON.stringify({ type: "hello" })); } }, // never sends a wake
+    });
+    const s0 = setup({ bot: true, extra: { stream: `ws://127.0.0.1:${hub.port}/stream`, streamIntervalMs: 150, warnChannel: CH } });
+    const keyFile = join(s0.tmp, "relay-stream.env");
+    writeFileSync(keyFile, "RELAY_STREAM_KEY=k\n");
+    writeFileSync(s0.cfg, JSON.stringify({ ...(JSON.parse(readFileSync(s0.cfg, "utf8")) as object), streamKeyFile: keyFile }));
+    const r = startRelay(fake, s0, 40);
+    await waitFor(() => r.log().includes("stream open") && fake.historyCalls() >= 2);
+    fake.top.push({ ts: nextTs(), user: SELF, text: "@otoji one" });
+    fake.top.push({ ts: nextTs(), user: SELF, text: "@otoji two" });
+    await waitFor(() => sends(s0.sendLog).length === 2);
+    await r.done;
+    hub.stop(true);
+    expect(r.log()).toContain("!!! REALTIME DEGRADED: a message arrived with no Slack event");
+    const warns = fake.posted.filter((p) => p.text.includes("Realtime relay degraded"));
+    expect(warns).toHaveLength(1); // at most hourly
+  });
 });
