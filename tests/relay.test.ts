@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -159,5 +159,34 @@ describe("redactSecrets", () => {
     expect(hasSecret(discord)).toBe(true);
     expect(hasSecret("no secret")).toBe(false);
     expect(hasSecret(discord)).toBe(true); // no lastIndex carry-over
+  });
+});
+
+describe("multi-machine: exactly one relay acts", () => {
+  test("parseRoute takes an optional host", () => {
+    expect(parseRoute("@jr:bradiy status?")).toEqual({ host: "jr", route: "bradiy", body: "status?" });
+    expect(parseRoute("@bradiy: status?")).toEqual({ route: "bradiy", body: "status?" });
+  });
+  const both = (o: Omit<Parameters<typeof actsHere>[0], "host">) => [actsHere({ ...o, host: "mac" }), actsHere({ ...o, host: "JR" })];
+  test("unrouted → the channel home only", () => {
+    expect(both({ home: "jr", boundHere: false })).toEqual([false, true]);
+    expect(both({ boundHere: false })).toEqual([true, true]); // no home: single-machine setups unchanged
+  });
+  test("a host route wins over home and bindings", () => {
+    expect(both({ home: "jr", routeHost: "mac", boundHere: false })).toEqual([true, false]);
+  });
+  test("a thread stays with the machine whose agent posts in it", () => {
+    expect(both({ home: "jr", boundHere: false, threadHost: "mac" })).toEqual([true, false]);
+    expect(actsHere({ host: "mac", home: "jr", boundHere: true })).toBe(true);
+  });
+  test("threadHostOf reads the latest agent identity", () => {
+    expect(threadHostOf([
+      { ts: "1", user: "U00000001", text: "hi" },
+      { ts: "2", bot_id: "B00000001", username: "jr:bradiy#main", text: "a" },
+      { ts: "3", bot_id: "B00000001", text: "plain notice" },
+      { ts: "4", bot_id: "B00000001", username: "mac:bradiy#lane/x", text: "b" },
+      { ts: "5", user: "U00000001", text: "next" },
+    ])).toBe("mac");
+    expect(threadHostOf([{ ts: "1", user: "U00000001", username: "x:y" }])).toBeUndefined();
   });
 });

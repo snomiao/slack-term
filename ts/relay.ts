@@ -40,7 +40,7 @@ export const FORWARD_PREFIX = "[slack-relay]";
 export type Agent = { pid: number; cwd: string; status: string; cli: string };
 export type SlackMsg = {
   ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
-  reply_count?: number; latest_reply?: string;
+  reply_count?: number; latest_reply?: string; username?: string;
 };
 
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
@@ -57,10 +57,32 @@ export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<st
 
 /** Split a leading `@name` route off a message. Slack user mentions (<@U…>)
  *  are not routes. */
-export function parseRoute(text: string): { route?: string; body: string } {
-  const m = text.trim().match(/^@([\w.\/-]+)[\s:,]+([\s\S]+)$/);
+export function parseRoute(text: string): { route?: string; host?: string; body: string } {
+  const m = text.trim().match(/^@(?:([\w-]+):)?([\w.\/-]+)[\s:,]+([\s\S]+)$/);
   if (!m) return { body: text.trim() };
-  return { route: m[1]!.toLowerCase(), body: m[2]!.trim() };
+  return { ...(m[1] ? { host: m[1].toLowerCase() } : {}), route: m[2]!.toLowerCase(), body: m[3]!.trim() };
+}
+
+/** Several machines relay the same channel (the Worker broadcasts every event to all of
+ *  them); exactly one must act on each message. In order: a route naming a host
+ *  (`@jr:bradiy …`) goes to that host; a thread this relay bound to a local agent stays
+ *  here; a thread whose agent posts carry another host's identity belongs to that host;
+ *  anything else goes to the channel's home (`channelHomes`, default: every machine). */
+export function actsHere(o: { host: string; home?: string | undefined; routeHost?: string | undefined; boundHere: boolean; threadHost?: string | undefined }): boolean {
+  const eq = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+  if (o.routeHost) return eq(o.routeHost, o.host);
+  if (o.boundHere) return true;
+  if (o.threadHost) return eq(o.threadHost, o.host);
+  return !o.home || eq(o.home, o.host);
+}
+
+/** The host in the identity (`host:repo#worktree`) of the latest agent post in a thread. */
+export function threadHostOf(msgs: SlackMsg[]): string | undefined {
+  for (const x of msgs.slice().reverse()) {
+    const h = x.bot_id && x.username?.match(/^([\w-]+):[\w.-]/)?.[1];
+    if (h) return h;
+  }
+  return undefined;
 }
 
 /** Addressing the relay's own bot ("<@BOT> do x", or a typed "@snobot do x") is the
@@ -216,7 +238,9 @@ type Config = {
   defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
   warnChannel?: string;  // the instance watching this channel posts realtime-degraded warnings there (others only log)
   agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
-  channelDefaults?: Record<string, string>; // mention mode: channel id → default route; those channels take every owner message
+  channelDefaults?: Record<string, string>;
+  channelHomes?: Record<string, string>; // channel id → the host that answers unrouted messages there (others still serve their own threads / `@host:` routes)
+  host?: string;         // this machine's name in identities and channelHomes (default: short hostname) // mention mode: channel id → default route; those channels take every owner message
   intervalMs?: number;
   stateDir?: string;
   botTokenFile?: string; // dotenv file with SLACK_RELAY_BOT_TOKEN=xoxb-… (default ~/.config/slack-cli/relay-bot.env)
@@ -404,7 +428,8 @@ export async function main(argv: string[]): Promise<void> {
   // reply under it reaches that agent.
   // An agent's own words go out under its identity (bot mode, chat:write.customize);
   // the relay's notices stay plain Snobot.
-  const host = hostname().split(".")[0] ?? "host";
+  const host = cfg.host ?? hostname().split(".")[0] ?? "host";
+  const home = cfg.channelHomes?.[CHANNEL];
   const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string; icon_url?: string }> => {
     const repo = agentNames(a.cwd).repo;
     const id = agentIdentity(host, repo, agentNames(a.cwd).branch);
@@ -457,13 +482,17 @@ export async function main(argv: string[]): Promise<void> {
       .catch((e: unknown) => log("warn post failed", String(e)));
   };
 
-  const deliver = async (m: SlackMsg, threadTs: string): Promise<void> => {
+  const deliver = async (m: SlackMsg, threadTs: string, threadHost?: string): Promise<void> => {
     const tDetect = Date.now();
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
     const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName)
       .replace(new RegExp(`<@${creds!.selfId}(\\|[^>]*)?>`, "g"), `@${creds!.selfName || "bot"}`);
     const bound = st.threads[threadTs];
-    const { route, body } = parseRoute(text);
+    const { route, host: routeHost, body } = parseRoute(text);
+    if (!actsHere({ host, home, routeHost, boundHere: !!bound, threadHost })) {
+      log(`skip ts=${m.ts}: ${routeHost ? `routed to ${routeHost}` : threadHost ? `thread belongs to ${threadHost}` : `home is ${home}`}`);
+      return;
+    }
     let agent: Agent | undefined;
     if (route) {
       const r = matchAgent(route, agents, defaultAgent()?.pid);
@@ -545,9 +574,10 @@ export async function main(argv: string[]): Promise<void> {
       const seen = String(Math.max(Number(st.replySeen[m.ts] ?? 0), Number(st.floor) || 0));
       if (Number(m.latest_reply) <= Number(seen)) continue;
       const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
+      const tHost = threadHostOf(r.messages ?? []);
       for (const x of r.messages ?? []) {
         if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
-        if (isInstruction(x, c.owner, ownTs) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts);
+        if (isInstruction(x, c.owner, ownTs) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost);
         st.replySeen[m.ts] = x.ts;
         save();
       }
