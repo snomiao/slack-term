@@ -468,6 +468,7 @@ export async function main(argv: string[]): Promise<void> {
   // Latency trace, per message: Slack post → seen (wake/poll) → ay send done → the agent's
   // outbox write → reply posted. Logged as `trace …` lines (seconds, relative to the post).
   const wakeAt = new Map<string, number>();
+  const gaps: [number, number][] = []; // recent stream outages [down, up], ms
   const lastForward = new Map<number, { ts: string; sent: number }>();
   const secs = (ms: number): string => (ms / 1000).toFixed(2);
 
@@ -547,10 +548,13 @@ export async function main(argv: string[]): Promise<void> {
     const tSent = Date.now();
     lastForward.set(agent.pid, { ts: m.ts, sent: tSent });
     const w = wakeAt.get(m.ts) ?? (m.thread_ts ? wakeAt.get(m.thread_ts) : undefined);
-    if (!w && cfg.stream) degraded(streamUp
+    // Posted while the socket was reconnecting (Cloudflare drops long-lived sockets now and
+    // then): the reconnect catch-up found it, which is the stream working as designed.
+    const inGap = gaps.some(([a, b]) => t0 >= a - 2000 && t0 <= b);
+    if (!w && !inGap && cfg.stream) degraded(streamUp
       ? "a message arrived with no Slack event (Slack may have stopped delivering: Event Subscriptions → toggle Enable Events off/on)"
       : "the realtime stream is down");
-    log(`trace ts=${m.ts} wake=${w ? `+${secs(w - t0)}` : "-"} seen=+${secs(tDetect - t0)} via=${w ? "stream" : "poll"} ay-send=+${secs(tSent - t0)} (${secs(tSent - tDetect)}s)`);
+    log(`trace ts=${m.ts} wake=${w ? `+${secs(w - t0)}` : "-"} seen=+${secs(tDetect - t0)} via=${w ? "stream" : inGap ? "reconnect" : "poll"} ay-send=+${secs(tSent - t0)} (${secs(tSent - tDetect)}s)`);
   };
 
   const cycle = async (): Promise<void> => {
@@ -651,6 +655,7 @@ export async function main(argv: string[]): Promise<void> {
   let streamUp = false;
   let stopStream: (() => void) | undefined;
   let streamDownTimer: ReturnType<typeof setTimeout> | undefined;
+  let downAt = 0;
   const streamKey = (() => {
     try {
       return readFileSync(cfg.streamKeyFile ?? join(homedir(), ".config", "slack-cli", "relay-stream.env"), "utf8").match(/^RELAY_STREAM_KEY=(\S+)/m)?.[1];
@@ -675,6 +680,8 @@ export async function main(argv: string[]): Promise<void> {
           streamDownTimer = setTimeout(() => { if (!streamUp) degraded(`the realtime stream has been down for 60 s (${why ?? "closed"})`); }, 60_000);
           streamDownTimer.unref?.(); // never what keeps the process alive at shutdown
         }
+        if (!streamUp && !downAt) downAt = Date.now();
+        if (streamUp && downAt) { gaps.push([downAt, Date.now()]); if (gaps.length > 20) gaps.shift(); downAt = 0; }
         if (streamUp) sleeper.wake();
       },
     });
