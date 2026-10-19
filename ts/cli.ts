@@ -42,6 +42,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
+import { buildListSchema, cellValue, completedColumn, findColumn, parseColumnSpec, parseListSchema, parseSets, type ListColumn } from "./lists.ts";
 import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
@@ -61,6 +62,11 @@ import {
   filesInfo,
   filesList,
   listRecords,
+  slackListsAccessSet,
+  slackListsCreate,
+  slackListsItemsCreate,
+  slackListsItemsList,
+  slackListsItemsUpdate,
   history,
   listConversations,
   listConversationMembers,
@@ -881,6 +887,11 @@ const SCOPE_FOR_METHOD: Record<string, string> = {
   "chat.update": "chat:write",
   "chat.delete": "chat:write",
   "pins.add": "pins:write",
+  "slackLists.create": "lists:write",
+  "slackLists.items.create": "lists:write",
+  "slackLists.items.update": "lists:write",
+  "slackLists.items.list": "lists:read",
+  "slackLists.access.set": "lists:write",
   "conversations.replies": "channels:history (or groups:history)",
   "conversations.history": "channels:history (or groups:history)",
 };
@@ -3731,7 +3742,7 @@ async function cmdLists(
   token: string,
   cookie: string | undefined,
   ref: string,
-  opts: { limit: number; format: string },
+  opts: { limit: number; format: string; asBot?: boolean },
 ): Promise<void> {
   const listId = parseListId(ref);
   if (!listId) {
@@ -3745,7 +3756,11 @@ async function cmdLists(
   do {
     const listOpts: { limit: number; cursor?: string } = { limit: 200 };
     if (cursor) listOpts.cursor = cursor;
-    const resp = asRecord((await listRecords(token, listId, listOpts, cookie)) as Json);
+    // --as-bot reads through the public slackLists.items.list (bot token,
+    // lists:read) — for lanes that hold only a bot token, no user session.
+    const resp = opts.asBot
+      ? await slackListsItemsList(listsBotToken(), listId, listOpts)
+      : asRecord((await listRecords(token, listId, listOpts, cookie)) as Json);
     for (const it of asArray(resp.items ?? resp.records)) records.push(asRecord(it));
     const next = asRecord(resp.response_metadata).next_cursor;
     cursor = typeof next === "string" && next ? next : undefined;
@@ -3768,6 +3783,173 @@ async function cmdLists(
       .filter(Boolean);
     console.log(`${id}  ${cells.join(" | ")}`);
   }
+}
+
+// --- lists create / add / set — gated writes via the public slackLists.* API ---
+// The public API rejects the xoxc desktop token, so these act as the BOT
+// (SLACK_BOT_TOKEN, needs lists:write). Same two-step --code gate as `send`.
+
+function listsBotToken(): string {
+  const bot = resolveBotToken();
+  if (!bot) {
+    console.error(
+      "Error: Slack List writes go through the public slackLists.* API, which needs a bot token (xoxb-) — none was found.\n" +
+      "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+    );
+    process.exit(1);
+  }
+  return bot;
+}
+
+/** Fail early, before any gate, when the bot lacks lists:write — the gate would
+ *  otherwise mint a code for a write that can only fail. */
+async function requireListsWrite(bot: string): Promise<void> {
+  let scopes: string[] = [];
+  try {
+    scopes = (await authScopes(bot)).scopes;
+  } catch {
+    return; // scope lookup is best-effort; the write itself reports missing_scope
+  }
+  if (scopes.length && !scopes.includes("lists:write")) {
+    console.error(
+      "Error: the bot token lacks the lists:write scope (needed for slackLists.* writes).\n" +
+      "  Add it under OAuth & Permissions → Bot Token Scopes in the Slack app config, then reinstall the app.",
+    );
+    process.exit(1);
+  }
+}
+
+async function listUrl(bot: string, listId: string): Promise<string> {
+  try {
+    const a = await authTest(bot);
+    if (a.url && a.teamId) return `${a.url.replace(/\/$/, "")}/lists/${a.teamId}/${listId}`;
+  } catch {
+    // fall through to the bare id
+  }
+  return listId;
+}
+
+async function listColumns(bot: string, listId: string): Promise<ListColumn[]> {
+  const resp = await slackListsItemsList(bot, listId, { limit: 1, includeList: true });
+  const cols = parseListSchema(asRecord(resp.list));
+  if (!cols.length) throw new Error(`could not read the column schema of list ${listId}`);
+  return cols;
+}
+
+function listWriteFail(e: unknown): never {
+  console.error(friendlySlackError(e));
+  process.exit(1);
+}
+
+async function cmdListsCreate(args: { name: string; cols: string[]; todo: boolean; code?: string }): Promise<void> {
+  const specs = args.cols.map(parseColumnSpec);
+  const schema = buildListSchema(specs);
+  const bot = listsBotToken();
+  await requireListsWrite(bot);
+  const self = await selfIdentity(bot);
+  const code = safetyCode("lists-create", args.name, JSON.stringify(schema), String(args.todo), self?.userId ?? "");
+  if (args.code !== code) requireCode(args.code, code, [
+    `--- Creating Slack List ----------------------`,
+    fromLine(self, { asBot: true, pad: 9 }),
+    `  name:    ${args.name}`,
+    ...specs.map((c, i) => `  column:  ${c.name} (${c.type}${c.choices ? `: ${c.choices.join("/")}` : ""})${i === 0 ? " [primary]" : ""}`),
+    `  todo:    ${args.todo ? "on (adds Completed / Assignee / Due date)" : "off"}`,
+    `--------------------------------────────────`,
+  ]);
+  let resp: Record<string, Json>;
+  try {
+    resp = await slackListsCreate(bot, args.name, schema, args.todo);
+  } catch (e: unknown) {
+    listWriteFail(e);
+  }
+  const listId = String(resp.list_id ?? asRecord(resp.list).id ?? "");
+  console.log(`✓ Created list ${args.name}  (${listId})`);
+  console.log(await listUrl(bot, listId));
+}
+
+async function cmdListsAdd(args: { list: string; text: string; sets: string[]; code?: string }): Promise<void> {
+  const listId = parseListId(args.list);
+  if (!listId) throw new Error(`Not a list ID or list URL: ${args.list}`);
+  const bot = listsBotToken();
+  await requireListsWrite(bot);
+  const cols = await listColumns(bot, listId);
+  const primary = cols.find((c) => c.type === "text") ?? cols[0]!;
+  const pairs = [{ col: primary, value: args.text }, ...parseSets(args.sets).map((p) => ({ col: findColumn(cols, p.col), value: p.value }))];
+  const fields = pairs.map((p) => ({ column_id: p.col.id, ...cellValue(p.col, p.value) }));
+  const self = await selfIdentity(bot);
+  const code = safetyCode("lists-add", listId, JSON.stringify(fields), self?.userId ?? "");
+  if (args.code !== code) requireCode(args.code, code, [
+    `--- Adding a row to Slack List ---------------`,
+    fromLine(self, { asBot: true, pad: 9 }),
+    `  list:    ${listId}`,
+    ...pairs.map((p) => `  ${(p.col.name || p.col.key).padEnd(8)} ${p.value}`),
+    `--------------------------------────────────`,
+  ]);
+  let resp: Record<string, Json>;
+  try {
+    resp = await slackListsItemsCreate(bot, listId, fields);
+  } catch (e: unknown) {
+    listWriteFail(e);
+  }
+  console.log(`✓ Added row ${String(asRecord(resp.item).id ?? "")}  ${args.text}`);
+}
+
+async function cmdListsSet(args: { list: string; row: string; sets: string[]; done?: boolean; code?: string }): Promise<void> {
+  const listId = parseListId(args.list);
+  if (!listId) throw new Error(`Not a list ID or list URL: ${args.list}`);
+  const bot = listsBotToken();
+  await requireListsWrite(bot);
+  const cols = await listColumns(bot, listId);
+  const pairs = parseSets(args.sets).map((p) => ({ col: findColumn(cols, p.col), value: p.value }));
+  if (args.done !== undefined) {
+    const completed = completedColumn(cols);
+    if (!completed) throw new Error(`list ${listId} has no Completed column — it was not created with todo mode`);
+    pairs.push({ col: { ...completed, type: "checkbox" }, value: String(args.done) });
+  }
+  if (!pairs.length) throw new Error("nothing to set — pass --set name=value and/or --done / --no-done");
+  const cells = pairs.map((p) => ({ row_id: args.row, column_id: p.col.id, ...cellValue(p.col, p.value) }));
+  const self = await selfIdentity(bot);
+  const code = safetyCode("lists-set", listId, args.row, JSON.stringify(cells), self?.userId ?? "");
+  if (args.code !== code) requireCode(args.code, code, [
+    `--- Updating Slack List row -----------------`,
+    fromLine(self, { asBot: true, pad: 9 }),
+    `  list:    ${listId}`,
+    `  row:     ${args.row}`,
+    ...pairs.map((p) => `  ${(p.col.name || p.col.key).padEnd(8)} ${p.value}`),
+    `--------------------------------────────────`,
+  ]);
+  try {
+    await slackListsItemsUpdate(bot, listId, cells);
+  } catch (e: unknown) {
+    listWriteFail(e);
+  }
+  console.log(`✓ Updated row ${args.row}`);
+}
+
+async function cmdListsShare(args: { list: string; users: string[]; channels: string[]; level: "read" | "write" | "owner"; code?: string }): Promise<void> {
+  const listId = parseListId(args.list);
+  if (!listId) throw new Error(`Not a list ID or list URL: ${args.list}`);
+  if (!args.users.length === !args.channels.length) throw new Error("pass --user or --channel (Slack takes one kind per call, not both)");
+  if (args.level === "owner" && args.channels.length) throw new Error("only a user can be made owner");
+  const bot = listsBotToken();
+  await requireListsWrite(bot);
+  const who = args.users.length ? args.users : args.channels;
+  const self = await selfIdentity(bot);
+  const code = safetyCode("lists-share", listId, args.level, who.join(","), self?.userId ?? "");
+  if (args.code !== code) requireCode(args.code, code, [
+    `--- Sharing Slack List ----------------------`,
+    fromLine(self, { asBot: true, pad: 9 }),
+    `  list:    ${listId}`,
+    `  ${args.users.length ? "users:  " : "channels:"} ${who.join(", ")}`,
+    `  access:  ${args.level}${args.level === "owner" ? "  ⚠ transfers ownership" : ""}`,
+    `--------------------------------────────────`,
+  ]);
+  try {
+    await slackListsAccessSet(bot, listId, args.level, args.users.length ? { userIds: args.users } : { channelIds: args.channels });
+  } catch (e: unknown) {
+    listWriteFail(e);
+  }
+  console.log(`✓ Granted ${args.level} on ${listId} to ${who.join(", ")}`);
 }
 
 // --- download <ref> [dest] — fetch an attachment's bytes to disk (read-only) ---
@@ -5168,22 +5350,111 @@ async function main(): Promise<void> {
       () => {},
     )
     .command(
-      "lists <ref>",
-      "Read a Slack List's rows (by list URL or F-id) — read-only",
+      "lists",
+      "Slack Lists — read rows (lists <ref>), or create / add / set (gated, as the bot)",
       (y) => y
-        .positional("ref", { type: "string", demandOption: true, describe: "List URL (…/lists/<TEAM>/<F-id>) or bare F-id" })
-        .option("limit", { alias: "l", type: "number", default: 100, describe: "Max rows to show" })
-        .option("format", { type: "string", choices: ["text", "jsonl"], default: "text" })
-        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl (raw records)" }),
-      async (argv) => {
-        const format = argv.json ? "jsonl" : (argv.format as string);
-        try {
-          await cmdLists(tok(argv as W), ck(argv as W), argv.ref!, { limit: argv.limit as number, format });
-        } catch (e: unknown) {
-          console.error(friendlySlackError(e));
-          process.exit(1);
-        }
-      },
+        .command(
+          "create <name>",
+          "Create a Slack List (confirm-hash safety gate; bot token, lists:write)",
+          (y2) => y2
+            .positional("name", { type: "string", demandOption: true, describe: "List name" })
+            .option("col", { type: "string", array: true, default: [], describe: "Column name:type (text|select|user|link|date|number|checkbox); select takes name:select:a,b,c. First is the primary text column. Repeatable" })
+            .option("todo", { type: "boolean", default: false, describe: "Todo mode: adds Completed / Assignee / Due date columns" })
+            .option("code", { type: "string", describe: "Safety hash to confirm create" }),
+          async (argv) => {
+            try {
+              const a: { name: string; cols: string[]; todo: boolean; code?: string } = { name: argv.name!, cols: argv.col as string[], todo: argv.todo === true };
+              if (argv.code !== undefined) a.code = argv.code;
+              await cmdListsCreate(a);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "add <list> <text>",
+          "Add a row to a Slack List (confirm-hash safety gate; bot token)",
+          (y2) => y2
+            .positional("list", { type: "string", demandOption: true, describe: "List URL or F-id" })
+            .positional("text", { type: "string", demandOption: true, describe: "Primary (first text) column value" })
+            .option("set", { type: "string", array: true, default: [], describe: "Other cells: column=value (repeatable)" })
+            .option("code", { type: "string", describe: "Safety hash to confirm add" }),
+          async (argv) => {
+            try {
+              const a: { list: string; text: string; sets: string[]; code?: string } = { list: argv.list!, text: argv.text!, sets: argv.set as string[] };
+              if (argv.code !== undefined) a.code = argv.code;
+              await cmdListsAdd(a);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "set <list> <row>",
+          "Update cells of a Slack List row; --done checks it off (confirm-hash safety gate; bot token)",
+          (y2) => y2
+            .positional("list", { type: "string", demandOption: true, describe: "List URL or F-id" })
+            .positional("row", { type: "string", demandOption: true, describe: "Row id (Rec…), as printed by lists add / lists <ref>" })
+            .option("set", { type: "string", array: true, default: [], describe: "column=value (repeatable)" })
+            .option("done", { type: "boolean", describe: "Check the row off (--no-done to uncheck); needs a todo-mode list" })
+            .option("code", { type: "string", describe: "Safety hash to confirm update" }),
+          async (argv) => {
+            try {
+              const a: { list: string; row: string; sets: string[]; done?: boolean; code?: string } = { list: argv.list!, row: argv.row!, sets: argv.set as string[] };
+              if (argv.done !== undefined) a.done = argv.done;
+              if (argv.code !== undefined) a.code = argv.code;
+              await cmdListsSet(a);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "share <list>",
+          "Grant users or channels access to a Slack List (confirm-hash safety gate; bot token)",
+          (y2) => y2
+            .positional("list", { type: "string", demandOption: true, describe: "List URL or F-id" })
+            .option("user", { type: "string", array: true, default: [], describe: "User ID (U…), repeatable" })
+            .option("channel", { type: "string", array: true, default: [], describe: "Channel ID (C…), repeatable" })
+            .option("level", { type: "string", choices: ["read", "write", "owner"] as const, default: "write" })
+            .option("code", { type: "string", describe: "Safety hash to confirm share" }),
+          async (argv) => {
+            try {
+              const a: { list: string; users: string[]; channels: string[]; level: "read" | "write" | "owner"; code?: string } = {
+                list: argv.list!, users: argv.user as string[], channels: argv.channel as string[], level: argv.level as "read" | "write" | "owner",
+              };
+              if (argv.code !== undefined) a.code = argv.code;
+              await cmdListsShare(a);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        )
+        .command(
+          "$0 <ref>",
+          "Read a Slack List's rows (by list URL or F-id) — read-only",
+          (y2) => y2
+            .positional("ref", { type: "string", demandOption: true, describe: "List URL (…/lists/<TEAM>/<F-id>) or bare F-id" })
+            .option("limit", { alias: "l", type: "number", default: 100, describe: "Max rows to show" })
+            .option("format", { type: "string", choices: ["text", "jsonl"], default: "text" })
+            .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl (raw records)" })
+            .option("as-bot", { type: "boolean", default: false, describe: "Read with the bot token (SLACK_BOT_TOKEN, lists:read) via the public API instead of the user session" }),
+          async (argv) => {
+            const format = argv.json ? "jsonl" : (argv.format as string);
+            try {
+              // --as-bot never touches the user token: a bot-only lane may have none.
+              const asBot = argv.asBot === true;
+              await cmdLists(asBot ? "" : tok(argv as W), asBot ? undefined : ck(argv as W), argv.ref!, { limit: argv.limit as number, format, asBot });
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+          },
+        ),
     )
     .command(
       "download <ref> [dest]",
