@@ -5,8 +5,15 @@ import { startMock, type MockHandle } from "./mock.ts";
 import * as slack from "../ts/slack.ts";
 
 let mock: MockHandle;
+const asItem = (r: Record<string, unknown>) => (r.item as { id?: string } | undefined)?.id;
 
 const fixtures = {
+  "slackLists.create": { ok: true, list_id: "F00000LIST" },
+  "slackLists.items.list": { ok: true, items: [], list: { id: "F00000LIST" } },
+  "slackLists.items.create": { ok: true, item: { id: "Rec00000001" } },
+  "slackLists.items.update": { ok: true },
+  "slackLists.access.set": { ok: true },
+
   "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
 
   "conversations.history__channel=C00000001&limit=20": {
@@ -470,6 +477,31 @@ describe("slack.ts", () => {
   test("filesList threads page/count/types params through", async () => {
     const resp = (await slack.filesList(token, { page: 2, count: 50, types: "pdfs" })) as { files?: unknown[] };
     expect(resp.files).toEqual([]);
+  });
+
+  test("slackLists.* wrappers post JSON bodies with the right fields", async () => {
+    const before = mock.requests.length;
+    expect((await slack.slackListsCreate(token, "L", [{ key: "col1" }], true)).list_id).toBe("F00000LIST");
+    await slack.slackListsCreate(token, "L2", [], false);
+    await slack.slackListsItemsList(token, "F00000LIST", { limit: 5, cursor: "cur", includeList: true });
+    await slack.slackListsItemsList(token, "F00000LIST");
+    expect(asItem(await slack.slackListsItemsCreate(token, "F00000LIST", [{ column_id: "Col1" }]))).toBe("Rec00000001");
+    await slack.slackListsItemsUpdate(token, "F00000LIST", [{ row_id: "Rec00000001" }]);
+    const bodies = mock.requests.slice(before).map((q) => ({ m: q.method, b: JSON.parse(q.body || "{}") }));
+    expect(bodies[0]).toEqual({ m: "slackLists.create", b: { name: "L", schema: [{ key: "col1" }], todo_mode: true } });
+    expect(bodies[1]!.b).toEqual({ name: "L2", schema: [] });
+    expect(bodies[2]!.b).toEqual({ list_id: "F00000LIST", limit: 5, cursor: "cur", include_list: true });
+    expect(bodies[3]!.b).toEqual({ list_id: "F00000LIST" });
+    expect(bodies[4]!.b).toEqual({ list_id: "F00000LIST", initial_fields: [{ column_id: "Col1" }] });
+    expect(bodies[5]!.b).toEqual({ list_id: "F00000LIST", cells: [{ row_id: "Rec00000001" }] });
+    const b2 = mock.requests.length;
+    await slack.slackListsAccessSet(token, "F00000LIST", "read", { channelIds: ["C00000001"] });
+    await slack.slackListsAccessSet(token, "F00000LIST", "write", { userIds: ["U00000001"] });
+    const acc = mock.requests.slice(b2).map((q) => JSON.parse(q.body));
+    expect(acc).toEqual([
+      { list_id: "F00000LIST", access_level: "read", channel_ids: ["C00000001"] },
+      { list_id: "F00000LIST", access_level: "write", user_ids: ["U00000001"] },
+    ]);
   });
 
   test("listRecords posts lists.records.list with the list_id", async () => {

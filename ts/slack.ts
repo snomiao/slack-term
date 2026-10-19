@@ -271,6 +271,59 @@ export async function filesList(
   return get(token, "files.list", params, cookie);
 }
 
+// Public slackLists.* write API (documented; GA 2025-09). Bot token with
+// lists:write (lists:read for the read). Unlike listRecords above, these reject
+// the xoxc desktop token, so callers pass the bot token.
+export async function slackListsCreate(
+  token: string,
+  name: string,
+  schema: Json[],
+  todoMode: boolean,
+): Promise<Record<string, Json>> {
+  const body: Record<string, Json> = { name, schema };
+  if (todoMode) body.todo_mode = true;
+  return (await post(token, "slackLists.create", body)) as Record<string, Json>;
+}
+
+/** One page of items plus (include_list) the list's own record — title and
+ *  column schema with the column ids writes must reference. */
+export async function slackListsItemsList(
+  token: string,
+  listId: string,
+  opts: { limit?: number; cursor?: string; includeList?: boolean } = {},
+): Promise<Record<string, Json>> {
+  const body: Record<string, Json> = { list_id: listId };
+  if (opts.limit) body.limit = opts.limit;
+  if (opts.cursor) body.cursor = opts.cursor;
+  if (opts.includeList) body.include_list = true;
+  return (await post(token, "slackLists.items.list", body)) as Record<string, Json>;
+}
+
+export async function slackListsItemsCreate(
+  token: string,
+  listId: string,
+  initialFields: Json[],
+): Promise<Record<string, Json>> {
+  return (await post(token, "slackLists.items.create", { list_id: listId, initial_fields: initialFields })) as Record<string, Json>;
+}
+
+/** Grant access to a list: `user_ids` or `channel_ids` (Slack takes exactly one of them). */
+export async function slackListsAccessSet(
+  token: string,
+  listId: string,
+  level: "read" | "write" | "owner",
+  target: { userIds?: string[]; channelIds?: string[] },
+): Promise<Record<string, Json>> {
+  const body: Record<string, Json> = { list_id: listId, access_level: level };
+  if (target.userIds?.length) body.user_ids = target.userIds;
+  if (target.channelIds?.length) body.channel_ids = target.channelIds;
+  return (await post(token, "slackLists.access.set", body)) as Record<string, Json>;
+}
+
+export async function slackListsItemsUpdate(token: string, listId: string, cells: Json[]): Promise<Record<string, Json>> {
+  return (await post(token, "slackLists.items.update", { list_id: listId, cells })) as Record<string, Json>;
+}
+
 // Slack Lists ("tasklist"). The public slackLists.* Web API rejects the CLI's
 // xoxc desktop token (not_allowed_token_type) and needs a bot token with
 // lists:read; the web client instead uses the internal lists.records.list, which
