@@ -31,6 +31,7 @@ import { basename, join } from "node:path";
 import { authTest, conversationsJoin, history, memberChannels, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
 import { connectRelayStream, wakeableSleep } from "./relayStream.ts";
+import { wrapAdjacentUrls } from "./urlGuard.ts";
 
 const run = promisify(execFile);
 
@@ -633,6 +634,7 @@ export async function main(argv: string[]): Promise<void> {
       const { reply, threads: fresh } = splitOutbox(chunk);
       // A top-level post made with the pid binds the new thread to the agent (see post()).
       const out = async (text: string, ts?: string): Promise<void> => {
+        text = wrapAdjacentUrls(text); // an agent can't be asked to retry: make CJK-glued URLs clickable
         if (a && creds!.mode === "bot") await post(clip(text), ts, Number(pid), await identityOf(a));
         else await post(`*${who}*: ${clip(text)}`, ts, Number(pid));
       };

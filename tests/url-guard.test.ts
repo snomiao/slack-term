@@ -1,5 +1,5 @@
 import { describe, expect, test } from "./harness.ts";
-import { adjacentUrls, guardUrlBoundaries } from "../ts/urlGuard.ts";
+import { adjacentUrls, guardUrlBoundaries, wrapAdjacentUrls } from "../ts/urlGuard.ts";
 
 describe("URL boundaries", () => {
   for (const suffix of ["内容", "）", "」", "。", "、", ">", ">*", "\u00a0内容", "\u3000内容"]) {
@@ -30,5 +30,19 @@ describe("URL boundaries", () => {
     guardUrlBoundaries("http://example.com/内容", true, (s) => warnings.push(s));
     expect(warnings[0]).toContain("Warning: Ambiguous URL boundary");
     expect(warnings[0]).toContain("http://example.com/内容");
+  });
+  for (const prefix of ["《手袋を買いに》", "（给小学生的新闻网站）", "「見て」", "说明：", "見て"]) {
+    test(`rejects a URL glued after ${JSON.stringify(prefix)}`, () => {
+      expect(adjacentUrls(`${prefix}https://example.com/a`)).toEqual(["https://example.com/a"]);
+    });
+  }
+  for (const text of ["(see)https://example.com/a", "見て https://example.com/a", "見て\nhttps://example.com/a", "見て<https://example.com/a>"]) {
+    test(`accepts ${JSON.stringify(text)}`, () => expect(adjacentUrls(text)).toEqual([]));
+  }
+  test("wrapAdjacentUrls fixes both sides and leaves the rest", () => {
+    expect(wrapAdjacentUrls("《手袋を買いに》https://example.com/a 次")).toBe("《手袋を買いに》<https://example.com/a> 次");
+    expect(wrapAdjacentUrls("看https://example.com/a。好")).toBe("看<https://example.com/a>。好");
+    expect(wrapAdjacentUrls("https://example.com/a\n<https://example.com/b|説明>（x）")).toBe("https://example.com/a\n<https://example.com/b|説明>（x）");
+    expect(adjacentUrls(wrapAdjacentUrls("（站）https://example.com/a，好"))).toEqual([]);
   });
 });
