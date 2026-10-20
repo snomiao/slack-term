@@ -386,6 +386,21 @@ describe("relay e2e", () => {
     expect(fake.posted[0]).toMatchObject({ text: "hello", thread_ts: mine, icon_url: "https://example.com/otoji.png" });
   });
 
+  test("an outbox \"--- new thread ---\" line opens a new top-level thread for the agent", { timeout: 60_000 }, async () => {
+    const fake = await startFake();
+    const s0 = setup({ bot: true });
+    const r = startRelay(fake, s0, 25);
+    await waitFor(() => fake.historyCalls() >= 2);
+    const mine = nextTs();
+    fake.top.push({ ts: mine, user: SELF, text: "@otoji one thread per language" });
+    await waitFor(() => sends(s0.sendLog).length === 1);
+    expect(sends(s0.sendLog)[0]).toContain("--- new thread ---");
+    writeOutbox(s0.stateDir, 103, "ok, two threads\n--- new thread ---\n日本語\n--- new thread ---\n中文\n");
+    await waitFor(() => fake.posted.length === 3);
+    await r.done;
+    expect(fake.posted.map((p) => [p.text, p.thread_ts])).toEqual([["ok, two threads", mine], ["日本語", undefined], ["中文", undefined]]);
+  });
+
   test("polling while the stream is up but silent is flagged: logged and warned once in warnChannel", { timeout: 60_000 }, async () => {
     const fake = await startFake();
     const hub = Bun.serve({

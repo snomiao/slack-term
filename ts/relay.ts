@@ -196,8 +196,17 @@ export function forwardText(body: string, opts: { from: string; agentPid: number
   return [
     `${FORWARD_PREFIX} message from ${opts.from} via Slack${opts.permalink ? ` (${opts.permalink})` : ""}:`,
     body,
-    `— To answer in Slack, append a SHORT reply to ${file}, e.g.  cat >> ${file} <<'EOF' … EOF  (it is posted to the thread as-is; never put secrets in it).`,
+    `— To answer in Slack, append a SHORT reply to ${file}, e.g.  cat >> ${file} <<'EOF' … EOF  (it is posted to the thread as-is; never put secrets in it). Text after a line "${NEW_THREAD}" starts a new top-level thread instead.`,
   ].join("\n");
+}
+
+export const NEW_THREAD = "--- new thread ---";
+
+/** An outbox chunk: text for the agent's current thread, then one new top-level thread per
+ *  "--- new thread ---" line. */
+export function splitOutbox(chunk: string): { reply: string; threads: string[] } {
+  const [reply = "", ...threads] = chunk.split(/^[ \t]*-{3,}[ \t]*new thread[ \t]*-{3,}[ \t]*$/im);
+  return { reply: reply.trim(), threads: threads.map((t) => t.trim()).filter(Boolean) };
 }
 
 /** Keep outbound posts short: at most `maxLines` lines / `maxChars` chars. */
@@ -621,9 +630,15 @@ export async function main(argv: string[]): Promise<void> {
       const threadTs = st.agentThread[pid];
       const a = agents.find((x) => String(x.pid) === pid);
       const who = a ? agentLabel(a) : pid;
+      const { reply, threads: fresh } = splitOutbox(chunk);
+      // A top-level post made with the pid binds the new thread to the agent (see post()).
+      const out = async (text: string, ts?: string): Promise<void> => {
+        if (a && creds!.mode === "bot") await post(clip(text), ts, Number(pid), await identityOf(a));
+        else await post(`*${who}*: ${clip(text)}`, ts, Number(pid));
+      };
+      if (reply) await out(reply, threadTs);
+      for (const t of fresh) await out(t);
       if (chunk.trim()) {
-        if (a && creds!.mode === "bot") await post(clip(chunk), threadTs, Number(pid), await identityOf(a));
-        else await post(`*${who}*: ${clip(chunk)}`, threadTs, Number(pid));
         st.replied[pid] = true;
         log(`← ${who} (${pid}) ${chunk.trim().length} chars`);
         const lf = lastForward.get(Number(pid));

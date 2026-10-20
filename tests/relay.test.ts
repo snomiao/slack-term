@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -206,4 +206,13 @@ describe("same-name agents and lane identity", () => {
     expect(laneIdentity("/Users/alice/ws/acme/bradiy/tree/mac-blueprint", "mac").username).toBe("mac:bradiy#mac-blueprint");
     expect(threadHostOf([{ ts: "1", bot_id: "B00000001", username: laneIdentity("/w/acme/bradiy/tree/main", "mac").username }])).toBe("mac");
   });
+});
+
+describe("splitOutbox", () => {
+  test("plain text is a reply", () => expect(splitOutbox("hi\n")).toEqual({ reply: "hi", threads: [] }));
+  test("marker lines open new top-level threads", () => {
+    expect(splitOutbox("done\n--- new thread ---\n日本語\n  --- New Thread ---  \n中文\n")).toEqual({ reply: "done", threads: ["日本語", "中文"] });
+    expect(splitOutbox("--- new thread ---\nonly new")).toEqual({ reply: "", threads: ["only new"] });
+  });
+  test("a dash rule inside a reply is just text", () => expect(splitOutbox("a\n---\nb").threads).toEqual([]));
 });
