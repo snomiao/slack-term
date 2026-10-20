@@ -90,6 +90,7 @@ import {
   getPath,
   type Json,
 } from "./slack.ts";
+import { laneIdentity } from "./relay.ts";
 import {
   buildTodoQuery,
   loadTodoConfig,
@@ -2173,7 +2174,8 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 
   if (args.code !== code) {
     const dest = await destLabel(token, channelId, ref, cookie);
-    const from = fromLine(self, { asBot: args.asBot });
+    const lane = args.asBot && process.env.AGENT_YES_PID ? laneIdentity(process.cwd()).username : "";
+    const from = fromLine(self, { asBot: args.asBot }) + (lane ? ` as ${lane}` : "");
     if (threadTs) {
       const parentLine = await threadParentLine(token, threadTs, threadMsgs, cookie);
       // Preview the tail of the thread (up to 3 most recent messages) so the
@@ -2206,7 +2208,11 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     }
   }
   const attr = sentAttribution("send");
-  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie, undefined, attr.metadata);
+  // Inside an agent-yes lane, a bot post carries the lane's host:repo#worktree identity —
+  // the same one the relay gives its agents — so a thread the lane opens is routed back
+  // to this machine instead of to the channel's home.
+  const as = args.asBot && process.env.AGENT_YES_PID ? laneIdentity(process.cwd()) : undefined;
+  const ts = await slackSend(token, channelId, message, threadTs, args.broadcast, cookie, undefined, attr.metadata, as);
   let permalink = "";
   try {
     permalink = await getPermalink(token, channelId, ts, cookie);

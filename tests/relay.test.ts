@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -188,5 +188,22 @@ describe("multi-machine: exactly one relay acts", () => {
       { ts: "5", user: "U00000001", text: "next" },
     ])).toBe("mac");
     expect(threadHostOf([{ ts: "1", user: "U00000001", username: "x:y" }])).toBeUndefined();
+  });
+});
+
+describe("same-name agents and lane identity", () => {
+  const stuck: Agent = { pid: 301, cwd: "C:\\Users\\alice\\ws\\acme\\bradiy\\tree\\main", status: "idle", cli: "codex", seen: 1_000 };
+  const live: Agent = { pid: 302, cwd: "C:\\Users\\alice\\ws\\acme\\bradiy\\tree\\main", status: "idle", cli: "claude", seen: 9_000 };
+  test("the default route picks the agent that printed last, not the first listed", () => {
+    expect(matchAgent("bradiy", [stuck, live]).agent?.pid).toBe(302);
+    expect(liveliest([live, { ...stuck, status: "active" }])?.pid).toBe(301); // working right now wins
+  });
+  test("two agents in one non-main worktree are not ambiguous", () => {
+    const a = { ...stuck, cwd: "/w/acme/bradiy/tree/lane/x" }, b = { ...live, cwd: "/w/acme/bradiy/tree/lane/x" };
+    expect(matchAgent("bradiy/lane/x", [a, b]).agent?.pid).toBe(302);
+  });
+  test("laneIdentity matches the relay's agent identity", () => {
+    expect(laneIdentity("/Users/alice/ws/acme/bradiy/tree/mac-blueprint", "mac").username).toBe("mac:bradiy#mac-blueprint");
+    expect(threadHostOf([{ ts: "1", bot_id: "B00000001", username: laneIdentity("/w/acme/bradiy/tree/main", "mac").username }])).toBe("mac");
   });
 });

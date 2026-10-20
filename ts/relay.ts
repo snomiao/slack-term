@@ -37,7 +37,7 @@ const run = promisify(execFile);
 export const RELAY_MARK = "🤖";
 export const FORWARD_PREFIX = "[slack-relay]";
 
-export type Agent = { pid: number; cwd: string; status: string; cli: string };
+export type Agent = { pid: number; cwd: string; status: string; cli: string; seen?: number /* last output, ms */ };
 export type SlackMsg = {
   ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
   reply_count?: number; latest_reply?: string; username?: string;
@@ -74,6 +74,14 @@ export function actsHere(o: { host: string; home?: string | undefined; routeHost
   if (o.boundHere) return true;
   if (o.threadHost) return eq(o.threadHost, o.host);
   return !o.home || eq(o.home, o.host);
+}
+
+/** The identity a lane posts under: what the relay uses for its agents' replies, so a
+ *  thread a lane opens itself (`slack send --as-bot` inside agent-yes) still says
+ *  which machine it belongs to. */
+export function laneIdentity(cwd: string, host = hostname().split(".")[0] ?? "host"): { username: string; icon_emoji: string } {
+  const { repo, branch } = agentNames(cwd);
+  return agentIdentity(host, repo, branch);
 }
 
 /** The host in the identity (`host:repo#worktree`) of the latest agent post in a thread. */
@@ -156,6 +164,12 @@ export function agentLabel(a: Agent): string {
 
 /** Resolve a route to exactly one agent: pid, "repo/branch", "branch", or
  *  "repo" (ambiguous repos prefer the default agent, then the main tree). */
+/** Among agents that share a name (e.g. a stuck codex and a live claude in the same
+ *  worktree), the one working right now, else the one that printed something last. */
+export function liveliest(xs: Agent[]): Agent | undefined {
+  return xs.slice().sort((a, b) => Number(b.status === "active") - Number(a.status === "active") || (b.seen ?? 0) - (a.seen ?? 0))[0];
+}
+
 export function matchAgent(route: string, agents: Agent[], defaultPid?: number): { agent?: Agent; candidates: Agent[] } {
   const r = route.toLowerCase();
   if (/^\d+$/.test(r)) {
@@ -170,7 +184,8 @@ export function matchAgent(route: string, agents: Agent[], defaultPid?: number):
   const byRepo = exact.length > 1 ? exact : agents.filter((a) => agentNames(a.cwd).repo === r);
   if (byRepo.length === 1) return { agent: byRepo[0]!, candidates: byRepo };
   if (byRepo.length > 1) {
-    const pick = byRepo.find((a) => a.pid === defaultPid) ?? byRepo.find((a) => agentNames(a.cwd).branch === "main");
+    const pick = byRepo.find((a) => a.pid === defaultPid) ?? liveliest(byRepo.filter((a) => agentNames(a.cwd).branch === "main"))
+      ?? (new Set(byRepo.map(agentLabel)).size === 1 ? liveliest(byRepo) : undefined);
     return pick ? { agent: pick, candidates: byRepo } : { candidates: byRepo };
   }
   return { candidates: [] };
@@ -223,7 +238,12 @@ async function listAgents(): Promise<Agent[]> {
   const rows = JSON.parse(stdout) as Record<string, unknown>[];
   return rows
     .filter((r) => r.host === undefined || r.host === null || r.host === "local")
-    .map((r) => ({ pid: Number(r.pid), cwd: String(r.cwd ?? ""), status: String(r.status ?? ""), cli: String(r.cli ?? "") }));
+    .filter((r) => r.exit_code === undefined || r.exit_code === null)
+    .map((r) => {
+      let seen: number | undefined;
+      try { if (typeof r.log_file === "string") seen = statSync(r.log_file).mtimeMs; } catch { /* no log yet */ }
+      return { pid: Number(r.pid), cwd: String(r.cwd ?? ""), status: String(r.status ?? ""), cli: String(r.cli ?? ""), ...(seen ? { seen } : {}) };
+    });
 }
 
 function log(...a: unknown[]): void {
