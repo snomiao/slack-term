@@ -1975,6 +1975,31 @@ async function isSelfDmChannel(
   }
 }
 
+/** Everyone a thread reply notifies: the thread's starter and its repliers.
+ *  From the fetched messages, plus the parent's `reply_users` (Slack's own
+ *  participant list), which still names a replier past the fetched window. */
+function threadParticipants(msgs: Record<string, Json>[]): Set<string> {
+  const out = new Set<string>();
+  for (const m of msgs) {
+    if (typeof m.user === "string") out.add(m.user);
+    if (typeof m.parent_user_id === "string") out.add(m.parent_user_id);
+    for (const u of asArray(m.reply_users)) if (typeof u === "string") out.add(u);
+  }
+  return out;
+}
+
+/** The other member of a 1:1 DM, or undefined for anything else (or an
+ *  unreadable channel). Only asked for `D…` ids, so channel sends pay nothing. */
+async function dmCounterparty(token: string, channelId: string, cookie?: string): Promise<string | undefined> {
+  if (!channelId.startsWith("D")) return undefined;
+  try {
+    const ch = asRecord(asRecord((await conversationInfo(token, channelId, cookie)) as Json).channel);
+    return ch.is_im === true && typeof ch.user === "string" ? ch.user : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
   const cookie = args.cookie;
@@ -2021,19 +2046,6 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // Wording is shared with the library wrapper via mentionWarnings(). Strip
     // control chars — the surfaces embed Slack-controlled display text.
     for (const line of mentionWarnings(mentionReport.unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
-  }
-
-  // Warn-only lint: names written as plain text (no leading @) that map to a
-  // known workspace member but aren't <@USERID>-tagged — they won't be notified.
-  // Never blocks; fail-soft (a missing users:read scope or API error must not
-  // stall a send).
-  try {
-    for (const u of await findUntaggedMentions(args.mentionToken ?? token, message, args.mentionCookie)) {
-      // u.surface / u.display carry Slack-controlled display text — strip control chars.
-      console.error(`⚠ possible untagged mention: ${stripTerminalControls(u.surface)} — @${stripTerminalControls(u.display)} won't be notified (did you mean <@${u.userId}>?)`);
-    }
-  } catch {
-    // best-effort; ignore
   }
 
   // Confirm-gate mention preview: exactly who resolves (→ notified) and who
@@ -2112,6 +2124,26 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     } catch {
       // best-effort preview only
     }
+  }
+
+  // Warn-only lint: names written as plain text (no leading @) that map to a
+  // known workspace member but aren't <@USERID>-tagged — they won't be notified.
+  // Skipped for people Slack notifies anyway: a thread reply reaches everyone
+  // who started or replied in that thread, and a 1:1 DM reaches its other
+  // member — warning there is noise that makes agents stop for nothing.
+  // Never blocks; fail-soft (a missing users:read scope or API error must not
+  // stall a send).
+  try {
+    const notified = threadTs
+      ? threadParticipants(threadMsgs)
+      : new Set([await dmCounterparty(token, channelId, cookie)].filter((u): u is string => !!u));
+    for (const u of await findUntaggedMentions(args.mentionToken ?? token, message, args.mentionCookie)) {
+      if (notified.has(u.userId)) continue;
+      // u.surface / u.display carry Slack-controlled display text — strip control chars.
+      console.error(`⚠ possible untagged mention: ${stripTerminalControls(u.surface)} — @${stripTerminalControls(u.display)} won't be notified (did you mean <@${u.userId}>?)`);
+    }
+  } catch {
+    // best-effort; ignore
   }
 
   // Unreplied guard: the destination's last message is our own and no one has
