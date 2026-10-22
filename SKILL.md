@@ -274,6 +274,22 @@ Reason flags stack independently of progress and of each other: ❗ `exclamation
 `slack thread`/`slack read` before replying to avoid duplicates; consolidate multiple
 points into one message.
 
+### todos — Slack's To-dos tab (read-only)
+
+Not `slack todo`: that tracks tasks as reactions. `slack todos` reads Slack's own
+**personal** To-dos tab (the successor of "Later"), the list in the sidebar.
+
+```bash
+slack todos                       # open to-dos, soonest due first (OVERDUE marked)
+slack todos --filter completed    # also: saved (everything saved), archived
+slack todos --json -n 20          # one object per item: due, done, permalink, text
+```
+
+There is no public API: it uses the desktop client's internal `saved.list`, so
+it needs the **xoxc session** (`slack auth login`) and shows only your own
+to-dos. Bots can't see them. Slack can change this endpoint without notice.
+Adding and completing to-dos is not supported yet.
+
 ## Output formatting
 
 - DM channels render as `@DisplayName`; public channels as `#channel-name`.

@@ -141,6 +141,7 @@ const fixtures = {
   },
 
   "drafts.list": { ok: true, drafts: [] },
+  "saved.list": { ok: true, saved_items: [], response_metadata: { next_cursor: "" } },
   "drafts.create": { ok: true, draft: { id: "D00000001" } },
   "drafts.update": { ok: true },
   "drafts.delete": { ok: true },
@@ -613,6 +614,17 @@ describe("slack.ts", () => {
     const result = await slack.authTestSession(token);
     expect(result.teamId).toBe("T00000001");
     expect(result.userId).toBe("U00000001");
+  });
+
+  test("savedList posts limit/filter/cursor to saved.list (session API)", async () => {
+    const before = mock.requests.length;
+    expect(((await slack.savedList(token, { filter: "todo", limit: 5, cursor: "abc" })) as { ok?: boolean }).ok).toBe(true);
+    await slack.savedList(token);
+    const [first, second] = mock.requests.slice(before).filter((q) => q.method === "saved.list");
+    const p1 = new URLSearchParams(first!.body);
+    expect([p1.get("filter"), p1.get("limit"), p1.get("cursor")]).toEqual(["todo", "5", "abc"]);
+    const p2 = new URLSearchParams(second!.body);
+    expect([p2.get("filter"), p2.get("limit"), p2.get("cursor")]).toEqual([null, "50", null]);
   });
 
   test("listDrafts returns drafts array", async () => {
