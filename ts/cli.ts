@@ -116,6 +116,7 @@ import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
+import { installSyncConsole } from "./stdout.ts";
 import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, parsePinlogId, pinlogId, stripPinlogFooter } from "./pinlog.ts";
 
 function loadDotenv(path: string): void {
@@ -3992,6 +3993,8 @@ async function cmdDownload(token: string, cookie: string | undefined, ref: strin
 // --- dispatch ---
 
 async function main(): Promise<void> {
+  // Before any output: Bun drops console writes that meet a full pipe (see stdout.ts).
+  installSyncConsole();
   loadDotenvFiles();
 
   type W = { workspace?: string };
