@@ -201,6 +201,36 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
+  test("the copy follows the answerer's Slack locale, and the gate says why", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } },
+      "users.info__include_locale=true&user=U00000BOB": { ok: true, user: { id: BOB, locale: "en-US" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      // Written in Japanese, but bob reads Slack in English — bob is the one
+      // who has to follow the instructions.
+      const base = ["ask", "@bob", "やっていい?", "はい", "いいえ", "--channel-id", DM];
+      const dry = await run(base, m.baseUrl);
+      expect(dry.stdout).toContain("Language: en (answerers' Slack locale; override with --lang)");
+      const before = m.requests.length;
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(0);
+      const post = m.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
+      const posted = JSON.parse(post.body).text as string;
+      expect(posted).toContain(":question: Other — reply to this message");
+      expect(posted).toContain("_Press one of the reactions below to answer.");
+
+      // --lang overrides it.
+      const ja = await run([...base, "--lang", "ja"], m.baseUrl);
+      expect(ja.stdout).toContain("Language: ja (--lang; override with --lang)");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("@here opens it to the channel and posts a real broadcast tag", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
@@ -395,9 +425,11 @@ describe("ask seeds reactions in order (CLI)", { timeout: 60_000 }, () => {
       const seeds = reqs.filter((q) => q.method === "reactions.add").map((q) => JSON.parse(q.body).name);
       // Order is the whole point: Slack renders pills in add order, so a
       // parallel/out-of-order seed would show the choices shuffled.
-      // The marker leads: it identifies the message as an `ask` and is what a
-      // reader (or `has:`) sees first, so it must sit left of the pills.
-      expect(seeds).toEqual(["question", "one", "two", "three"]);
+      // The marker goes LAST: it doubles as the "other" choice the body lists
+      // under the numbered ones, so the pill row reads 1 2 3 ❓ like the body.
+      expect(seeds).toEqual(["one", "two", "three", "question"]);
+      const posted = JSON.parse(reqs[post]!.body).text as string;
+      expect(posted).toMatch(/:three: [^\n]*\n:question: その他/);
       // And every seed must come after the message it is attached to.
       expect(reqs.findIndex((q) => q.method === "reactions.add")).toBeGreaterThan(post);
     } finally {
@@ -474,6 +506,29 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("❓ (other) alone is not an answer — it says a reply is coming, and keeps waiting", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB, name: "" } },
+      ...pollFixture(DM, [questionMsg({ reactions: [
+        { name: "one", users: [SELF], count: 1 },
+        { name: "question", users: [SELF, BOB], count: 2 },
+      ] })]),
+    };
+    const m = await startMock({ inline });
+    try {
+      const base = ["ask", "@bob", "どっち?", "A", "B", "--channel-id", DM, "--wait", "--timeout", "2"];
+      const dry = await run(base, m.baseUrl);
+      const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
+      expect(r.exitCode).toBe(2);
+      expect(r.stdout.trim()).toBe("");
+      // Once, not once per poll tick.
+      expect(r.stderr.split("❓ その他 を押しました").length - 1).toBe(1);
     } finally {
       await m.stop();
     }
