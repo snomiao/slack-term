@@ -463,3 +463,18 @@ export function formatYmdHm(epochSec: number): string {
   const mi = String(d.getMinutes()).padStart(2, "0");
   return `${y}-${mo}-${da} ${h}:${mi}`;
 }
+
+// --- secret masking for confirm-gate previews -------------------------------
+// The send/ask/poll gates echo other people's recent messages into the
+// terminal (and so into agent logs). A partner pasting an API key into a
+// thread must not end up in every log that previews that thread. Any run of
+// 32+ token characters is masked down to its first 4 — that covers API keys,
+// xox… tokens, hex secrets and JWT segments; a long hash or id gets masked
+// too, which is the safe side for a preview. Slack's own <@U…>/<#C…> markup
+// and permalinks never reach that length.
+const SECRET_RUN = /[A-Za-z0-9_-]{32,}/g;
+
+/** `text` with every token-like run of 32+ characters masked: "sk-a…(60 masked)". */
+export function maskSecrets(text: string): string {
+  return text.replace(SECRET_RUN, (run) => `${run.slice(0, 4)}…(${run.length - 4} masked)`);
+}
