@@ -123,9 +123,9 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
-slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
+slack ask "@bob" "@bob 本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
-ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
+ANS=$(slack ask "@bob" "@bob 本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
 # exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
 # 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
 # the reply text is on stdout, it is not a decision, and the question stays open.
@@ -134,7 +134,8 @@ ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # answer, so a bystander can't decide it for them. `ask` refuses to post otherwise.
 slack ask "#eng" "@alice この PR 出してよい?" "出す" "待つ"     # only alice's answer counts
 slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyone in #eng; real broadcast
-# (In a 1:1 DM the other party counts automatically — no tag needed.)
+# DMs also need an explicit @tag in the question or --body; the destination is not a tag.
+# Unresolved tags refuse the ask. With --as-bot, names resolve using the bot token.
 #
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
@@ -142,7 +143,7 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # seeds are removed, leaving the chosen pill visible.
 #
 # WITHOUT --wait, stdout is the command that collects the answer later:
-RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
+RESUME=$(slack ask "@bob" "@bob 本番に出してよい?" "出してよい" "待って" --code=<code>)
 #   -> slack ask --waitFor='https://acme.slack.com/archives/C00000001/p1700000000000100'
 # Run it whenever you like: it re-reads the question from Slack, so nothing is
 # stored locally and any machine holding the link can collect. Same stdout/exit
