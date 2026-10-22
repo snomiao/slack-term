@@ -1642,3 +1642,42 @@ describe("URL boundary guard", () => {
     }
   }
 });
+
+// The gate previews other people's messages into the terminal (and agent
+// logs): a key someone pasted into the thread or channel must not be echoed.
+describe("send preview masks secrets (CLI)", { timeout: 60_000 }, () => {
+  const KEY = "FAKE0000" + "abcdEFGH1234_-xy".repeat(3) + "00000000";
+  let m: MockHandle;
+  beforeAll(async () => {
+    m = await startMock({
+      inline: {
+        ...fixtures,
+        "conversations.history__channel=C00000001&limit=1": {
+          ok: true, messages: [{ type: "message", user: "U00000002", text: `channel key ${KEY}`, ts: "1700000100.000200" }],
+        },
+        "conversations.replies__channel=C00000001&limit=100&ts=1700000000.000100": {
+          ok: true,
+          messages: [
+            { type: "message", user: "U00000001", text: "hello world", ts: "1700000000.000100" },
+            { type: "message", user: "U00000002", text: `here: ${KEY}`, ts: "1700000050.000300" },
+          ],
+        },
+      },
+    });
+  });
+  afterAll(async () => { await m.stop(); });
+
+  test("thread preview masks a key in a recent reply", async () => {
+    const r = await run(["send", MSG_PERMALINK, "thanks"], { baseUrl: m.baseUrl });
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("here: FAKE…(60 masked)");
+    expect(r.stdout + r.stderr).not.toContain(KEY.slice(0, 20));
+  });
+
+  test("top-level preview masks a key in the channel's last message", async () => {
+    const r = await run(["send", "#channel-01", "thanks", "--channel-id", "C00000001"], { baseUrl: m.baseUrl });
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("channel key FAKE…(60 masked)");
+    expect(r.stdout + r.stderr).not.toContain(KEY.slice(0, 20));
+  });
+});

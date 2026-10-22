@@ -140,6 +140,8 @@ To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see 
 When the target is a **thread**, the confirm preview shows the thread's recent messages
 (not the channel's last message) and prints `⚠ possible duplicate: …` if your text is
 near-identical to an existing reply — so you can avoid re-posting something already said.
+Preview lines mask any 32+ character token-like run (`[A-Za-z0-9_-]`) to its first 4
+characters, so a key someone pasted into the thread or channel is not echoed into your log.
 
 `send` also warns (non-blocking) when the destination's most recent message is your own
 and no one has replied since — `⚠ 相手はまだ返信していません…`, suggesting `slack edit`

@@ -114,7 +114,7 @@ import {
 } from "./todo.ts";
 import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
-import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
+import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, parsePinlogId, pinlogId, stripPinlogFooter } from "./pinlog.ts";
 
@@ -1149,7 +1149,8 @@ async function threadMsgLine(token: string, m: Record<string, Json>, headLen = 6
     : typeof m.username === "string"
     ? m.username
     : "?";
-  const head = (typeof m.text === "string" ? m.text : "").split("\n")[0] ?? "";
+  // Masked before the cut, so a truncated key cannot leak its first 60 chars.
+  const head = maskSecrets((typeof m.text === "string" ? m.text : "").split("\n")[0] ?? "");
   const headShort = head.length > headLen ? `${head.slice(0, headLen)}…` : head;
   const ts = typeof m.ts === "string" ? m.ts : "";
   const stamp = ts ? slackTsToIso(ts).slice(0, 16).replace("T", " ") : "";
@@ -2206,7 +2207,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     } else {
       requireCode(args.code, code, [
         `--- Last message in channel ------------------`,
-        `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+        `  ${lastUser}: ${maskSecrets(lastText.split("\n")[0] ?? "").slice(0, 100)}`,
         ...mentionLines,
         `--- Sending ----------------------------------`,
         from,
@@ -2861,7 +2862,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       : [`--- Choices ----------------------------------`, `  (none — free-text reply)`];
     requireCode(args.code, code, [
       `--- Last message in channel ------------------`,
-      `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+      `  ${lastUser}: ${maskSecrets(lastText.split("\n")[0] ?? "").slice(0, 100)}`,
       ...choiceLines,
       `--- Asking -----------------------------------`,
       fromLine(self, { asBot: args.asBot }),
@@ -3187,7 +3188,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
     const dest = await destLabel(token, channelId, ref, cookie);
     requireCode(args.code, code, [
       `--- Last message in channel ------------------`,
-      `  ${lastUser}: ${lastText.split("\n")[0]?.slice(0, 100) ?? "(empty)"}`,
+      `  ${lastUser}: ${maskSecrets(lastText.split("\n")[0] ?? "").slice(0, 100)}`,
       `--- Ballot (seeded as reactions) -------------`,
       // As posted: one line per pill (see the ask gate).
       ...choices.map((s, i) => `  ${POLL_KEYCAPS[i]!.glyph} ${pollFlatten(s)}`),

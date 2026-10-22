@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
-import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm } from "../ts/format.ts";
+import { resolveDateMarkup, dayLabel, formatHm, formatYmdHm, maskSecrets } from "../ts/format.ts";
 import { startMock, type MockHandle } from "./mock.ts";
 import { encodeMentions, encodeMentionsDetailed, resolveMentions, findUntaggedMentions } from "../ts/format.ts";
 
@@ -574,5 +574,29 @@ describe("formatHm / formatYmdHm", () => {
   test("formatYmdHm returns yyyy-mm-dd HH:MM", () => {
     const epoch = new Date("2026-04-18T03:07:00").getTime() / 1000;
     expect(formatYmdHm(epoch)).toBe("2026-04-18 03:07");
+  });
+});
+
+describe("maskSecrets", () => {
+  // A fake 64-char key: a 0000 run marks it as test data.
+  const KEY = "FAKE0000" + "abcdEFGH1234_-xy".repeat(3) + "00000000";
+
+  test("masks a 32+ char token run down to its first 4 chars", () => {
+    expect(KEY).toHaveLength(64);
+    expect(maskSecrets(`the key is ${KEY} ok`)).toBe("the key is FAKE…(60 masked) ok");
+  });
+
+  test("masks each run separately, including -/_ tokens", () => {
+    const tok = "xoxb-0000-" + "a".repeat(30);
+    expect(maskSecrets(`${tok} and ${KEY}`)).toBe("xoxb…(36 masked) and FAKE…(60 masked)");
+  });
+
+  test("leaves short words, ids, Slack markup and permalinks alone", () => {
+    const s = "hi <@U00000001> see https://acme.slack.com/archives/C00000001/p1700000000000100 — 31 chars: " + "a".repeat(31);
+    expect(maskSecrets(s)).toBe(s);
+  });
+
+  test("a run of exactly 32 is masked", () => {
+    expect(maskSecrets("b".repeat(32))).toBe("bbbb…(28 masked)");
   });
 });
