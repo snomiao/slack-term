@@ -35,7 +35,7 @@ afterAll(() => {
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
 
-function run(args: string[], baseUrl: string): Promise<RunResult> {
+function run(args: string[], baseUrl: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
@@ -46,6 +46,7 @@ function run(args: string[], baseUrl: string): Promise<RunResult> {
     HOME: tmpHome,
     SLACK_API_BASE: `${baseUrl}/api`,
     SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
+    ...extraEnv,
   };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env });
@@ -178,6 +179,94 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
       const r = await run(["ask", "#chan", "@user1 やっていい?", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("no one is tagged");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // The audience is resolved with the user token, but that token can be dead
+  // (revoked, missing scope) while the bot that POSTS the question still has
+  // users:read. Refusing then — "no one is tagged, try @here" — would hand the
+  // decision to whoever reacts first, which is the exact outcome the audience
+  // rule exists to prevent.
+  test("--as-bot: when the user token cannot read the directory, the bot token resolves the audience", async () => {
+    const inline: InlineFixtures = {
+      "auth.test": {
+        __byAuth: {
+          "Bearer xoxb-fake": { ok: true, user_id: "U00000BOT", bot_id: "B00000001", team: "Acme", team_id: "T00000001", url: "https://acme.slack.com/" },
+          "*": { ok: false, error: "token_revoked" },
+        },
+      },
+      "users.list__limit=200": {
+        __byAuth: {
+          "Bearer xoxb-fake": AUTH["users.list__limit=200"],
+          "*": { ok: false, error: "token_revoked" },
+        },
+      },
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(
+        ["ask", "#chan", "@bob deploy してよい?", "はい", "まって", "--channel-id", CHAN, "--as-bot"],
+        m.baseUrl,
+        // SLACK_TOKEN pins the USER identity explicitly (it always wins over the
+        // legacy env fallbacks); without it the bot token would double as the
+        // user token here and the retry path would never be exercised.
+        { SLACK_TOKEN: "xoxp-fake", SLACK_BOT_TOKEN: "xoxb-fake" },
+      );
+      expect(r.exitCode).toBe(1); // reached the gate, i.e. not refused
+      expect(r.stdout).toContain(`  Question: <@${BOB}> deploy してよい?`);
+      expect(r.stdout).toContain(`  Answerable by: @Bob (${BOB})`);
+      expect(r.stderr).not.toContain("no one is tagged");
+      // The retry is the bot's read — the user token's failure did not decide.
+      const lists = m.requests.filter((q) => q.method === "users.list");
+      expect(lists.map((q) => q.headers.authorization)).toEqual(["Bearer xoxp-fake", "Bearer xoxb-fake"]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("without --as-bot a dead user token still refuses (nothing else could read the directory)", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      "users.list__limit=200": { ok: false, error: "token_revoked" },
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "#chan", "@bob deploy してよい?", "はい", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("no one is tagged");
+      expect(m.requests.filter((q) => q.method === "users.list")).toHaveLength(1);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  // A `<@U…>` written by the caller already IS the wire form: it names a user
+  // by id, so no directory lookup is needed to know who was addressed.
+  test("a pre-encoded <@USERID> tag counts as the audience even when the directory is unreadable", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      "users.list__limit=200": { ok: false, error: "token_revoked" },
+      "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", real_name: "Bob" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "#chan", `<@${BOB}> deploy してよい?`, "はい", "まって", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(1); // reached the gate
+      expect(r.stdout).toContain(`  Answerable by: @Bob (${BOB})`);
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("a pre-encoded tag of yourself still grants nobody", async () => {
+    const m = await startMock({ inline: { ...AUTH } });
+    try {
+      const r = await run(["ask", "#chan", `<@${SELF}> やっていい?`, "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(3);
       expect(r.stderr).toContain("no one is tagged");
     } finally {
