@@ -1025,6 +1025,19 @@ export async function listConversationMembers(token: string, channel: string, co
   return all;
 }
 
+// To-dos tab (internal — requires xoxc session token + xoxd cookie). The
+// desktop client's own read of Slack's personal To-dos; see slackTodos.ts.
+export async function savedList(
+  token: string,
+  opts: { filter?: string; limit?: number; cursor?: string | undefined } = {},
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = { limit: String(opts.limit ?? 50) };
+  if (opts.filter) params.filter = opts.filter;
+  if (opts.cursor) params.cursor = opts.cursor;
+  return postSession(token, "saved.list", params, cookie);
+}
+
 // Draft API (internal — requires xoxc session token + xoxd cookie)
 export async function listDrafts(token: string, cookie?: string): Promise<Json> {
   return postSession(token, "drafts.list", {}, cookie);
