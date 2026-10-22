@@ -123,11 +123,15 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 
 # Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions — answering is
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
+# A ❓ "その他 (other)" pill always follows the choices: pressing it means "none of
+# these" and the answer comes as a reply (exit 5), not as the ❓ itself.
+# The instructions are posted in ja or en: --lang / SLACK_TERM_LANG, else the
+# answerers' Slack locale, else the question's own language, else $LANG, else ja.
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
 # exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
-# 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
+# 4 = a reply matched several choices, 6 = the question was voided, 5 = a free-text reply that picked NO choice —
 # the reply text is on stdout, it is not a decision, and the question stays open.
 #
 # The question must say WHO may answer — only their reaction/reply is taken as the
@@ -138,8 +142,17 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 #
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
-# Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
-# seeds are removed, leaving the chosen pill visible.
+# Once answered, the question is edited to "✅ …回答済み > <answer>" — the body/background
+# and the CHOSEN option line stay; the other options, ❓ line and instructions go. The
+# unpressed seeds are removed, leaving the chosen pill visible.
+#
+# Thread notes (audience replies that are not the answer, even after ✅) go to
+# stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
+#   slack ask --waitFor='<permalink>' --timeout 0 --json --after=<cursor>
+#
+# Retire a question that expired / stopped meaning anything (作废) — waits on it exit 6:
+#   slack ask --void='<permalink>' --reason 'head moved' --superseded-by '<new permalink>'
+# (`slack edit` refuses ask/poll messages unless --force — use --void instead.)
 #
 # WITHOUT --wait, stdout is the command that collects the answer later:
 RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)

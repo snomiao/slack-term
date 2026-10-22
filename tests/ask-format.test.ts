@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, ASK_KEYCAPS } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askBuildVoidText, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -432,5 +432,300 @@ describe("askMatchChoice", () => {
 
   test("an empty or whitespace reply is not a choice", () => {
     expect(askMatchChoice("   ", CH)).toEqual({ kind: "none" });
+  });
+});
+
+// ❓ doubles as the "other" choice: listed under the numbered ones so the body
+// reads like the pill row (1️⃣ 2️⃣ 3️⃣ ❓). It is optional on the way in — a
+// question posted before the line existed must still be collectable.
+describe("ask lists ❓ as the standing 'other' choice", () => {
+  test("the other line sits directly under the last pill, never as a choice", () => {
+    for (const threadOnly of [true, false]) {
+      const text = askBuildText("q", "", ["A", "B", "C"], [], threadOnly);
+      const lines = text.split("\n");
+      const at = lines.indexOf(":three: C");
+      expect(lines[at + 1]!.startsWith(":question: その他")).toBe(true);
+      expect(lines[at + 1]).toContain(threadOnly ? "スレッド" : "このメッセージに返信");
+      const parsed = askParseMessage(text);
+      expect(parsed.kind).toBe("open");
+      if (parsed.kind !== "open") return;
+      expect(parsed.reactable).toEqual(["A", "B", "C"]);
+    }
+  });
+
+  test("a free-text question has no other line — there are no options to be outside of", () => {
+    expect(askBuildText("q", "", [], [], true)).not.toContain("その他");
+  });
+
+  test("a body from before the other line still parses", () => {
+    const legacy = askBuildText("q", "", ["A", "B"], [], true).split("\n").filter((l) => !l.includes("その他")).join("\n");
+    const parsed = askParseMessage(legacy);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A", "B"]);
+  });
+
+  test("the glyph spelling of the other line parses too (hand-edited in the Slack UI)", () => {
+    const edited = askBuildText("q", "", ["A"], [], true).replace(":question: その他", "❓ その他");
+    const parsed = askParseMessage(edited);
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(["A"]);
+  });
+
+  test("with overflow, the other line still follows the pills and the overflow round-trips", () => {
+    const reactable = Array.from({ length: 10 }, (_, i) => `c${i + 1}`);
+    const parsed = askParseMessage(askBuildText("q", "", reactable, ["c11"], false));
+    expect(parsed.kind).toBe("open");
+    if (parsed.kind !== "open") return;
+    expect(parsed.reactable).toEqual(reactable);
+    expect(parsed.overflow).toEqual(["c11"]);
+  });
+});
+
+// The copy is translated, but the body is still a wire format: whichever
+// language posted it, `--waitFor` has to read it back — from a machine that
+// would itself have posted in the other one.
+describe("ask copy is translated and every language round-trips", () => {
+  for (const lang of ASK_LANGS) {
+    for (const [name, reactable, overflow, threadOnly] of [
+      ["choices, thread", ["A", "B"], [], true],
+      ["choices, DM", ["A", "B"], [], false],
+      ["overflow", Array.from({ length: 10 }, (_, i) => `c${i + 1}`), ["c11"], false],
+      ["free text", [], [], true],
+    ] as [string, string[], string[], boolean][]) {
+      test(`${lang}: ${name}`, () => {
+        const text = askBuildText("q", "本文", reactable, overflow, threadOnly, lang);
+        const parsed = askParseMessage(text);
+        expect(parsed.kind).toBe("open");
+        if (parsed.kind !== "open") return;
+        expect(parsed.lang).toBe(lang);
+        expect(parsed.reactable).toEqual(reactable);
+        expect(parsed.overflow).toEqual(overflow);
+        expect(parsed.threadOnly).toBe(threadOnly);
+        // The invalid-ballot line goes on and comes off in the same language.
+        const noticed = applyInvalidNotice(text, ["U00000001"], lang);
+        expect(readInvalidNotice(noticed)).toEqual(["U00000001"]);
+        expect(askParseMessage(noticed).kind).toBe("open");
+        expect(applyInvalidNotice(noticed, [])).toBe(text);
+      });
+    }
+  }
+
+  test("English copy really is English", () => {
+    const text = askBuildText("Ship it?", "", ["yes", "wait"], [], true, "en");
+    expect(text).toContain(":question: Other — reply in the thread");
+    expect(text).not.toMatch(/[\p{Script=Hiragana}\p{Script=Katakana}]/u);
+  });
+
+  test("Japanese stays the default, byte-for-byte (in-flight questions depend on it)", () => {
+    expect(askBuildText("q", "", ["A"], [], true)).toBe(askBuildText("q", "", ["A"], [], true, "ja"));
+  });
+
+  test("the answered stamp follows the language, and both parse back", () => {
+    const en = askBuildResolvedText("q", { answer: "yes", how: "reaction 1️⃣" }, "Bob", "en");
+    expect(en).toContain("_Answered by reaction 1️⃣ (Bob)_");
+    expect(askParseMessage(en)).toEqual({ kind: "resolved", question: "q", answer: "yes" });
+  });
+});
+
+describe("askResolveLang picks the language the readers can read", () => {
+  const sys = { LANG: "ja_JP.UTF-8" };
+
+  test("--lang beats everything, and SLACK_TERM_LANG beats the rest", () => {
+    expect(askResolveLang({ flag: "en", readerLocales: ["ja-JP"], content: ["日本語"] }, sys)).toEqual({ lang: "en", source: "flag" });
+    expect(askResolveLang({ readerLocales: ["ja-JP"] }, { ...sys, SLACK_TERM_LANG: "EN" })).toEqual({ lang: "en", source: "env" });
+  });
+
+  test("an explicit language we have no copy for is an error, not a silent fallback", () => {
+    expect(askResolveLang({ flag: "fr" }, sys)).toBeNull();
+    expect(askResolveLang({}, { SLACK_TERM_LANG: "zz" })).toBeNull();
+  });
+
+  test("the answerers' Slack locale beats the text and the machine", () => {
+    expect(askResolveLang({ readerLocales: ["en-US"], content: ["デプロイしてよい?"] }, sys)).toEqual({ lang: "en", source: "readers" });
+    expect(askResolveLang({ readerLocales: ["ja-JP", "ja-JP"], content: ["Ship it?"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "readers" });
+  });
+
+  test("readers who disagree, or whose locale is unknown, fall through to the content", () => {
+    expect(askResolveLang({ readerLocales: ["ja-JP", "en-US"], content: ["Ship it?"] }, sys)).toEqual({ lang: "en", source: "content" });
+    expect(askResolveLang({ readerLocales: [undefined], content: ["Ship it?"] }, sys)).toEqual({ lang: "en", source: "content" });
+    expect(askResolveLang({ readerLocales: ["fr-FR"], content: ["本番?"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "content" });
+  });
+
+  test("content with no letters falls to the system locale, then to ja", () => {
+    expect(askResolveLang({ content: ["<@U00000001> 👍?", "1", "2"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "en", source: "system" });
+    expect(askResolveLang({ content: ["👍?"] }, { LC_ALL: "C", LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "default" });
+    expect(askResolveLang({ content: ["👍?"] }, {})).toEqual({ lang: "ja", source: "default" });
+  });
+});
+
+describe("askDetectLang reads the asker's words, not the markup", () => {
+  test("a tag, a channel link, a URL and an emoji shortcode are not English", () => {
+    expect(askDetectLang("<@U00000001> <#C00000001|general> https://example.com/x :thumbsup: 了解?")).toBe("ja");
+    expect(askDetectLang("<@U00000001> <!here> :thumbsup: 1 / 2")).toBeNull();
+  });
+  test("kana or kanji anywhere means ja; Latin alone means en", () => {
+    expect(askDetectLang("PR #12 をマージしてよい?")).toBe("ja");
+    expect(askDetectLang("本番")).toBe("ja");
+    expect(askDetectLang("Merge PR #12?")).toBe("en");
+  });
+});
+
+describe("askLangOfLocale understands both Slack and POSIX spellings", () => {
+  test("ja-JP, ja_JP.UTF-8, en, en-GB", () => {
+    expect(askLangOfLocale("ja-JP")).toBe("ja");
+    expect(askLangOfLocale("ja_JP.UTF-8")).toBe("ja");
+    expect(askLangOfLocale("en")).toBe("en");
+    expect(askLangOfLocale("en-GB")).toBe("en");
+  });
+  test("C, POSIX, unset, unlisted, and a prefix that only looks like one", () => {
+    for (const v of ["C", "POSIX", "", undefined, "fr_FR.UTF-8", "eno"]) expect(askLangOfLocale(v)).toBeNull();
+  });
+});
+
+describe("askResolvedHow reads the ✅ stamp back, in either language", () => {
+  test("reaction, reply, reply (n)", () => {
+    for (const lang of ["ja", "en"] as const) {
+      const b = (how: string) => askBuildResolvedText("q", { answer: "x", how }, "bob", lang);
+      expect(askResolvedHow(b(lang === "ja" ? "リアクション 1️⃣" : "reaction 1️⃣"))).toEqual({ byReply: false });
+      expect(askResolvedHow(b(lang === "ja" ? "返信" : "reply"))).toEqual({ byReply: true });
+      expect(askResolvedHow(b(lang === "ja" ? "返信 (3)" : "reply (3)"))).toEqual({ byReply: true, n: 3 });
+    }
+  });
+});
+
+// Real use 2026-10-05: collecting an answer replaced the whole message with
+// question + answer, and the background the decision was made against was gone.
+// The ✅ body now keeps the body and the CHOSEN option; only the options not
+// chosen, the ❓ line and the instructions go. The head (✅, question, stamp,
+// quoted answer) is where it always was, so old and new ✅ bodies read alike.
+describe("the ✅ body keeps the background and the chosen option", () => {
+  const BODY = "背景: リリース前\n> 引用された資料の一節\n推奨: B";
+  const open = askBuildText("<@U00000001> どっち?", BODY, ["A", "B", "C"], [], true);
+
+  test("the open parse exposes the body, with or without the invalid notice", () => {
+    for (const t of [open, applyInvalidNotice(open, ["U00000002"])]) {
+      const p = askParseMessage(t);
+      expect(p.kind).toBe("open");
+      if (p.kind !== "open") return;
+      expect(p.body).toBe(BODY);
+    }
+    const free = askParseMessage(askBuildText("q", "本文だけ", [], [], false));
+    expect(free.kind === "open" && free.body).toBe("本文だけ");
+    const bare = askParseMessage(askBuildText("q", "", ["A"], [], false));
+    expect(bare.kind === "open" && bare.body).toBe("");
+  });
+
+  test("a pill answer keeps the body and ONLY the chosen option", () => {
+    const keep = askResolvedKeep(open, 2)!;
+    expect(keep).toEqual({ body: BODY, chosenLine: ":two: B" });
+    const done = askBuildResolvedText("<@U00000001> どっち?", { answer: "B", how: "リアクション 2️⃣" }, "bob", "ja", keep);
+    expect(done.startsWith(":white_check_mark: ")).toBe(true);
+    expect(done).toContain("背景: リリース前");
+    expect(done).toContain(":two: B");
+    expect(done).not.toContain(":one: A");
+    expect(done).not.toContain(":three: C");
+    expect(done).not.toContain("その他");
+    expect(done).not.toContain("リアクションを 1 つ押す");
+  });
+
+  test("it still reads back as the same answer — a `> ` line in the body is not part of it", () => {
+    const done = askBuildResolvedText("<@U00000001> どっち?", { answer: "B", how: "リアクション 2️⃣" }, "bob", "ja", askResolvedKeep(open, 2));
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: "<@U00000001> どっち?", answer: "B" });
+    // As Slack stores it: every `>` escaped.
+    const stored = done.replace(/^> /gm, "&gt; ");
+    expect(askParseMessage(stored)).toEqual({ kind: "resolved", question: "<@U00000001> どっち?", answer: "B" });
+    // A multi-line answer still comes back whole.
+    const multi = askBuildResolvedText("q", { answer: "A でいく\n理由: 期日", how: "返信" }, "", "ja", { body: "> 背景の引用" });
+    expect(askParseMessage(multi)).toEqual({ kind: "resolved", question: "q", answer: "A でいく\n理由: 期日" });
+  });
+
+  test("an OLD ✅ body (no background) parses exactly as before", () => {
+    const old = askBuildResolvedText("q", { answer: "はい", how: "リアクション 1️⃣" }, "Bob");
+    expect(old).toBe(":white_check_mark: *q*\n_リアクション 1️⃣で回答済み (Bob)_\n\n> はい");
+    expect(askParseMessage(old)).toEqual({ kind: "resolved", question: "q", answer: "はい" });
+  });
+
+  test("a multi-line question whose FIRST line ends in `*` still finds its stamp, and no body quote leaks", () => {
+    const q = "*重要*\n本番に出してよい?";
+    const done = askBuildResolvedText(q, { answer: "B", how: "返信 (2)" }, "bob", "ja", { body: "> 背景の引用\n> 二行目", chosenLine: ":two: B" });
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: q, answer: "B" });
+    expect(askResolvedHow(done)).toEqual({ byReply: true, n: 2 });
+  });
+
+  test("a multi-line question: the stamp is found after the bold run, not on line 2", () => {
+    const q = "1 行目\n2 行目";
+    const done = askBuildResolvedText(q, { answer: "B", how: "返信 (2)" }, "bob", "ja", { body: "本文" });
+    expect(askParseMessage(done)).toEqual({ kind: "resolved", question: q, answer: "B" });
+    expect(askResolvedHow(done)).toEqual({ byReply: true, n: 2 });
+  });
+
+  test("an overflow choice keeps its (n) line; no choice keeps the body only", () => {
+    const many = askBuildText("q", "背景", Array.from({ length: 10 }, (_, i) => `c${i + 1}`), ["c11", "c12"], false);
+    expect(askResolvedKeep(many, 12)).toEqual({ body: "背景", chosenLine: "(12) c12" });
+    expect(askResolvedKeep(askBuildText("q", "背景", [], [], true))).toEqual({ body: "背景" });
+    expect(askResolvedKeep("not an ask")).toBeUndefined();
+    // Nothing to keep: the bare form, exactly as before.
+    expect(askResolvedKeep(askBuildText("q", "", [], [], true))).toBeUndefined();
+  });
+});
+
+// The "how" phrases are only ever called from the CLI's waiter, which the unit
+// suite does not load — so they are pinned here, in the stamp they end up in.
+describe("the answered stamp reads naturally in each language", () => {
+  test("ja", () => {
+    const c = ASK_COPY.ja;
+    expect(c.answeredVia(c.howReaction("2️⃣"), "bob")).toBe("_リアクション 2️⃣で回答済み (bob)_");
+    expect(c.answeredVia(c.howReply, "")).toBe("_返信で回答済み_");
+    expect(c.answeredVia(c.howReplyN(3), "bob")).toBe("_返信 (3)で回答済み (bob)_");
+  });
+  test("en", () => {
+    const c = ASK_COPY.en;
+    expect(c.answeredVia(c.howReaction("2️⃣"), "bob")).toBe("_Answered by reaction 2️⃣ (bob)_");
+    expect(c.answeredVia(c.howReply, "")).toBe("_Answered by reply_");
+    expect(c.answeredVia(c.howReplyN(3), "bob")).toBe("_Answered by reply (3) (bob)_");
+  });
+});
+
+// 作废 (void): a third state beside open and answered. Real case 2026-10-05: a
+// release ask pinned to one head SHA went stale three minutes later, and nothing
+// machine-readable said so — collect still saw it as open, the stale-pill
+// reminder still counted it.
+describe("a voided question reads back as void, in either language", () => {
+  for (const lang of ASK_LANGS) {
+    test(`${lang}: reason, replacement, body kept`, () => {
+      const t = askBuildVoidText("<@U00000001> 出してよい?", "head moved", lang, "背景: v6", "https://acme.slack.com/archives/C00000001/p1700000000000200");
+      expect(t.startsWith(":no_entry_sign: *<@U00000001> 出してよい?*")).toBe(true);
+      expect(t).toContain("背景: v6");
+      const p = askParseMessage(t);
+      expect(p.kind).toBe("void");
+      if (p.kind !== "void") return;
+      expect(p.question).toBe("<@U00000001> 出してよい?");
+      expect(p.reason).toContain("head moved");
+      expect(p.supersededBy).toBe("https://acme.slack.com/archives/C00000001/p1700000000000200");
+    });
+  }
+
+  test("no reason, no replacement", () => {
+    const p = askParseMessage(askBuildVoidText("q", "", "en"));
+    expect(p).toEqual({ kind: "void", question: "q", reason: "Void — this question no longer takes answers." });
+  });
+
+  test("never mistaken for open or answered — the prefix is not :question: or :white_check_mark:", () => {
+    const t = askBuildVoidText("q", "expired", "ja", "> 引用");
+    expect(t.startsWith(":question:")).toBe(false);
+    expect(t.startsWith(":white_check_mark:")).toBe(false);
+    expect(askParseMessage(t).kind).toBe("void");
+  });
+
+  test("a body hand-voided before `ask void` existed (「【superseded / 作废】…」) is void too", () => {
+    const legacy = "【superseded / 作废】[release-bot] 無効な ask です。 :question: *出してよい?*\n\n:one: リリースする\n\n" +
+      askBuildText("q", "", ["A"], [], true).split("\n").pop();
+    const p = askParseMessage(legacy);
+    expect(p.kind).toBe("void");
+    expect(p.kind === "void" && p.question).toBe("出してよい?");
+    // An ordinary 【…】 heading is not.
+    expect(askParseMessage("【お知らせ】*q*").kind).toBe("other");
   });
 });
