@@ -498,6 +498,9 @@ export async function main(argv: string[]): Promise<void> {
   // Latency trace, per message: Slack post → seen (wake/poll) → ay send done → the agent's
   // outbox write → reply posted. Logged as `trace …` lines (seconds, relative to the post).
   const wakeAt = new Map<string, number>();
+  // Thread roots a wake frame named, with the earliest woken reply: a root older than the
+  // day of history is still scanned once, from that reply on (never its older replies).
+  const wokenRoots = new Map<string, string>();
   const gaps: [number, number][] = []; // recent stream outages [down, up], ms
   const lastForward = new Map<number, { ts: string; sent: number }>();
   const secs = (ms: number): string => (ms / 1000).toFixed(2);
@@ -534,9 +537,10 @@ export async function main(argv: string[]): Promise<void> {
         await post(`no unique agent for \`@${route}\` — try one of: ${names}`, threadTs);
         return;
       }
-    } else if (bound) {
+    } else if (bound && agents.some((a) => a.pid === bound.pid)) {
       agent = agents.find((a) => a.pid === bound.pid);
     } else if (cfg.defaultAgent) {
+      // An unbound thread, or one whose agent exited: its successor is the default.
       agent = defaultAgent();
     }
     if (!agent) {
@@ -598,7 +602,17 @@ export async function main(argv: string[]): Promise<void> {
     // The floor gates what is forwarded (cursor for top-level, `seen` for replies), not which
     // roots are scanned: a thread started before a restart still gets new replies.
     const h = (await history(c.token, CHANNEL, 200, String(dayAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
-    for (const m of (h.messages ?? []).slice().reverse()) {
+    const recent = h.messages ?? [];
+    const woken = [...wokenRoots];
+    wokenRoots.clear();
+    const oldRoots: SlackMsg[] = [];
+    for (const [root, from] of woken) {
+      if (recent.some((m) => m.ts === root)) continue;
+      // Just below the woken reply, so it and anything after it count as unseen.
+      st.replySeen[root] = String(Math.max(Number(st.replySeen[root] ?? 0), Number(from) - 0.000001));
+      oldRoots.push({ ts: root, reply_count: 1, latest_reply: "9999999999" } as SlackMsg);
+    }
+    for (const m of [...recent.slice().reverse(), ...oldRoots]) {
       if (Number(m.ts) > Number(st.cursor)) {
         if (isInstruction(m, c.owner, ownTs) && mentionGate(m, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: false })) await deliver(m, m.ts);
         st.cursor = m.ts;
@@ -617,7 +631,7 @@ export async function main(argv: string[]): Promise<void> {
       }
     }
     for (const [root, th] of Object.entries(st.threads)) if (Date.now() - th.touched > THREAD_TTL_MS) delete st.threads[root];
-    for (const root of Object.keys(st.replySeen)) if (Number(root) < dayAgo) delete st.replySeen[root];
+    for (const root of Object.keys(st.replySeen)) if (Number(root) < dayAgo && !oldRoots.some((m) => m.ts === root)) delete st.replySeen[root];
 
     // 3) outbox → thread
     for (const f of readdirSync(outbox).filter((x) => /^\d+\.md$/.test(x))) {
@@ -705,6 +719,10 @@ export async function main(argv: string[]): Promise<void> {
       onWake: (w) => {
         if (w.channel !== CHANNEL) return;
         wakeAt.set(w.ts, Date.now());
+        if (w.thread_ts && w.thread_ts !== w.ts) {
+          const prev = wokenRoots.get(w.thread_ts);
+          if (!prev || Number(w.ts) < Number(prev)) wokenRoots.set(w.thread_ts, w.ts);
+        }
         if (wakeAt.size > 500) wakeAt.delete(wakeAt.keys().next().value!);
         log(`⚡ wake ts=${w.ts}${w.thread_ts ? ` thread=${w.thread_ts}` : ""} transport=${(Date.now() / 1000 - Number(w.ts)).toFixed(2)}s`);
         sleeper.wake();
