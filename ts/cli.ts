@@ -30,6 +30,7 @@ import {
   readInvalidNotice,
   askResolveLang,
   askResolvedHow,
+  askResolvedKeep,
   ASK_COPY,
   ASK_LANGS,
   type AskFound,
@@ -2671,6 +2672,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   /** The question's `reply_count` as last seen — whether its thread is worth a
    *  fetch when collecting notes. Undefined until the question itself is seen. */
   let replyCount: number | undefined;
+  /** The question's text as last read — what the ✅ rewrite keeps the body of. */
+  let ownText: string | undefined;
 
   /** The earliest reply from an answerer that picked none of the choices. Kept
    *  across polls so the timeout can report it, and so the operator is told once
@@ -2739,7 +2742,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     if (!picks.length) return null;
     if (picks.length === 1) {
       const { index, users } = picks[0]!;
-      return { answer: reactable[index]!, how: copy.howReaction(ASK_KEYCAPS[index]!.glyph), who: users[0]! };
+      return { answer: reactable[index]!, how: copy.howReaction(ASK_KEYCAPS[index]!.glyph), who: users[0]!, choice: index + 1 };
     }
     const glyphs = picks.map((p) => ASK_KEYCAPS[p.index]!.glyph).join(" / ");
     console.error(`  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`);
@@ -2777,7 +2780,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
         // Answer with the CHOICE, not with the reply that selected it: "2" and
         // "2. 中止" have to reach the caller as the same decision a pill would
         // have produced, or the same answer arrives in three spellings.
-        return { answer: candidates[match.index - 1]!, how: copy.howReplyN(match.index), who: m.user, ts: String(m.ts) };
+        return { answer: candidates[match.index - 1]!, how: copy.howReplyN(match.index), who: m.user, ts: String(m.ts), choice: match.index };
       }
       // Replied, but picked nothing. Recorded rather than returned: a later
       // reply may still choose, and the first one is what the operator needs to
@@ -2812,6 +2815,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       const own = messages.find((m) => m.ts === ts);
       if (own) {
         replyCount = Number(own.reply_count) || 0;
+        if (typeof own.text === "string") ownText = own.text;
         const byReaction = await answerFromReactions(own);
         if (byReaction) return byReaction;
       }
@@ -2825,7 +2829,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const messages = asArray(hist.messages).map(asRecord);
     const own = messages.find((m) => m.ts === ts);
 
-    if (own) replyCount = Number(own.reply_count) || 0;
+    if (own) {
+      replyCount = Number(own.reply_count) || 0;
+      if (typeof own.text === "string") ownText = own.text;
+    }
     // A reaction is the intended path, so it wins when both are present.
     if (own) {
       const byReaction = await answerFromReactions(own);
@@ -2879,7 +2886,11 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // and must keep getting the answer body alone.
     if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
     try {
-      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who, ctx.lang), cookie, true);
+      // The body and the chosen option stay; only what no longer applies goes.
+      // Built from the message as it is NOW (an edit made in Slack after asking
+      // is kept). Not seen this run — the bare form, as before.
+      const keep = ownText ? askResolvedKeep(ownText, found.choice) : undefined;
+      await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who, ctx.lang, keep), cookie, true);
       // Swap the marker for the resolved one so search reflects reality:
       // `has::question:` should list what still needs answering, not everything
       // ever asked. Removal last — a crash between the two leaves the question

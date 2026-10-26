@@ -142,8 +142,9 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 #
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.
-# Once answered, the question is edited to "✅ …回答済み > <answer>" and the unpressed
-# seeds are removed, leaving the chosen pill visible.
+# Once answered, the question is edited to "✅ …回答済み > <answer>" — the body/background
+# and the CHOSEN option line stay; the other options, ❓ line and instructions go. The
+# unpressed seeds are removed, leaving the chosen pill visible.
 #
 # Thread notes (audience replies that are not the answer, even after ✅) go to
 # stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
