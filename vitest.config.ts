@@ -32,6 +32,7 @@ export default defineConfig({
       "tests/drafts.test.ts",
       "tests/read-thread.test.ts",
       "tests/read-shares.test.ts",
+      "tests/bot-intent-cli.test.ts",
       "tests/upload.test.ts",
       "tests/todo-cli.test.ts",
       "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
@@ -100,6 +101,7 @@ export default defineConfig({
         "ts/cache.ts",
         "ts/format.ts",
         "ts/attachments.ts",
+        "ts/botIntent.ts",
         "ts/lists.ts",
         "ts/poll.ts",
         "ts/profiles.ts",

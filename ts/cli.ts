@@ -118,10 +118,15 @@ import {
 import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
 import { attachmentLines, parseAttachments } from "./attachments.ts";
+import { botIntentRefusal } from "./botIntent.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 import { installSyncConsole } from "./stdout.ts";
 import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, parsePinlogId, pinlogId, stripPinlogFooter } from "./pinlog.ts";
+
+// Which dotenv file supplied each variable (absent = the shell's own env).
+const dotenvSource = new Map<string, string>();
+const GLOBAL_DOTENVS = [join(homedir(), ".slack-cli", ".env.local"), join(homedir(), ".config/slack-cli", ".env")];
 
 function loadDotenv(path: string): void {
   if (!existsSync(path)) return;
@@ -136,7 +141,10 @@ function loadDotenv(path: string): void {
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     }
-    if (!(key in process.env)) process.env[key] = val;
+    if (!(key in process.env)) {
+      process.env[key] = val;
+      dotenvSource.set(key, path);
+    }
   }
 }
 
@@ -148,8 +156,7 @@ function ensureSlackCliDir(dir: string): void {
 
 function loadDotenvFiles(): void {
   // Global home config
-  loadDotenv(join(homedir(), ".slack-cli", ".env.local"));
-  loadDotenv(join(homedir(), ".config/slack-cli", ".env"));
+  for (const p of GLOBAL_DOTENVS) loadDotenv(p);
   // Local project overrides (highest priority — loaded last so they win)
   loadDotenv(join(process.cwd(), ".slack-cli", ".env.local"));
   loadDotenv(join(process.cwd(), ".env.local"));
@@ -4176,7 +4183,18 @@ async function main(): Promise<void> {
       // `sent` reads only the local log — no token, no network.
       if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent") return;
       try {
-        resolveToken((argv as W).workspace);
+        const active = resolveToken((argv as W).workspace);
+        const bot = resolveBotToken();
+        const refusal = botIntentRefusal(argv._ ?? [], argv as Record<string, unknown>, {
+          botTokenSource: bot ? dotenvSource.get("SLACK_BOT_TOKEN") ?? "shell" : undefined,
+          globalPaths: GLOBAL_DOTENVS,
+          slackTokenSet: !!process.env.SLACK_TOKEN,
+          activeTokenIsBot: !!bot && active === bot,
+        });
+        if (refusal) {
+          console.error(refusal);
+          process.exit(2);
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.startsWith("No profiles configured")) {
