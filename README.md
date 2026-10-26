@@ -131,7 +131,7 @@ slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
 ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code> --wait)
 # exit 0 = answered, 2 = timed out (--timeout, default 3600s), 3 = transport failure,
-# 4 = a reply matched several choices, 5 = a free-text reply that picked NO choice —
+# 4 = a reply matched several choices, 6 = the question was voided, 5 = a free-text reply that picked NO choice —
 # the reply text is on stdout, it is not a decision, and the question stays open.
 #
 # The question must say WHO may answer — only their reaction/reply is taken as the
@@ -149,6 +149,10 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # Thread notes (audience replies that are not the answer, even after ✅) go to
 # stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
 #   slack ask --waitFor='<permalink>' --timeout 0 --json --after=<cursor>
+#
+# Retire a question that expired / stopped meaning anything (作废) — waits on it exit 6:
+#   slack ask --void='<permalink>' --reason 'head moved' --superseded-by '<new permalink>'
+# (`slack edit` refuses ask/poll messages unless --force — use --void instead.)
 #
 # WITHOUT --wait, stdout is the command that collects the answer later:
 RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
