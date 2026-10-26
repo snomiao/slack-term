@@ -143,6 +143,9 @@ const fixtures = {
 
   "drafts.list": { ok: true, drafts: [] },
   "saved.list": { ok: true, saved_items: [], response_metadata: { next_cursor: "" } },
+  "saved.add": { ok: true, item: {} },
+  "saved.update": { ok: true },
+  "saved.delete": { ok: true },
   "drafts.create": { ok: true, draft: { id: "D00000001" } },
   "drafts.update": { ok: true },
   "drafts.delete": { ok: true },
@@ -635,6 +638,26 @@ describe("slack.ts", () => {
     expect([p1.get("filter"), p1.get("limit"), p1.get("cursor")]).toEqual(["todo", "5", "abc"]);
     const p2 = new URLSearchParams(second!.body);
     expect([p2.get("filter"), p2.get("limit"), p2.get("cursor")]).toEqual([null, "50", null]);
+  });
+
+  test("savedAdd / savedUpdate / savedDelete post the message ref and only the fields given", async () => {
+    const before = mock.requests.length;
+    const ref = { channel: "C00000001", ts: "1700000000.000100" };
+    await slack.savedAdd(token, ref, { due: 2100000000 });
+    await slack.savedAdd(token, ref, { todo: false });
+    await slack.savedUpdate(token, ref, { mark: "completed" });
+    await slack.savedUpdate(token, ref, { todo: true, due: 0 });
+    await slack.savedDelete(token, ref);
+    const bodies = mock.requests.slice(before).filter((q) => q.method.startsWith("saved."))
+      .map((q) => { const p = Object.fromEntries(new URLSearchParams(q.body)); delete p.token; return [q.method, p]; });
+    const ids = { item_type: "message", item_id: "C00000001", ts: "1700000000.000100" };
+    expect(bodies).toEqual([
+      ["saved.add", { ...ids, todo_state: "to_do", date_due: "2100000000" }],
+      ["saved.add", { ...ids, todo_state: "saved" }],
+      ["saved.update", { ...ids, mark: "completed" }],
+      ["saved.update", { ...ids, todo_state: "to_do", date_due: "0" }],
+      ["saved.delete", ids],
+    ]);
   });
 
   test("listDrafts returns drafts array", async () => {
