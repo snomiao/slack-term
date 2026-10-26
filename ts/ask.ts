@@ -20,7 +20,9 @@ export const ASK_KEYCAPS = [
 ] as const;
 export const ASK_MAX_REACTION_CHOICES = ASK_KEYCAPS.length;
 
-export type AskFound = { answer: string; how: string; who?: string };
+/** `ts` is set when the answer is a REPLY — so that reply is not delivered again
+ *  as a thread note alongside the answer it already is. */
+export type AskFound = { answer: string; how: string; who?: string; ts?: string };
 
 /** The marker that says "this message is an `ask`". A shortcode, so it is the
  *  SAME token in every language — that is the whole point of it.
@@ -308,6 +310,17 @@ export function askBuildText(question: string, body: string, reactable: string[]
 export function askBuildResolvedText(question: string, found: AskFound, who: string, lang: AskLang = "ja"): string {
   const quoted = found.answer.split("\n").map((l) => `> ${l}`).join("\n");
   return `${ASK_RESOLVED_PREFIX}*${question}*\n${ASK_COPY[lang].answeredVia(found.how, who)}\n\n${quoted}`;
+}
+
+/** How a ✅-stamped question was answered, read back from its stamp line —
+ *  whether by a reply, and if the reply picked a numbered choice, which number.
+ *  `--waitFor` uses it to recognise the reply that IS the answer, so that reply
+ *  is not handed back again as a thread note. Both languages' stamps are read. */
+export function askResolvedHow(text: string): { byReply: boolean; n?: number } {
+  const stamp = text.split("\n")[1] ?? "";
+  const m = stamp.match(/^_(?:返信|Answered by reply)(?: \((\d+)\))?/);
+  if (!m) return { byReply: false };
+  return m[1] ? { byReply: true, n: Number(m[1]) } : { byReply: true };
 }
 
 /** Undo Slack's storage escaping. Only these three are ever escaped, and `&amp;`
