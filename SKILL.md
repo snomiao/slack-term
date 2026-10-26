@@ -415,6 +415,7 @@ slack news --limit 1
 - **`conversations.invite` reports success but the member never shows up** — the invited user is likely a single-channel guest (`is_ultra_restricted`); Slack silently no-ops the invite since that account type can only ever belong to the one channel it was created in. `channel create --invite` now warns about this up front.
 - **Send is rejected with "use #channel or @user"** — the CLI enforces human-readable targets. Use `#channel-name` or `@display-name`, not raw IDs.
 - **Confirm code mismatch on any gated write** — the content, target or acting identity changed between preview and confirm (a different profile/`SLACK_TOKEN`, or `--as-bot` added or dropped). Re-run without `--code` for a fresh preview, and re-check the `From:` line and the `→` destination line (THREAD REPLY vs NEW top-level message).
+- **`refusing to act as YOU — SLACK_BOT_TOKEN is exported …`** — you set a bot token in the shell or a project `.env` (not the global `~/.config/slack-cli/.env`) but ran a write without `--as-bot`, which would post as the logged-in person. Add `--as-bot` to post as the app; to post as yourself, set `SLACK_TOKEN` or clear the bot token for that run (`SLACK_BOT_TOKEN= slack …`). Reads are never refused.
 - **Enterprise Grid / admin-locked workspace** — custom app installation may need admin approval or be disabled outright.
 
 ## Safety
