@@ -152,7 +152,10 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 #
 # Retire a question that expired / stopped meaning anything (作废) — waits on it exit 6:
 #   slack ask --void='<permalink>' --reason 'head moved' --superseded-by '<new permalink>'
-# (`slack edit` refuses ask/poll messages unless --force — use --void instead.)
+# Change one: slack ask --edit='<permalink>' ["new question" [choices…]] [--body …]
+#   (options only while unanswered; after that: --void='<permalink>' --reask …)
+# List mine with live state: slack ask --ls [--stale 24h] [--state all] [--json]
+# (`slack edit` refuses an edit that would break an ask/poll; --force overrides.)
 #
 # WITHOUT --wait, stdout is the command that collects the answer later:
 RESUME=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って" --code=<code>)
