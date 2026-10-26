@@ -283,6 +283,11 @@ points into one message.
 - Attachments show a `📎 <name> (<size>) [<file-id>]` line under the message; `--json`
   adds a `files[]` array (`id`, `name`, `mimetype`, `size`, `url_private_download`,
   `permalink`) only on messages that have attachments. Fetch one with `slack download <file-id>`.
+- Forwarded / shared messages (Slack's "Forward", or a pasted message link) show under the
+  comment as `↪ shared message from @<author> in <#C…> · <ts>`, the original text quoted
+  with `│`, and its permalink. Legacy bot attachments show as `▸ <title>`; web-page link
+  previews are left out. `--json` adds `attachments[]` (`shared`, `unfurl`, `author_id`,
+  `author_name`, `channel_id`, `ts`, `title`, `text`, `permalink`) only when present.
 
 ## Getting a Slack token (first-time setup)
 

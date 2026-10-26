@@ -114,6 +114,7 @@ import {
 } from "./todo.ts";
 import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
+import { attachmentLines, parseAttachments } from "./attachments.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, parsePinlogId, pinlogId, stripPinlogFooter } from "./pinlog.ts";
@@ -273,7 +274,12 @@ async function formatMsgLine(
   // top-level history can see there is more to read without opening each ts.
   const replyCount = Number(m.reply_count ?? 0);
   const threadMark = replyCount > 0 ? `  [+${replyCount} ${replyCount === 1 ? "reply" : "replies"}]` : "";
-  const tail = (reactions ? `\n   ${reactions}` : "") + attachTail;
+  // Forwarded/shared messages live in attachments[], not in the message text.
+  const atts = await Promise.all(parseAttachments(m).map(async (a) => ({
+    ...a,
+    text: a.text ? resolveDateMarkup(await resolveMentions(token, a.text, cache, cookie)) : "",
+  })));
+  const tail = (reactions ? `\n   ${reactions}` : "") + attachTail + attachmentLines(atts, slackTsToIso);
   return `${stamp}  ${who}:  ${body}${threadMark}${tail}`;
 }
 
@@ -302,6 +308,7 @@ function slimFiles(m: Record<string, Json>): Record<string, Json>[] {
 // users.list) so callers can resolve mentions without scraping history by hand.
 function slimMsg(m: Record<string, Json>): Record<string, Json> {
   const files = slimFiles(m);
+  const attachments = parseAttachments(m);
   return {
     ts: m.ts ?? null,
     user: m.user ?? null,
@@ -329,6 +336,10 @@ function slimMsg(m: Record<string, Json>): Record<string, Json> {
     // Present only when the message carries attachments, so scripts can reliably
     // detect files without the key adding noise to every plain-text line.
     ...(files.length > 0 ? { files } : {}),
+    // Forwarded/shared messages (and bot attachments): the original author,
+    // channel, ts, text and permalink. The message's own `text` is only the
+    // comment typed with the share.
+    ...(attachments.length > 0 ? { attachments } : {}),
   };
 }
 
