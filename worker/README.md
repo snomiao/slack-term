@@ -30,6 +30,12 @@ slack stream ◀──GET /stream (SSE, Bearer)─────┘
   under a thread parent older than the client's `--thread-window`: the poll
   cannot find those, so a bell that expired before the client read it is lost.
 - **Nothing logs a request body**, and Workers Logs are off (`observability`).
+- **Token holders see activity metadata.** Anyone with `RELAY_TOKEN` can watch
+  *when* and *where* messages are posted — channel ids, timestamps and thread
+  structure, for every conversation the bot is in, **including DMs** with it —
+  even though they never see text or senders. Treat the token like read access
+  to that timing data: give it only to consumers you trust, and rotate it
+  (`wrangler secret put RELAY_TOKEN`) when one should lose access.
 - **A forged bell costs a few Web API reads at most:** one
   `conversations.replies` call, a few pages if needed, and up to 8 retries
   if the message is not found. The client applies its own filter to what
@@ -64,6 +70,8 @@ Consumers set `SLACK_RELAY_URL=https://<worker>` and `SLACK_RELAY_TOKEN=…`.
 
 ```sh
 cd worker && bun install && bun run typecheck
+# or, from the repo root (what CI runs):
+bun run typecheck:worker
 ```
 
 The signature and event parsing live in `src/slack.ts`, which has no Cloudflare
