@@ -1681,3 +1681,72 @@ describe("send preview masks secrets (CLI)", { timeout: 60_000 }, () => {
     expect(r.stdout + r.stderr).not.toContain(KEY.slice(0, 20));
   });
 });
+
+// The untagged-mention lint warns that a plain-text name won't notify. In a
+// thread the person started or replied in, or in a 1:1 DM with them, Slack
+// notifies them anyway — the warning there is noise, so it is skipped.
+describe("untagged-mention lint skips people already notified (CLI)", { timeout: 60_000 }, () => {
+  const YAMADA = "U00000BOB";
+  const SUZUKI = "U00000CAR";
+  const thread = (parentUser: string, replyUsers: string[], ts: string) => ({
+    ok: true,
+    messages: [
+      { type: "message", user: parentUser, text: "parent", ts, reply_users: replyUsers },
+      ...replyUsers.map((u, i) => ({ type: "message", user: u, text: `reply ${i}`, ts: `1700000050.00000${i}`, thread_ts: ts })),
+    ],
+  });
+  const fixtures = {
+    "auth.test": { ok: true, user_id: "U00000001", user: "user1", team: "Acme", url: "https://acme.slack.com/" },
+    "users.list__limit=200": {
+      ok: true,
+      members: [
+        { id: YAMADA, name: "yamada", real_name: "山田 太郎", profile: { display_name: "山田" } },
+        { id: SUZUKI, name: "suzuki", real_name: "鈴木 花子", profile: { display_name: "鈴木" } },
+      ],
+    },
+    "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
+    "conversations.info__channel=D00000BOB": { ok: true, channel: { id: "D00000BOB", is_im: true, user: YAMADA, name: "" } },
+    "conversations.info__channel=D00000CAR": { ok: true, channel: { id: "D00000CAR", is_im: true, user: SUZUKI, name: "" } },
+    "conversations.history__channel=C00000001&limit=1": { ok: true, messages: [] },
+    "conversations.history__channel=D00000BOB&limit=1": { ok: true, messages: [] },
+    "conversations.history__channel=D00000CAR&limit=1": { ok: true, messages: [] },
+    // Started by 山田 / started by 鈴木 with a reply from 山田 / 鈴木 alone.
+    "conversations.replies__channel=C00000001&limit=100&ts=1700000000.000100": thread(YAMADA, [], "1700000000.000100"),
+    "conversations.replies__channel=C00000001&limit=100&ts=1700000000.000200": thread(SUZUKI, [YAMADA], "1700000000.000200"),
+    "conversations.replies__channel=C00000001&limit=100&ts=1700000000.000300": thread(SUZUKI, [], "1700000000.000300"),
+  };
+  const TEXT = "山田さん、確認お願いします";
+  const permalink = (ts: string) => `https://acme.slack.com/archives/C00000001/p${ts.replace(".", "")}`;
+  let m: MockHandle;
+  beforeAll(async () => { m = await startMock({ inline: fixtures }); });
+  afterAll(async () => { await m.stop(); });
+  const warned = async (args: string[]) => {
+    const r = await run(args, { baseUrl: m.baseUrl });
+    expect(r.exitCode).toBe(1); // stopped at the gate either way
+    return r.stderr.includes("possible untagged mention: 山田さん");
+  };
+
+  test("no warning in a thread the person started", async () => {
+    expect(await warned(["send", permalink("1700000000.000100"), TEXT])).toBe(false);
+  });
+
+  test("no warning in a thread the person replied in", async () => {
+    expect(await warned(["send", permalink("1700000000.000200"), TEXT])).toBe(false);
+  });
+
+  test("still warns in a thread the person is not in", async () => {
+    expect(await warned(["send", permalink("1700000000.000300"), TEXT])).toBe(true);
+  });
+
+  test("no warning in a 1:1 DM with the person", async () => {
+    expect(await warned(["send", "@yamada", TEXT, "--channel-id", "D00000BOB"])).toBe(false);
+  });
+
+  test("still warns in a DM with someone else", async () => {
+    expect(await warned(["send", "@suzuki", TEXT, "--channel-id", "D00000CAR"])).toBe(true);
+  });
+
+  test("still warns for a top-level channel post", async () => {
+    expect(await warned(["send", "#channel-01", TEXT, "--channel-id", "C00000001"])).toBe(true);
+  });
+});

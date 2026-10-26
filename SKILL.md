@@ -135,7 +135,8 @@ UTC, and the two are easy to mix up. Check the side you meant before confirming.
 member in plain text (honorifics like `山田さん` / `王老师`, or `Hi Dave`) without a
 matching `<@USERID>` tag, it prints `⚠ possible untagged mention: …` alongside the
 confirm code. It never blocks — third-party/external references are expected to trip it.
-To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see below).
+It stays quiet for people Slack notifies anyway: in a thread reply, anyone who started or
+replied in that thread; in a 1:1 DM, the other member. To actually notify someone, write `@handle` (auto-converted to `<@USERID>`; see below).
 
 When the target is a **thread**, the confirm preview shows the thread's recent messages
 (not the channel's last message) and prints `⚠ possible duplicate: …` if your text is
