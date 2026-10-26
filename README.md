@@ -150,7 +150,7 @@ slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyo
 # stderr; --json puts {answer, notes[], cursor} on stdout. Feed cursor back as --after:
 #   slack ask --waitFor='<permalink>' --timeout 0 --json --after=<cursor>
 #
-# Retire a question that expired / stopped meaning anything (作废) — waits on it exit 6:
+# Retire a question that expired / stopped meaning anything (無効化) — waits on it exit 6:
 #   slack ask --void='<permalink>' --reason 'head moved' --superseded-by '<new permalink>'
 # Change one: slack ask --edit='<permalink>' ["new question" [choices…]] [--body …]
 #   (options only while unanswered; after that: --void='<permalink>' --reask …)

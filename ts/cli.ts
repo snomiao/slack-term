@@ -2436,7 +2436,7 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
 //   5  replied in free text, picking none of the offered choices — the reply
 //      text is on stdout. NOT a decision: the question is left open, so a pill
 //      pressed later still settles it (`--waitFor … --after=<reply ts>`).
-//   6  the question was VOIDED (作废, `slack ask --void`) — it will never be
+//   6  the question was VOIDED (無効化, `slack ask --void`) — it will never be
 //      answered; stop waiting. stdout stays empty.
 // Everything human-facing goes to stderr, so `ANS=$(slack ask ... --wait)` is safe.
 
@@ -2453,7 +2453,7 @@ const ASK_EXIT_UNCHOSEN = 4;
  *  (measured 2026-09-27: 8 of 71 asks answered this way, none collected). Still
  *  not 0, so nothing mistakes it for a decision. */
 const ASK_EXIT_FREETEXT = 5;
-/** The question was voided (作废) — expired, superseded, or overtaken by events.
+/** The question was voided (無効化) — expired, superseded, or overtaken by events.
  *  Neither "open" nor "answered": a monitor that kept waiting on it would wait
  *  forever, and one that read it as answered would act on nothing. */
 const ASK_EXIT_VOID = 6;
@@ -3286,7 +3286,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       // shown as its own line rather than left to be inferred from the body.
       `  Answerable by: ${audienceLabel}`,
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
-      ...(args.voidAfter ? [`  Then 作废: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
+      ...(args.voidAfter ? [`  Then 無効化: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
       `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_TERM_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
       `--------------------------------────────────`,
     ], recipientTz);
@@ -3338,7 +3338,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // two open questions, which is reported loudly — never a missing one.
   if (args.voidAfter) {
     const ok = await askApplyVoid(token, args.voidAfter, args.voidAfter.reason, shown, cookie);
-    if (!ok) console.error(`  ⚠ 新しい質問は出ましたが、古い質問を作废できませんでした — 手で: slack ask --void='${stripTerminalControls(args.voidAfter.link)}' --superseded-by='${shown}'`);
+    if (!ok) console.error(`  ⚠ 新しい質問は出ましたが、古い質問を無効化できませんでした — 手で: slack ask --void='${stripTerminalControls(args.voidAfter.link)}' --superseded-by='${shown}'`);
   }
 
   if (!args.wait) {
@@ -3380,7 +3380,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
 
 /** Say on stderr that a question is void, and where its replacement is. */
 function askReportVoid(p: { reason: string; supersededBy?: string }, shown: string): void {
-  console.error(`この質問は作废（無効）です — 回答されることはありません。待つのをやめてください: ${stripTerminalControls(shown)}`);
+  console.error(`この質問は無効です — 回答されることはありません。待つのをやめてください: ${stripTerminalControls(shown)}`);
   if (p.reason) console.error(`  ${stripTerminalControls(p.reason)}`);
   if (p.supersededBy) console.error(`  新しい質問: ${stripTerminalControls(p.supersededBy)}`);
 }
@@ -3484,7 +3484,7 @@ async function cmdAskEdit(token: string, args: {
 }): Promise<void> {
   const self = await selfIdentity(token, args.cookie);
   const t = await askLoadOwnOpen(token, args.link, self, args.asBot, args.cookie);
-  if (t === "void") { console.error(`✗ ${stripTerminalControls(args.link)}: 作废済みの質問は編集できません`); process.exit(ASK_EXIT_ERROR); }
+  if (t === "void") { console.error(`✗ ${stripTerminalControls(args.link)}: 無効化済みの質問は編集できません`); process.exit(ASK_EXIT_ERROR); }
   if (!t) process.exit(ASK_EXIT_ERROR);
   const old = t.parsed;
   const encode = async (raw: string): Promise<string> => {
@@ -3499,7 +3499,7 @@ async function cmdAskEdit(token: string, args: {
   if (choicesChanged && await askHasResponses(token, t, self, args.cookie)) {
     console.error(
       `✗ この質問にはもう回答（リアクションか返信）があります — 選択肢を変えると、押されたリアクションの意味が変わってしまいます。\n` +
-      `  質問文と本文は変えられます。選択肢を変えるなら作废して出し直してください:\n` +
+      `  質問文と本文は変えられます。選択肢を変えるなら無効化して出し直してください:\n` +
       `  slack ask --void='${stripTerminalControls(args.link)}' --reask${args.asBot ? " --as-bot" : ""} …`,
     );
     process.exit(ASK_EXIT_ERROR);
@@ -3638,7 +3638,7 @@ async function cmdAskLs(tokens: { user?: string; bot?: string; cookie?: string }
     for (const bot of [false, true]) {
       const mine = open.filter((it) => it.asBot === bot);
       if (!mine.length) continue;
-      console.error(`作废するなら (${mine.length} 件, ${bot ? "bot" : "user"}):\n  slack ask ${mine.map((it) => `--void='${it.link}'`).join(" ")} --reason 'stale'${bot ? " --as-bot" : ""}`);
+      console.error(`無効化するなら (${mine.length} 件, ${bot ? "bot" : "user"}):\n  slack ask ${mine.map((it) => `--void='${it.link}'`).join(" ")} --reason 'stale'${bot ? " --as-bot" : ""}`);
     }
   }
 }
@@ -3671,11 +3671,11 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
   } catch (e: unknown) {
     console.error(`  (${shown}: 🚫 リアクションを付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
   }
-  console.error(`✓ 作废: ${shown}`);
+  console.error(`✓ 無効化: ${shown}`);
   return true;
 }
 
-/** `slack ask --void <permalink>…` — 作废: mark questions that have expired or
+/** `slack ask --void <permalink>…` — 無効化: mark questions that have expired or
  *  stopped meaning anything, so nobody answers them and nothing waits on them.
  *
  *  Case, 2026-10-05: a release ask was pinned to one head SHA; three minutes
@@ -3730,7 +3730,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
     const msg = got.msg;
     const own = (!!self?.userId && msg.user === self.userId) || (!!self?.botId && msg.bot_id === self.botId);
     if (!own) {
-      console.error(`✗ ${shown}: 自分（${senderLabel(self, args.asBot)}）が投稿した質問ではないので作废できません` +
+      console.error(`✗ ${shown}: 自分（${senderLabel(self, args.asBot)}）が投稿した質問ではないので無効化できません` +
         `${args.asBot ? "" : " — bot が出した質問なら --as-bot で"}`);
       refused++;
       continue;
@@ -3738,8 +3738,8 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
     const text = typeof msg.text === "string" ? msg.text : "";
     let parsed = askParseMessage(text);
     let unreadable = false;
-    if (parsed.kind === "void") { console.error(`- ${shown}: すでに作废済みです（何もしません）`); continue; }
-    if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問は作废できません（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）`); refused++; continue; }
+    if (parsed.kind === "void") { console.error(`- ${shown}: すでに無効化済みです（何もしません）`); continue; }
+    if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問は無効化できません（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）`); refused++; continue; }
     if (parsed.kind !== "open") {
       // Our own ❓ question whose layout no longer parses (2026-10-01: a
       // `slack edit` flattened one; it could then be neither collected nor
@@ -3767,14 +3767,14 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
     targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, pressed, ...(unreadable ? { unreadable } : {}) });
   }
   if (!targets.length) {
-    console.error(refused ? "作废できる質問がありません。" : "何もすることがありません。");
+    console.error(refused ? "無効化できる質問がありません。" : "何もすることがありません。");
     process.exit(refused ? ASK_EXIT_ERROR : 0);
   }
 
   const code = safetyCode("ask-void", ...targets.map((t) => `${t.channelId}:${t.ts}`), args.reason, args.supersededBy ?? "", self?.userId ?? "");
   if (args.code !== code) {
     requireCode(args.code, code, [
-      `--- 作废 (void) -------------------------------`,
+      `--- 無効化 (void) -------------------------------`,
       fromLine(self, { asBot: args.asBot }),
       `  Reason:   ${args.reason ? stripTerminalControls(args.reason) : "(none)"}`,
       ...(args.supersededBy ? [`  Replaced: ${stripTerminalControls(args.supersededBy)}`] : []),
@@ -5474,7 +5474,7 @@ async function main(): Promise<void> {
     )
     .command(
       "ask [target] [question] [choices..]",
-      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate). Lifecycle: --waitFor=<link> collect, --void=<link> 作废 (verb aliases: `ask collect <link>`, `ask void <link…>`)",
+      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate). Lifecycle: --waitFor=<link> collect, --void=<link> 無効化 (verb aliases: `ask collect <link>`, `ask void <link…>`)",
       (y) => y
         .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --waitFor)" })
         .positional("question", { type: "string", describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
@@ -5483,10 +5483,10 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (作废, `slack ask void`) — stop waiting." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (無効化, `slack ask void`) — stop waiting." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted. Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
-        .option("void", { type: "string", array: true, describe: "作废: void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
+        .option("void", { type: "string", array: true, describe: "無効化: void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
         .option("reask", { type: "boolean", default: false, describe: "With ONE --void: post the question again (same channel/thread, same text and choices unless you give new ones as positionals / --body) and void the old one as replaced by it — one gate for both. The way to change the options of a question someone already answered." })
         .option("edit", { type: "string", describe: "Change an open question you posted: --edit=<permalink> [\"new question\" [choices…]] [--body …]. Rebuilt with the ask layout so collect still reads it. Options can change only while nobody has answered (then: --void=<link> --reask). Same --code gate." })
         .option("ls", { type: "boolean", default: false, describe: "List the questions you posted (local sent-log) with their LIVE state: --state open|answered|void|all (default open), --stale 24h, --channel, --json. With --stale it prints the --void command that would retire them." })
@@ -5504,7 +5504,7 @@ async function main(): Promise<void> {
       async (argv) => {
         // Verbs. A target is always #chan / @user / a permalink / a raw ID, so a
         // bare word here cannot be one — `slack ask void …` is unambiguous.
-        //   slack ask void <link…> [--reason …] [--superseded-by <link>]   作废
+        //   slack ask void <link…> [--reason …] [--superseded-by <link>]   無効化
         //   slack ask collect <link>                                        = --waitFor
         // Lifecycle flags (maintainer: "maybe slack ask --edit=<target>"), primary;
         // the bare verbs `void` / `collect` stay as aliases.
@@ -5584,7 +5584,7 @@ async function main(): Promise<void> {
           const { token, cookie } = askTokenFor(!!argv["as-bot"]);
           const self = await selfIdentity(token, cookie);
           const t = await askLoadOwnOpen(token, voidFlag[0]!, self, !!argv["as-bot"], cookie);
-          if (t === "void") { console.error(`✗ ${stripTerminalControls(voidFlag[0]!)}: すでに作废済みです — 新しく聞くなら普通に slack ask で`); process.exit(ASK_EXIT_ERROR); }
+          if (t === "void") { console.error(`✗ ${stripTerminalControls(voidFlag[0]!)}: すでに無効化済みです — 新しく聞くなら普通に slack ask で`); process.exit(ASK_EXIT_ERROR); }
           if (!t) process.exit(ASK_EXIT_ERROR);
           voidAfter = { ...t, reason: unescapeArg(String(argv.reason ?? "")).trim() };
           // Same place, same words, unless new ones were given.

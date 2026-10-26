@@ -1262,7 +1262,7 @@ describe("ask collects thread notes beside the answer (CLI)", { timeout: 90_000 
   });
 });
 
-describe("ask void — 作废 (CLI)", { timeout: 90_000 }, () => {
+describe("ask void — 無効化 (CLI)", { timeout: 90_000 }, () => {
   const LINK = `${CHAN}:${QTS}`;
   const OPEN = askBuildText(`<@${BOB}> 出してよい?`, "背景: head bcb7fd8e", ["リリースする", "見送る"], [], true);
   const NEW_TS = "1700000000.000900";
@@ -1574,7 +1574,7 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
       const base = ["ask", `--void=${LINK}`, "--reask", "--reason", "head moved", `<@${BOB}> 出してよい?（head 2c706eb4）`, "リリースする", "見送る"];
       const dry = await run(base, m.baseUrl);
       expect(dry.exitCode).toBe(1);
-      expect(dry.stdout).toContain(`Then 作废: ${LINK}`);
+      expect(dry.stdout).toContain(`Then 無効化: ${LINK}`);
       expect(m.requests.some((q) => q.method === "chat.postMessage" || q.method === "chat.update")).toBe(false);
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(0);

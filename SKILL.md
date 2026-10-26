@@ -200,7 +200,7 @@ and the chosen option; only the options not chosen, the ❓ line and the instruc
 The head is unchanged (`:white_check_mark:` prefix, question, stamp, quoted answer), so
 anything that keys on the prefix or re-reads the answer works on old and new ✅ bodies alike.
 
-**Voiding a question (作废).** When a question has expired or stopped meaning anything
+**Voiding a question (無効化).** When a question has expired or stopped meaning anything
 (the head it was pinned to moved, the decision was made elsewhere), retire it:
 `slack ask --void='<permalink>' --reason '…' [--superseded-by '<new permalink>']`
 (repeatable `--void=`; alias `slack ask void <link…>`; same `--code` gate; own questions

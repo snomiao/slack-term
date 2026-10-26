@@ -154,7 +154,7 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
     howReaction: (glyph) => `リアクション ${glyph}`,
     howReply: "返信",
     howReplyN: (n) => `返信 (${n})`,
-    voidStamp: (reason) => `_作废（無効）${reason ? `: ${reason}` : ""} — この質問への回答は受け付けません。_`,
+    voidStamp: (reason) => `_無効${reason ? `: ${reason}` : ""} — この質問への回答は受け付けません。_`,
     supersededBy: (link) => `↪ 新しい質問: ${link}`,
   },
   en: {
@@ -240,7 +240,7 @@ export const ASK_RESOLVED_MARKER = "white_check_mark";
 export const ASK_RESOLVED_PREFIX = `:${ASK_RESOLVED_MARKER}: `;
 
 /** Prefix `--void` stamps on a question that should no longer be answered —
- *  expired, superseded, or overtaken by events (作废). A THIRD state beside open
+ *  expired, superseded, or overtaken by events (無効化). A THIRD state beside open
  *  (`:question:`) and answered (`:white_check_mark:`), on purpose: anything that
  *  keys on "starts with :question:" (the stale-pill reminder, `has::question:`)
  *  stops counting it the moment it is voided, and nothing reads it as answered.
@@ -456,7 +456,7 @@ function askDecodeEntities(s: string): string {
 export type AskParsed =
   | { kind: "open"; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
   | { kind: "resolved"; question: string; answer: string }
-  /** Voided (作废). `reason` is the stamp line as written; `supersededBy` the
+  /** Voided (無効化). `reason` is the stamp line as written; `supersededBy` the
    *  replacement's link when one was given. */
   | { kind: "void"; question: string; reason: string; supersededBy?: string }
   | { kind: "other" };
@@ -512,7 +512,7 @@ export function askParseMessage(text: string): AskParsed {
     const link = stampAt > 0 ? lines[stampAt + 1]?.match(/^↪ [^:：]*[:：] (.+)$/)?.[1] : undefined;
     return link ? { kind: "void", question, reason, supersededBy: link } : { kind: "void", question, reason };
   }
-  // A hand-voided body is 【…作废…】 in front of the original `:question: *…*` —
+  // A hand-voided body is 【…無効化…】 in front of the original `:question: *…*` —
   // without that question it is just a message that happens to say "void".
   const legacyQ = lines[0]!.match(ASK_LEGACY_VOID_RE) ? text.match(/:question: \*([^\n]*?)\*/) : null;
   if (legacyQ) {
