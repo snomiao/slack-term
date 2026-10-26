@@ -54,7 +54,7 @@ import {
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
 import { buildListSchema, cellValue, completedColumn, findColumn, parseColumnSpec, parseListSchema, parseSets, type ListColumn } from "./lists.ts";
-import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, markAskCollected, markAskDelivered, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, senderAlive, uncollectedAsks, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -2740,12 +2740,33 @@ async function askEmit(
 }
 
 
-/** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
- *  on timeout. A timeout of 0 means "look exactly once", so a caller can poll
- *  cheaply on its own schedule instead of parking a process on `--wait`. */
-async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
-  const { channelId, ts, question, reactable, threadOnly, audience, broadcast, cookie, timeout, shown } = ctx;
+/** What one look at a question found besides the answer — read back by the
+ *  `--wait` loop between polls, and by `ask --pending` after its single look. */
+interface AskPollState {
+  /** The earliest audience reply that picked none of the choices. */
+  unchosen?: { text: string; who: string; ts: string; ambiguous: boolean };
+  /** Set when the question has been voided. */
+  voided?: Extract<ReturnType<typeof askParseMessage>, { kind: "void" }>;
+  /** The question's `reply_count` as last seen — undefined until seen. */
+  replyCount?: number;
+  /** The question's text as last read — what the ✅ rewrite keeps the body of. */
+  ownText?: string;
+}
+
+/** The polling half of `--wait`: one `poll()` is one look at the question,
+ *  shared with `ask --pending`. `readOnly` drops the one WRITE a look can make
+ *  (the invalid-ballot notice edited into the question) and the progress lines
+ *  on stderr — `--pending` inspects questions other sessions are responsible
+ *  for, and must neither touch them nor narrate their state as if waiting. */
+function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
+  poll: () => Promise<AskFound | null>;
+  state: AskPollState;
+  isAnswerer: (user: unknown) => user is string;
+  candidates: string[];
+} {
+  const { channelId, ts, reactable, threadOnly, audience, broadcast, cookie } = ctx;
   const copy = ASK_COPY[ctx.lang];
+  const state: AskPollState = {};
   const askerUserId = ctx.askerUserId;
   const askerBotId = ctx.askerBotId;
 
@@ -2756,24 +2777,18 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   const isAnswerer = (user: unknown): user is string =>
     typeof user === "string" && !!user && user !== askerUserId && (broadcast || audience.has(user));
 
-  /** The question's `reply_count` as last seen — whether its thread is worth a
-   *  fetch when collecting notes. Undefined until the question itself is seen. */
-  let replyCount: number | undefined;
-  /** The question's text as last read — what the ✅ rewrite keeps the body of. */
-  let ownText: string | undefined;
+  /** The question as last seen: its `reply_count` (whether its thread is worth
+   *  a fetch when collecting notes) and its text (what the ✅ rewrite keeps). */
+  const seen = (own: Record<string, Json>): void => {
+    state.replyCount = Number(own.reply_count) || 0;
+    if (typeof own.text === "string") state.ownText = own.text;
+  };
   /** Set when the question is voided while we wait — the wait ends there. */
-  let voided: Extract<ReturnType<typeof askParseMessage>, { kind: "void" }> | undefined;
   const checkVoid = (own: Record<string, Json>): boolean => {
     const p = typeof own.text === "string" ? askParseMessage(own.text) : undefined;
-    if (p?.kind === "void") voided = p;
-    return !!voided;
+    if (p?.kind === "void") state.voided = p;
+    return !!state.voided;
   };
-
-  /** The earliest reply from an answerer that picked none of the choices. Kept
-   *  across polls so the timeout can report it, and so the operator is told once
-   *  rather than on every tick. */
-  let unchosen: { text: string; who: string; ts: string; ambiguous: boolean } | undefined;
-  let unchosenReported = "";
 
   /** Every seed an answerer is on — not just the first. Changing your mind
    *  leaves BOTH reactions in place (Slack only drops one when you actively
@@ -2800,6 +2815,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
    *  the API call when nothing changed, which is what makes this safe to run on
    *  every poll tick rather than once per process. */
   async function noteInvalid(msg: Record<string, Json>, offenders: string[]): Promise<void> {
+    if (readOnly) return;
     const text = typeof msg.text === "string" ? msg.text : "";
     if (!text) return;
     const next = applyInvalidNotice(text, offenders, ctx.lang);
@@ -2822,7 +2838,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     for (const u of r ? asArray(r.users).filter(isAnswerer) : []) {
       if (otherReported.has(u)) continue;
       otherReported.add(u);
-      console.error(`  (<@${u}> が ❓ その他 を押しました。返信を待ちます)`);
+      if (!readOnly) console.error(`  (<@${u}> が ❓ その他 を押しました。返信を待ちます)`);
     }
   }
 
@@ -2845,7 +2861,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const pillsPerUser = new Map<string, number>();
     for (const p of picks) for (const u of p.users) pillsPerUser.set(u, (pillsPerUser.get(u) ?? 0) + 1);
     const multi = [...pillsPerUser].filter(([, n]) => n > 1).map(([u]) => u);
-    console.error(multi.length
+    if (!readOnly) console.error(multi.length
       ? `  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`
       : `  (回答が分かれています: ${glyphs}。どちらか一方にそろうまで待ちます)`);
     // Whoever is on more than one pill — and ONLY them. Naming everyone on any
@@ -2895,9 +2911,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // must not hide it behind the refuse-to-guess path. Within a class, the
       // earliest wins.
       const ambiguous = match.kind === "ambiguous";
+      const unchosen = state.unchosen;
       if (!unchosen || (unchosen.ambiguous && !ambiguous) ||
           (unchosen.ambiguous === ambiguous && Number(m.ts) < Number(unchosen.ts))) {
-        unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous };
+        state.unchosen = { text: t, who: typeof m.user === "string" ? m.user : "", ts: String(m.ts), ambiguous };
       }
     }
     return null;
@@ -2910,7 +2927,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // longer there, and exit 4 where exit 2 is the truth. `unchosenReported`
     // persists on purpose — it is what keeps the operator from being told the
     // same thing on every tick.
-    unchosen = undefined;
+    delete state.unchosen;
     // A question that is itself a thread reply is invisible to
     // `conversations.history`, so the entire poll — reactions included — has to
     // come from the thread.
@@ -2919,8 +2936,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       const messages = asArray(rep.messages).map(asRecord);
       const own = messages.find((m) => m.ts === ts);
       if (own) {
-        replyCount = Number(own.reply_count) || 0;
-        if (typeof own.text === "string") ownText = own.text;
+        seen(own);
         if (checkVoid(own)) return null;
         const byReaction = await answerFromReactions(own);
         if (byReaction) return byReaction;
@@ -2936,8 +2952,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     const own = messages.find((m) => m.ts === ts);
 
     if (own) {
-      replyCount = Number(own.reply_count) || 0;
-      if (typeof own.text === "string") ownText = own.text;
+      seen(own);
       if (checkVoid(own)) return null;
     }
     // A reaction is the intended path, so it wins when both are present.
@@ -2970,6 +2985,21 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     return null;
   }
 
+  return { poll, state, isAnswerer, candidates };
+}
+
+/** Poll until answered. Never returns: exits 0 with the answer on stdout, or 2
+ *  on timeout. A timeout of 0 means "look exactly once", so a caller can poll
+ *  cheaply on its own schedule instead of parking a process on `--wait`. */
+async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> {
+  const { channelId, ts, question, reactable, threadOnly, cookie, timeout, shown } = ctx;
+  const askerUserId = ctx.askerUserId;
+  const askerBotId = ctx.askerBotId;
+  const { poll, state, isAnswerer, candidates } = askPoller(token, ctx);
+  /** Kept across polls so the operator is told about one reply once, rather
+   *  than on every tick. */
+  let unchosenReported = "";
+
   /** Stamp the question resolved. Removing our seeds clears the pills that still
    *  invite an answer; the answerer's own reaction cannot be removed by us and
    *  stays put — which is exactly what leaves the chosen number visible. */
@@ -2996,7 +3026,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // The body and the chosen option stay; only what no longer applies goes.
       // Built from the message as it is NOW (an edit made in Slack after asking
       // is kept). Not seen this run — the bare form, as before.
-      const keep = ownText ? askResolvedKeep(ownText, found.choice) : undefined;
+      const keep = state.ownText ? askResolvedKeep(state.ownText, found.choice) : undefined;
       await editMessage(token, channelId, ts, askBuildResolvedText(question, found, who, ctx.lang, keep), cookie, true);
       // Swap the marker for the resolved one so search reflects reality:
       // `has::question:` should list what still needs answering, not everything
@@ -3019,6 +3049,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   const deadline = Date.now() + timeout * 1000;
   let errors = 0;
   let delay = ASK_POLL_MIN_MS;
+  let unchosen: AskPollState["unchosen"];
   for (;;) {
     let found: AskFound | null = null;
     try {
@@ -3033,6 +3064,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       }
       console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
     }
+    unchosen = state.unchosen;
+    const voided = state.voided;
     if (voided) {
       askReportVoid(voided, shown);
       if (ctx.json) {
@@ -3050,7 +3083,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // BEFORE ✅ is written, and delivered right after — ✅ is what tells a
       // later --waitFor the question is settled.
       const notes = await askCollectNotes(token, {
-        channelId, ts, threadOnly, replyCount, isAnswerer, askerUserId, askerBotId,
+        channelId, ts, threadOnly, replyCount: state.replyCount, isAnswerer, askerUserId, askerBotId,
         ...(ctx.threadParentTs ? { threadParentTs: ctx.threadParentTs } : {}),
         ...(cookie ? { cookie } : {}),
       }, ctx.after, (m) => m.ts === found!.ts);
@@ -3059,6 +3092,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
         status: "answered", answer: found.answer, how: found.how, notes,
         cursor: askNextCursor(ts, ctx.after, found.ts, ...notes.map((n) => n.ts)),
       };
+      // Collected: the local sent-log row (if this machine asked it) drops off
+      // `ask --pending`. Only here, where the answer actually reaches a caller.
+      markAskCollected(channelId, ts, found.answer, r.cursor);
       if (found.who) r.who = found.who;
       await askEmit(token, ctx, r);
       process.exit(0);
@@ -3079,6 +3115,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
       console.error(`  ${shown}`);
       console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
+      // Delivered, not collected: `--pending` will not report THIS reply again,
+      // but still reports a pill pressed after it.
+      markAskDelivered(channelId, ts, unchosen.text, askNextCursor(ts, ctx.after, unchosen.ts));
       if (ctx.json) {
         await askEmit(token, ctx, { status: "freetext", answer: unchosen.text, who: unchosen.who, notes: [], cursor: askNextCursor(ts, ctx.after, unchosen.ts) });
       } else {
@@ -3434,6 +3473,16 @@ async function askFetchByLink(token: string, link: string, cookie?: string): Pro
     channelId = m[1]!;
     ts = m[2]!;
   }
+  return askFetchAt(token, { channelId, ts, threadTs }, cookie);
+}
+
+/** `askFetchByLink` for a location already known — e.g. a sent-log row, whose
+ *  `thread_ts` says where a question posted into a thread lives. */
+async function askFetchAt(token: string, loc: { channelId: string; ts: string; threadTs?: string | undefined }, cookie?: string): Promise<
+  { channelId: string; ts: string; threadTs?: string; msg?: Record<string, Json> }
+> {
+  const { channelId, ts } = loc;
+  const threadTs = loc.threadTs && loc.threadTs !== loc.ts ? loc.threadTs : undefined;
   let msg: Record<string, Json> | undefined;
   if (threadTs) {
     const rep = asRecord((await replies(token, channelId, threadTs, 100, cookie)) as Json);
@@ -3635,8 +3684,8 @@ async function cmdAskLs(tokens: { user?: string; bot?: string; cookie?: string }
     let answer: string | undefined;
     if (token) {
       try {
-        const got = await askFetchByLink(token, `${r.channel}:${r.ts}`, r.as_bot ? undefined : tokens.cookie);
-        if (!got?.msg) state = "gone";
+        const got = await askFetchAt(token, { channelId: r.channel, ts: r.ts, threadTs: r.thread_ts ?? undefined }, r.as_bot ? undefined : tokens.cookie);
+        if (!got.msg) state = "gone";
         else {
           const p = askParseMessage(typeof got.msg.text === "string" ? got.msg.text : "");
           state = p.kind === "resolved" ? "answered" : p.kind === "other" ? "edited" : p.kind;
@@ -3672,6 +3721,150 @@ async function cmdAskLs(tokens: { user?: string; bot?: string; cookie?: string }
       console.error(`無効化するなら (${mine.length} 件, ${bot ? "bot" : "user"}):\n  slack ask ${mine.map((it) => `--void='${it.link}'`).join(" ")} --reason 'stale'${bot ? " --as-bot" : ""}`);
     }
   }
+}
+
+/** One answered-but-uncollected ask, as `--pending` reports it. */
+interface AskPendingItem {
+  row: SentRow;
+  link: string;
+  question: string;
+  answer: string;
+  how: string;
+  /** A free-text reply that picked none of the choices — not a decision. */
+  freeText: boolean;
+  alive: boolean;
+  /** The ready-to-run `--waitFor` line, cursor included. */
+  collect: string;
+}
+
+/** `slack ask --pending [--since 7d] [--json]` — questions THIS machine asked
+ *  that somebody answered and nobody collected, grouped by the asking session,
+ *  with whether that agent is still alive.
+ *
+ *  Why it exists: of 71 asks over 8 days, 13 had a pill pressed that nobody
+ *  ever read back (2026-09-27). The answer was sitting in Slack; the agent that
+ *  asked had moved on or died, and nothing connected the two.
+ *
+ *  Read-only, against Slack AND the local log: each open question gets one look
+ *  through the same poller `--wait` uses, with its one write disabled. It only
+ *  REPORTS — collecting is `slack ask --waitFor=<link>`, printed per item,
+ *  which is also what stamps ✅ and takes the ask off this list. Nothing is
+ *  relayed into another process: whoever reads the list (the asking agent, or
+ *  a person) runs the collect line. */
+async function cmdAskPending(
+  tokens: { user?: string; bot?: string; cookie?: string },
+  opts: { sinceMs: number; json: boolean; channel?: string },
+): Promise<void> {
+  const all = uncollectedAsks(opts.sinceMs);
+  if (!all) {
+    console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
+    process.exit(ASK_EXIT_ERROR);
+  }
+  const rows = opts.channel ? all.filter((r) => r.channel === opts.channel || r.target === opts.channel) : all;
+  const pending: AskPendingItem[] = [];
+  const count = { unanswered: 0, ambiguous: 0, resolved: 0, void: 0 };
+  const problems: string[] = [];
+  // The log is machine-wide, but a token reads one workspace. Asks recorded
+  // under another workspace are counted and named, not probed with the wrong
+  // token (which would only fail as channel_not_found).
+  const currentTeam = tokens.user
+    ? (await selfIdentity(tokens.user, tokens.cookie))?.team ?? ""
+    : tokens.bot ? (await selfIdentity(tokens.bot))?.team ?? "" : "";
+  const otherTeams = new Map<string, number>();
+
+  for (const row of rows) {
+    if (row.team && currentTeam && row.team !== currentTeam) {
+      otherTeams.set(row.team, (otherTeams.get(row.team) ?? 0) + 1);
+      continue;
+    }
+    const link = row.permalink || `${row.channel}:${row.ts}`;
+    const asBot = !!row.as_bot;
+    const token = asBot ? tokens.bot : tokens.user;
+    if (!token) {
+      problems.push(`${link}: ${asBot ? "--as-bot で聞いた質問ですが bot token がありません" : "user token がありません"}`);
+      continue;
+    }
+    const cookie = asBot ? undefined : tokens.cookie;
+    // Resume from where the last delivery to a caller ended (an exit 5
+    // free-text reply), so that reply is not reported again — and the collect
+    // line carries the same cursor, so `--waitFor` does not re-deliver it.
+    const after = row.delivered_cursor ?? undefined;
+    try {
+      const loc = { channelId: row.channel, ts: row.ts, threadTs: row.thread_ts ?? undefined };
+      const got = await askFetchAt(token, loc, cookie);
+      if (!got.msg) { problems.push(`${link}: メッセージが見つかりません (削除?)`); continue; }
+      const q = await askReadBack(token, { channelId: row.channel, ts: row.ts, msg: got.msg }, cookie);
+      const parsed = q.parsed;
+      // ✅ already stamped: some `--wait`/`--waitFor` collected it (another
+      // machine, another token, or a build before collection was logged).
+      if (parsed.kind === "resolved") { count.resolved++; continue; }
+      if (parsed.kind === "void") { count.void++; continue; }
+      if (parsed.kind === "other") { problems.push(`${link}: \`slack ask\` の質問として読めません — ${askExplainReject(q.text)}`); continue; }
+      if (!q.audience.size && !q.broadcast) { problems.push(`${link}: 誰にも宛てられていない質問です`); continue; }
+      const ctx = askWaitCtxFrom(q, parsed, loc, { timeout: 0, link, asBot, json: false, cookie, after });
+      const poller = askPoller(token, ctx, true);
+      const found = await poller.poll();
+      const unchosen = poller.state.unchosen;
+      if (poller.state.voided) { count.void++; continue; }
+      const collect = askResumeCommand(link, asBot, after);
+      const base = { row, link, question: parsed.question, collect, alive: senderAlive(row) };
+      if (found) {
+        pending.push({ ...base, answer: found.answer, how: found.how, freeText: false });
+      } else if (unchosen && !unchosen.ambiguous && unchosen.text !== row.delivered_answer) {
+        pending.push({ ...base, answer: unchosen.text, how: "返信 (選択肢外)", freeText: true });
+      } else if (unchosen?.ambiguous) {
+        count.ambiguous++;
+      } else {
+        count.unanswered++;
+      }
+    } catch (e: unknown) {
+      problems.push(`${link}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (opts.json) {
+    for (const it of pending) {
+      const r = it.row;
+      console.log(JSON.stringify({
+        id: r.id, link: it.link, channel: r.channel, ts: r.ts, asked_at: r.sent_at,
+        question: it.question, answer: it.answer, how: it.how, free_text: it.freeText,
+        sender: { session_id: r.session_id ?? null, cli: r.cli ?? null, agent_pid: r.agent_pid ?? null, pid: r.pid, alive: it.alive, cwd: r.cwd, git_branch: r.git_branch ?? null, host: r.host ?? null },
+        delivered_at: r.delivered_at ?? null,
+        collect: it.collect,
+      }));
+    }
+  } else {
+    // Grouped by the session that asked — the unit that has to be told.
+    const groups = new Map<string, AskPendingItem[]>();
+    for (const it of pending) {
+      const key = it.row.session_id ? `session ${it.row.session_id}` : `pid ${it.row.agent_pid ?? it.row.pid}`;
+      groups.set(key, [...(groups.get(key) ?? []), it]);
+    }
+    for (const [key, items] of groups) {
+      const r = items[0]!.row;
+      console.log(
+        `${stripTerminalControls(key)}  ${stripTerminalControls(r.cli ?? "?")}  pid ${r.agent_pid ?? r.pid} ${items[0]!.alive ? "(alive)" : "(gone)"}` +
+        `${r.git_branch ? `  branch=${stripTerminalControls(r.git_branch)}` : ""}  cwd=${stripTerminalControls(r.cwd)}`,
+      );
+      for (const it of items) {
+        console.log(`  ${stripTerminalControls(it.link)}  (${formatYmdHm(it.row.sent_at / 1000)})`);
+        console.log(`    Q: ${stripTerminalControls(askFlatten(it.question))}`);
+        console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${stripTerminalControls(it.how)}${it.freeText ? " — 決定ではありません" : ""}`);
+        console.log(`    collect: ${stripTerminalControls(it.collect)}`);
+      }
+    }
+  }
+  for (const p of problems) console.error(`  (${stripTerminalControls(p)})`);
+  for (const [team, n] of otherTeams) {
+    console.error(`  (${n} 件は別のワークスペース「${stripTerminalControls(team)}」の質問です — slack -w <name> ask --pending で確認)`);
+  }
+  console.error(
+    `${pending.length} 件が回答済み・未回収, ${count.unanswered} 件が未回答` +
+    (count.ambiguous ? `, ${count.ambiguous} 件は返信が複数の選択肢に一致 (未確定)` : "") +
+    (count.resolved ? `, ${count.resolved} 件は ✅ 回収済み` : "") +
+    (count.void ? `, ${count.void} 件は無効化済み` : "") +
+    ` — ${rows.length} 件の未回収の質問を確認 (log: ${sentDbPath()})`,
+  );
 }
 
 /** A question about to be voided: where it is, and what it parsed as. */
@@ -3858,23 +4051,14 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     ts = m[2]!;
   }
 
-  // Fetch the one message. A question posted into a thread is not in history at
-  // all, so where the permalink says it is a reply, read it from the thread.
-  let msg: Record<string, Json> | undefined;
-  if (threadTs) {
-    const rep = asRecord((await replies(token, channelId, threadTs, 100, args.cookie)) as Json);
-    msg = asArray(rep.messages).map(asRecord).find((m) => m.ts === ts);
-  } else {
-    const hist = asRecord((await history(token, channelId, 1, ts, undefined, args.cookie, true)) as Json);
-    msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
-  }
-  if (!msg) {
+  const got = await askFetchAt(token, { channelId, ts, threadTs }, args.cookie);
+  if (!got.msg) {
     console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
   }
-
-  const text = typeof msg.text === "string" ? msg.text : "";
-  const parsed = askParseMessage(text);
+  const msg = got.msg;
+  const q = await askReadBack(token, { channelId, ts, msg }, args.cookie);
+  const { text, parsed, audience, broadcast, askerUserId, askerBotId } = q;
   if (parsed.kind === "other") {
     console.error(
       `Error: これは \`slack ask\` の質問として読み取れません。\n` +
@@ -3887,23 +4071,6 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     process.exit(ASK_EXIT_ERROR);
   }
 
-  // Who may answer, recovered from the tags the readers can see. They are
-  // already `<@U…>`-encoded in the stored text, so no directory lookup is
-  // needed — and the asker is excluded here for the same reason as when
-  // posting: their tag of themselves grants nothing, and their reactions are
-  // the seeds.
-  const askerUserId = typeof msg.user === "string" ? msg.user : "";
-  const askerBotId = typeof msg.bot_id === "string" ? msg.bot_id : "";
-  const broadcast = /<!(here|channel|everyone)(\^[^>]*)?(\|[^>]*)?>/.test(text);
-  const audience = new Set<string>();
-  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) {
-    if (m[1] !== askerUserId) audience.add(m[1]!);
-  }
-  if (!audience.size && !broadcast) {
-    // A 1:1 DM needs no tag — the other party is the only person it could be.
-    const counterpart = await imCounterpart(token, channelId, args.cookie);
-    if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
-  }
   if (parsed.kind === "void") {
     askReportVoid(parsed, args.link);
     if (args.json) {
@@ -3955,10 +4122,11 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
         ...(args.cookie ? { cookie: args.cookie } : {}),
       }, after, isAnswerReply);
     }
+    const cursor = askNextCursor(ts, after, ...notes.map((n) => n.ts));
     await askEmit(token, { json: args.json, shown: args.link, asBot: args.asBot, cookie: args.cookie }, {
-      status: "answered", answer: parsed.answer, notes,
-      cursor: askNextCursor(ts, after, ...notes.map((n) => n.ts)),
+      status: "answered", answer: parsed.answer, notes, cursor,
     });
+    markAskCollected(channelId, ts, parsed.answer, cursor);
     return;
   }
 
@@ -3970,27 +4138,72 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   if (args.timeout > 0) {
     console.error(`  回答を待っています (最大 ${args.timeout}s)… Ctrl-C で中断`);
   }
+  await askWaitForAnswer(token, askWaitCtxFrom(q, parsed, { channelId, ts, threadTs }, args));
+}
+
+/** A posted question read back: what it parsed as, and who may answer it. */
+interface AskReadBack {
+  text: string;
+  parsed: ReturnType<typeof askParseMessage>;
+  audience: Set<string>;
+  broadcast: boolean;
+  askerUserId: string;
+  askerBotId: string;
+}
+
+/** Recover who may answer from the message alone. Shared by `--waitFor` and
+ *  `--pending` — nothing about a question is stored, so both read it back. */
+async function askReadBack(token: string, t: { channelId: string; ts: string; msg: Record<string, Json> }, cookie?: string): Promise<AskReadBack> {
+  const { msg } = t;
+  const text = typeof msg.text === "string" ? msg.text : "";
+  const parsed = askParseMessage(text);
+  // Who may answer, recovered from the tags the readers can see. They are
+  // already `<@U…>`-encoded in the stored text, so no directory lookup is
+  // needed — and the asker is excluded here for the same reason as when
+  // posting: their tag of themselves grants nothing, and their reactions are
+  // the seeds.
+  const askerUserId = typeof msg.user === "string" ? msg.user : "";
+  const askerBotId = typeof msg.bot_id === "string" ? msg.bot_id : "";
+  const broadcast = /<!(here|channel|everyone)(\^[^>]*)?(\|[^>]*)?>/.test(text);
+  const audience = new Set<string>();
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)>/g)) {
+    if (m[1] !== askerUserId) audience.add(m[1]!);
+  }
+  if (parsed.kind !== "other" && !audience.size && !broadcast) {
+    // A 1:1 DM needs no tag — the other party is the only person it could be.
+    const counterpart = await imCounterpart(token, t.channelId, cookie);
+    if (counterpart && counterpart !== askerUserId) audience.add(counterpart);
+  }
+  return { text, parsed, audience, broadcast, askerUserId, askerBotId };
+}
+
+function askWaitCtxFrom(
+  q: AskReadBack,
+  parsed: Extract<AskReadBack["parsed"], { kind: "open" }>,
+  loc: { channelId: string; ts: string; threadTs?: string | undefined },
+  o: { timeout: number; link: string; asBot: boolean; json: boolean; cookie?: string | undefined; after?: string | undefined },
+): AskWaitCtx {
   const ctx: AskWaitCtx = {
-    channelId,
-    ts,
+    channelId: loc.channelId,
+    ts: loc.ts,
     question: parsed.question,
     reactable: parsed.reactable,
     overflow: parsed.overflow,
     threadOnly: parsed.threadOnly,
     lang: parsed.lang,
-    audience,
-    broadcast,
-    askerUserId,
-    askerBotId,
-    timeout: args.timeout,
-    shown: args.link,
-    asBot: args.asBot,
-    json: args.json,
+    audience: q.audience,
+    broadcast: q.broadcast,
+    askerUserId: q.askerUserId,
+    askerBotId: q.askerBotId,
+    timeout: o.timeout,
+    shown: o.link,
+    asBot: o.asBot,
+    json: o.json,
   };
-  if (threadTs) ctx.threadParentTs = threadTs;
-  if (args.cookie) ctx.cookie = args.cookie;
-  if (args.after) ctx.after = args.after;
-  await askWaitForAnswer(token, ctx);
+  if (loc.threadTs) ctx.threadParentTs = loc.threadTs;
+  if (o.cookie) ctx.cookie = o.cookie;
+  if (o.after) ctx.after = o.after;
+  return ctx;
 }
 
 // --- poll ---
@@ -5536,13 +5749,15 @@ async function main(): Promise<void> {
         .option("reask", { type: "boolean", default: false, describe: "With ONE --void: post the question again (same channel/thread, same text and choices unless you give new ones as positionals / --body) and void the old one as replaced by it — one gate for both. The way to change the options of a question someone already answered." })
         .option("edit", { type: "string", describe: "Change an open question you posted: --edit=<permalink> [\"new question\" [choices…]] [--body …]. Rebuilt with the ask layout so collect still reads it. Options can change only while nobody has answered (then: --void=<link> --reask). Same --code gate." })
         .option("ls", { type: "boolean", default: false, describe: "List the questions you posted (local sent-log) with their LIVE state: --state open|answered|void|all (default open), --stale 24h, --channel, --json. With --stale it prints the --void command that would retire them." })
+        .option("pending", { type: "boolean", default: false, describe: "List questions THIS machine asked (local sent-log) that somebody answered but nobody collected, grouped by the asking session, with whether that agent is still alive and the --waitFor line that collects each. Read-only: --since 7d, --channel, --json." })
+        .option("since", { type: "string", default: "7d", describe: "With --pending: how far back to look (30m, 2h, 7d, or an ISO date)" })
         .option("stale", { type: "string", describe: "With --ls: only open questions older than this (24h, 3d)" })
         .option("state", { type: "string", default: "open", choices: ["open", "answered", "void", "edited", "gone", "unknown", "all"], describe: "With --ls: which state to list" })
-        .option("channel", { type: "string", describe: "With --ls: only this channel (id, or the target as typed)" })
+        .option("channel", { type: "string", describe: "With --ls / --pending: only this channel (id, or the target as typed)" })
         .option("limit", { type: "number", default: 50, describe: "With --ls: how many recent asks to check" })
         .option("reason", { type: "string", describe: "With --void: why it is void (written into the message)" })
         .option("superseded-by", { type: "string", describe: "With --void: permalink of the question that replaces it" })
-        .option("json", { type: "boolean", default: false, describe: "With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
+        .option("json", { type: "boolean", default: false, describe: "With --pending: one JSON object per answered question (sender, answer, collect command). With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
@@ -5554,7 +5769,11 @@ async function main(): Promise<void> {
         //   slack ask collect <link>                                        = --waitFor
         // Lifecycle flags (maintainer: "maybe slack ask --edit=<target>"), primary;
         // the bare verbs `void` / `collect` stay as aliases.
-        if (argv.ls) {
+        if (argv.ls || argv.pending) {
+          if (argv.ls && argv.pending) {
+            console.error("Error: --ls and --pending are separate lists — pick one.");
+            process.exit(ASK_EXIT_ERROR);
+          }
           const user = (() => { try { return tok(argv as W); } catch { return undefined; } })();
           const tokens: { user?: string; bot?: string; cookie?: string } = {};
           if (user) tokens.user = user;
@@ -5562,6 +5781,26 @@ async function main(): Promise<void> {
           if (bot) tokens.bot = bot;
           const c = ck(argv as W);
           if (c) tokens.cookie = c;
+          if (argv.pending) {
+            if (argv.target || argv.question || argv.waitFor || argv.wait || argv.void || argv.edit) {
+              console.error("Error: --pending reads the local log — do not also pass a target/question or another ask action.");
+              process.exit(ASK_EXIT_ERROR);
+            }
+            const sinceMs = parseSince(String(argv.since));
+            if (sinceMs === undefined) {
+              console.error(`Error: --since needs 30m / 2h / 7d / 1w or an ISO date (got ${stripTerminalControls(String(argv.since))})`);
+              process.exit(ASK_EXIT_ERROR);
+            }
+            const p: { sinceMs: number; json: boolean; channel?: string } = { sinceMs, json: !!argv.json };
+            if (argv.channel) p.channel = String(argv.channel);
+            try {
+              await cmdAskPending(tokens, p);
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(ASK_EXIT_ERROR);
+            }
+            return;
+          }
           const a: { stale?: string; state: string; channel?: string; json: boolean; limit: number } = {
             state: String(argv.state ?? "open"), json: !!argv.json, limit: Number(argv.limit) || 50,
           };

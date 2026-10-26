@@ -240,6 +240,15 @@ This path is not optional convenience — **a pressed pill is invisible to `slac
 which only sees `type: "message"` events and drops `message_changed`. Without `--waitFor`
 an answer can be pressed and nobody ever hears about it.
 
+**Answered, never collected.** `slack ask --pending` (`--since 7d` default, `--channel`,
+`--json`) checks every ask in this machine's sent-log that no `--wait`/`--waitFor` has
+collected, and lists the ones somebody answered — grouped by the asking session, with
+the agent pid and whether it is still alive (pid running, started before the ask, same
+CLI), and per item the exact `collect:` line to run (cursor included). It is read-only —
+nothing is posted, edited, stamped or relayed. Collecting is that `slack ask --waitFor=…`
+line: an answer it hands over (exit 0) takes the ask off the list; a free-text reply it
+hands over (exit 5) is not reported again, but a pill pressed after it is.
+
 ### sent — what did I post, and which session posted it
 
 Every `send`/`ask`/`poll`/`edit` is logged locally (`~/.config/slack-cli/sent.sqlite`)

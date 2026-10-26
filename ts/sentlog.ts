@@ -19,7 +19,7 @@
 // Opt out with SLACK_TERM_ATTRIBUTION=off (no log, no metadata).
 
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 
@@ -63,7 +63,13 @@ export interface SentRow {
   collected_at?: number | null;
   answer?: string | null;
   answer_exit?: number | null;
+  /** Set whenever `--wait`/`--waitFor` handed an answer to its caller — the
+   *  decision (exit 0) or a free-text reply (exit 5) — with WHICH answer, and
+   *  the `--after` cursor that delivery ended at. `ask --pending` skips an
+   *  answer already delivered, and resumes from that cursor. */
   delivered_at?: number | null;
+  delivered_answer?: string | null;
+  delivered_cursor?: string | null;
 }
 
 export function attributionEnabled(): boolean {
@@ -231,7 +237,9 @@ CREATE TABLE IF NOT EXISTS sent (
   collected_at INTEGER,
   answer TEXT,
   answer_exit INTEGER,
-  delivered_at INTEGER
+  delivered_at INTEGER,
+  delivered_answer TEXT,
+  delivered_cursor TEXT
 );
 CREATE INDEX IF NOT EXISTS sent_msg ON sent(channel, ts);
 CREATE INDEX IF NOT EXISTS sent_at ON sent(sent_at);
@@ -252,6 +260,11 @@ export function openSentLog(): Db | undefined {
   try { chmodSync(path, 0o600); } catch { /* best-effort */ }
   try {
     db.exec(SCHEMA);
+    // Columns added after the table first shipped. ALTER fails harmlessly when
+    // the column is already there.
+    for (const col of ["delivered_answer TEXT", "delivered_cursor TEXT"]) {
+      try { db.exec(`ALTER TABLE sent ADD COLUMN ${col}`); } catch { /* exists */ }
+    }
     return db;
   } catch {
     try { db.close(); } catch { /* ignore */ }
@@ -353,4 +366,95 @@ export function parseSince(s: string, now = Date.now()): number | undefined {
   }
   const t = Date.parse(s);
   return Number.isNaN(t) ? undefined : t;
+}
+
+// --- ask collection ----------------------------------------------------------
+
+/** Run one bookkeeping UPDATE against an EXISTING log. Never creates the file
+ *  (no log means no row to update) and never throws. */
+function updateLog(sql: string, ...params: unknown[]): void {
+  if (!attributionEnabled() || !existsSync(sentDbPath())) return;
+  const db = openSentLog();
+  if (!db) return;
+  try {
+    db.prepare(sql).run(...params);
+  } catch {
+    // bookkeeping only
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+/** The caller of `--wait`/`--waitFor` got the DECISION (exit 0): the ask is
+ *  collected and drops off `ask --pending`. A no-op when the ask is not in this
+ *  machine's log (asked elsewhere). */
+export function markAskCollected(channel: string, ts: string, answer: string, cursor: string): void {
+  const now = Date.now();
+  updateLog(
+    `UPDATE sent SET collected_at = COALESCE(collected_at, ?), answer = ?, answer_exit = 0,
+       delivered_at = ?, delivered_answer = ?, delivered_cursor = ?
+     WHERE kind = 'ask' AND channel = ? AND ts = ?`,
+    now, answer, now, answer, cursor, channel, ts,
+  );
+}
+
+/** The caller got a free-text reply (exit 5) — delivered, but NOT a decision,
+ *  so the ask stays uncollected: a pill pressed later is still the answer. */
+export function markAskDelivered(channel: string, ts: string, answer: string, cursor: string): void {
+  updateLog(
+    `UPDATE sent SET delivered_at = ?, delivered_answer = ?, delivered_cursor = ?
+     WHERE kind = 'ask' AND channel = ? AND ts = ? AND collected_at IS NULL`,
+    Date.now(), answer, cursor, channel, ts,
+  );
+}
+
+/** Logged asks nobody has collected yet, oldest first. `undefined` when the
+ *  log cannot be opened at all (no SQLite in this runtime). */
+export function uncollectedAsks(sinceMs: number): SentRow[] | undefined {
+  if (!existsSync(sentDbPath())) return [];
+  const db = openSentLog();
+  if (!db) return undefined;
+  try {
+    return db.prepare(
+      `SELECT * FROM sent WHERE kind = 'ask' AND collected_at IS NULL AND sent_at >= ? ORDER BY sent_at ASC, id ASC`,
+    ).all(sinceMs) as SentRow[];
+  } finally {
+    try { db.close(); } catch { /* ignore */ }
+  }
+}
+
+/** Is the agent that sent this row still the process at that pid? A pid alone
+ *  is not enough — pids are reused, and telling someone "the asker is still
+ *  running" about whatever now holds the number would send them to the wrong
+ *  agent. So the process must also (a) have started before the message was
+ *  sent, and (b) carry the process name of the recorded CLI, when that CLI is
+ *  one we know by name. */
+export function senderAlive(row: Pick<SentRow, "agent_pid" | "pid" | "cli" | "sent_at">): boolean {
+  const pid = row.agent_pid ?? row.pid;
+  if (!pidAlive(pid)) return false;
+  try {
+    const r = spawnSync("ps", ["-o", "lstart=,comm=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 });
+    const line = (r.stdout ?? "").trim();
+    // lstart is a fixed 24-char date ("Sun Sep 27 10:00:00 2026"), comm follows.
+    const started = Date.parse(line.slice(0, 24));
+    if (!Number.isNaN(started) && started > row.sent_at + 1000) return false;
+    const comm = basename(line.slice(24).trim());
+    const known = new Set(Object.values(AGENT_PROCESS_NAMES));
+    if (row.cli && known.has(row.cli) && comm && AGENT_PROCESS_NAMES[comm] !== row.cli) return false;
+  } catch {
+    // ps unavailable: fall back to the bare pid check
+  }
+  return true;
+}
+
+/** Is this pid still running? `kill(pid, 0)` checks without signalling;
+ *  EPERM means it exists but belongs to someone else — still alive. */
+export function pidAlive(pid: number | null | undefined): boolean {
+  if (!pid || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: unknown) {
+    return (e as { code?: string }).code === "EPERM";
+  }
 }

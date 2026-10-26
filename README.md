@@ -173,6 +173,12 @@ eval "$RESUME --timeout 0" && echo answered
 # A pressed pill is invisible to `slack tail` (it only sees `type: "message"`
 # events and drops `message_changed`), so this is the only way to hear about an
 # answer to a question you did not block on.
+#
+# Answered but never collected? Asks from THIS machine (local sent-log) whose pill was
+# pressed, or that got a reply, while nobody was waiting — grouped by the asking
+# session, with whether that agent is still alive and the --waitFor line that
+# collects each. Read-only: collecting (that line) is what takes it off the list.
+slack ask --pending                    # last 7 days; --since 2h, --channel, --json
 
 # Who sent what: every send/ask/poll/edit is logged locally with its sender —
 # pid, cwd, git branch, agent CLI and session id — and the same attribution rides
