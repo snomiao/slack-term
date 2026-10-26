@@ -97,6 +97,9 @@ export class Relay extends DurableObject<Env> {
    *  reading a reset relay, whose numbers mean something else now. */
   private readonly epoch: string;
   private keepalive: ReturnType<typeof setInterval> | undefined;
+  /** An alarm is known to be set: ring() skips the getAlarm() storage read.
+   *  Starts false on every (re)start of the object, so it re-checks once. */
+  private alarmArmed = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -123,7 +126,10 @@ export class Relay extends DurableObject<Env> {
     ).toArray();
     const seq = rows[0]?.seq;
     if (seq === undefined) return; // a retry of a bell we already have
-    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(now + RETENTION_SEC * 1000);
+    if (!this.alarmArmed) {
+      if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(now + RETENTION_SEC * 1000);
+      this.alarmArmed = true;
+    }
     this.broadcast(frame(seq, bell));
   }
 
@@ -133,6 +139,7 @@ export class Relay extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM bells WHERE at <= ?", cutoff);
     const next = this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM bells").one().at;
     if (next !== null) await this.ctx.storage.setAlarm(next + RETENTION_SEC * 1000);
+    this.alarmArmed = next !== null;
   }
 
   override async fetch(req: Request): Promise<Response> {
