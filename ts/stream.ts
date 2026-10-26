@@ -90,6 +90,13 @@ export type StreamState = {
   seen?: Record<string, number>;
   /** Last relay bell fully handled; a restart resumes the relay from here. */
   relay?: { url: string; seq: number; epoch?: string };
+  /** Threads a --replies-to id has posted in, "channel:thread_ts" → ts of its
+   *  latest post seen there. The parent's `reply_users` lists at most five
+   *  people, so this is what remembers that the bot is in a busy thread. */
+  joined?: Record<string, number>;
+  /** The --replies-to ids `joined` was recorded for (sorted, comma-joined): a
+   *  run with other ids starts it afresh. */
+  joinedBy?: string;
 };
 
 export type StreamMatch = {
@@ -100,10 +107,17 @@ export type StreamMatch = {
   user: { id: string; name: string };
   text: string;
   permalink: string;
+  /** Why it was printed: its text matched --grep, or (failing that) it is a
+   *  reply in a thread started by a --replies-to sender. */
+  match: "grep" | "replies-to";
 };
 
 export type StreamOpts = {
   grep: RegExp;
+  /** Also emit replies in threads one of these ids (user `U…` or bot `B…`)
+   *  started (Slack's `parent_user_id`) or has replied in, whether or not they
+   *  match --grep. */
+  repliesTo?: Set<string>;
   /** Restrict to these channel ids; otherwise every conversation the identity is in. */
   channels?: string[];
   /** Sender ids whose posts are never emitted: the identity itself (user id / bot id). */
@@ -267,6 +281,10 @@ type Ctx = {
   state: StreamState;
   names: Map<string, string>;
   matches: number;
+  /** Threads read this run and found without a --replies-to id → the ts of the
+   *  last reply read: absence is known up to there, and only later replies need
+   *  reading (a busy thread is never re-read from its start). */
+  notJoined?: Map<string, number>;
 };
 
 async function nameOf(ctx: Ctx, id: string): Promise<string> {
@@ -280,13 +298,29 @@ async function nameOf(ctx: Ctx, id: string): Promise<string> {
 
 /** Match one message and, only if it matches, resolve names and emit it.
  *  Nothing about a non-matching message is printed or logged. */
-async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isReply: boolean): Promise<boolean> {
+async function consider(
+  ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isReply: boolean, parent?: Record<string, Json>,
+): Promise<boolean> {
   if (SKIP_SUBTYPES.has(str(m.subtype))) return false;
   const uid = str(m.user);
   const bid = str(m.bot_id);
+  // Note a --replies-to id's own reply (usually the bot's, which is never
+  // printed) before the self-echo check drops it: later replies in that
+  // thread count even when reply_users no longer shows it.
+  const ids = ctx.opts.repliesTo;
+  const tts = str(m.thread_ts);
+  if (isReply && ids && tts && (ids.has(uid) || ids.has(bid))) {
+    const joined = (ctx.state.joined ??= {});
+    joined[`${ch.id}:${tts}`] = Math.max(joined[`${ch.id}:${tts}`] ?? 0, num(str(m.ts)));
+  }
   if ((uid && ctx.opts.selfUsers.has(uid)) || (bid && ctx.opts.selfBots.has(bid))) return false;
   ctx.opts.grep.lastIndex = 0; // a /g or /y regex keeps state between test() calls
-  if (!ctx.opts.grep.test(matchText(m))) return false;
+  const match = ctx.opts.grep.test(matchText(m))
+    ? "grep"
+    : isReply && ids && await inThreadOf(ctx, ch, ids, m, parent)
+      ? "replies-to"
+      : undefined;
+  if (!match) return false;
 
   const ts = str(m.ts);
   // A message can arrive twice — from a relay bell and from the poll — and
@@ -311,10 +345,65 @@ async function consider(ctx: Ctx, ch: ChannelRef, m: Record<string, Json>, isRep
     // Slack escapes only these three; the regex ran on the raw text above.
     text: str(m.text).replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"),
     permalink: permalink(ctx.opts.teamUrl, ch.id, ts, threadTs ?? undefined),
+    match,
   };
   ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
   ctx.matches++;
   return true;
+}
+
+/** Did one of `ids` start this reply's thread, or reply in it? The starter is
+ *  on every reply; the repliers come from what this stream has seen them post
+ *  (`joined`) and the parent's `reply_users`. That list holds at most five
+ *  entries (user or bot ids), so when it is cut short — or the parent is not at
+ *  hand — the thread is read once in full. */
+async function inThreadOf(
+  ctx: Ctx, ch: ChannelRef, ids: Set<string>, m: Record<string, Json>, parent?: Record<string, Json>,
+): Promise<boolean> {
+  if (ids.has(str(m.parent_user_id))) return true;
+  const tts = str(m.thread_ts);
+  const known = knownMember(ctx, ch, ids, tts, parent);
+  if (known !== undefined) return known;
+  const key = `${ch.id}:${tts}`;
+  const checked = ctx.notJoined?.get(key);
+  if (checked !== undefined && checked >= num(str(m.ts))) return false;
+  const from = checked !== undefined ? fmt(checked) : "0";
+  readMembership(ctx, ch, ids, tts, await allPages((c) => ctx.client.replies(ch.id, tts, from, c)));
+  return ctx.state.joined?.[key] !== undefined;
+}
+
+/** Membership from the parent and what this stream remembers — true, false,
+ *  or undefined when only reading the thread can tell. */
+function knownMember(
+  ctx: Ctx, ch: ChannelRef, ids: Set<string>, tts: string, parent?: Record<string, Json>,
+): boolean | undefined {
+  if (ctx.state.joined?.[`${ch.id}:${tts}`] !== undefined) return true;
+  if (!parent) return undefined;
+  // The starter, by either id (a reply's parent_user_id is only ever a user id).
+  if (ids.has(str(parent.user)) || ids.has(str(parent.bot_id))) return true;
+  const users = Array.isArray(parent.reply_users) ? parent.reply_users.map((u) => str(u)) : undefined;
+  if (users?.some((u) => ids.has(u))) return true;
+  // A complete list without the ids is a no. A missing list, or one cut to its
+  // five entries, says nothing.
+  const count = typeof parent.reply_users_count === "number" ? parent.reply_users_count : undefined;
+  if (users && (count !== undefined ? count <= users.length : users.length < 5)) return false;
+  return undefined;
+}
+
+/** Record what a read of the thread (from its start, or from where the last
+ *  read of it stopped) shows: a post by the ids, or absence up to its last reply. */
+function readMembership(ctx: Ctx, ch: ChannelRef, ids: Set<string>, tts: string, read: Record<string, Json>[]): void {
+  const key = `${ch.id}:${tts}`;
+  const posts = read.filter((r) => ids.has(str(r.user)) || ids.has(str(r.bot_id))).map((r) => num(str(r.ts)));
+  if (posts.length) {
+    // The latest post: `joined` expires 30 days after it.
+    const joined = (ctx.state.joined ??= {});
+    joined[key] = Math.max(joined[key] ?? 0, ...posts);
+    ctx.notJoined?.delete(key);
+    return;
+  }
+  const last = Math.max(ctx.notJoined?.get(key) ?? 0, ...read.map((r) => num(str(r.ts))));
+  (ctx.notJoined ??= new Map()).set(key, last);
 }
 
 export function humanLine(r: StreamMatch): string {
@@ -345,6 +434,8 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
 
   const msgs = (await allPages((c) => ctx.client.history(ch.id, fmt(oldest), c)))
     .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+  // A broadcast's parent, for --replies-to.
+  const byTs = ctx.opts.repliesTo ? new Map(msgs.map((x) => [str(x.ts), x])) : undefined;
 
   for (const m of msgs) {
     const t = num(str(m.ts));
@@ -352,7 +443,7 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     // A thread_broadcast is a reply also shown in the channel; it is emitted
     // here (once) and skipped when its thread's replies are read.
     const tts = str(m.thread_ts);
-    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts));
+    const hit = await consider(ctx, ch, m, tts !== "" && tts !== str(m.ts), tts ? byTs?.get(tts) : undefined);
     st.cursor = str(m.ts);
     // Persist right after a match is written, so a restart cannot repeat it.
     if (hit) saveState(ctx.opts.statePath, ctx.state);
@@ -366,12 +457,20 @@ export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Pro
     if (!latest || str(p.thread_ts) !== pts) continue;
     const tc = num(st.threads[pts] ?? st.since);
     if (latest <= tc) continue;
-    const reps = (await allPages((c) => ctx.client.replies(ch.id, pts, fmt(tc), c)))
+    // When --replies-to cannot tell from the parent whether the ids are in this
+    // thread, this one conversations.replies read also covers what membership
+    // needs (from the start, or from where the last check stopped) — a second
+    // read could be rate-limited on every retry and stall the scan.
+    const ids = ctx.opts.repliesTo;
+    const check = ids !== undefined && knownMember(ctx, ch, ids, pts, p) === undefined;
+    const from = check ? Math.min(tc, ctx.notJoined?.get(`${ch.id}:${pts}`) ?? 0) : tc;
+    const reps = (await allPages((c) => ctx.client.replies(ch.id, pts, fmt(from), c)))
       .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
+    if (check) readMembership(ctx, ch, ids!, pts, reps);
     for (const r of reps) {
       const t = num(str(r.ts));
       if (str(r.ts) === pts || t <= tc || t > horizon) continue;
-      const hit = str(r.subtype) !== "thread_broadcast" && await consider(ctx, ch, r, true);
+      const hit = str(r.subtype) !== "thread_broadcast" && await consider(ctx, ch, r, true, p);
       st.threads[pts] = str(r.ts);
       if (hit) saveState(ctx.opts.statePath, ctx.state);
     }
@@ -390,12 +489,29 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   // conversations.replies on the message's own ts returns that message first
   // even when it has no thread; a reply is read from just before its ts. Either
   // way it is near the start, however much was posted since — but follow the
-  // cursor (a few pages at most) in case that second was busy.
+  // cursor (a few pages at most) in case that second was busy. Slack puts
+  // the thread's parent at the top of every page, whatever `oldest` says: it
+  // carries `reply_users` for --replies-to.
   let m: Record<string, Json> | undefined;
+  let parent: Record<string, Json> | undefined;
   let cursor: string | undefined;
+  // --replies-to and nothing remembered about this thread: read it from where
+  // the last check stopped (or its start) in this one read, which then answers
+  // membership too. A second read could be rate-limited on every retry of the
+  // bell, so the bell would never be delivered.
+  const ids = ctx.opts.repliesTo;
+  const key = `${ch.id}:${bell.thread_ts ?? ""}`;
+  if (ids && bell.thread_ts && ctx.state.joined?.[key] === undefined) {
+    const from = Math.min(ctx.notJoined?.get(key) ?? 0, num(bell.ts) - 1);
+    const read = await allPages((c) => ctx.client.replies(ch.id, bell.thread_ts!, fmt(from), c));
+    m = read.find((x) => str(x.ts) === bell.ts);
+    parent = read.find((x) => str(x.ts) === bell.thread_ts);
+    if (m) readMembership(ctx, ch, ids, bell.thread_ts, read);
+  }
   for (let i = 0; i < 5 && !m; i++) {
     const p = await ctx.client.replies(ch.id, bell.thread_ts ?? bell.ts, fmt(num(bell.ts) - 1), cursor);
     m = p.messages.find((x) => str(x.ts) === bell.ts);
+    parent ??= bell.thread_ts ? p.messages.find((x) => str(x.ts) === bell.thread_ts) : undefined;
     cursor = p.nextCursor;
     if (!cursor) break;
   }
@@ -409,8 +525,20 @@ export async function ringBell(ctx: Ctx, ch: ChannelRef, bell: Doorbell): Promis
   const isReply = tts !== "" && tts !== bell.ts && str(m.subtype) !== "thread_broadcast";
   const polled = isReply ? st?.threads[tts] : st?.cursor;
   if (polled !== undefined && num(bell.ts) <= num(polled)) return true;
-  if (await consider(ctx, ch, m, tts !== "" && tts !== bell.ts)) saveState(ctx.opts.statePath, ctx.state);
+  const joined = Object.keys(ctx.state.joined ?? {}).length;
+  const hit = await consider(ctx, ch, m, tts !== "" && tts !== bell.ts, parent);
+  if (hit || Object.keys(ctx.state.joined ?? {}).length !== joined) saveState(ctx.opts.statePath, ctx.state);
   return true;
+}
+
+/** How long a thread the bot posted in keeps counting for --replies-to after
+ *  its last post there (a relay bell can reach a thread of any age). */
+const JOINED_TTL_SEC = 30 * 86400;
+
+function pruneJoined(st: StreamState, oldestSec: number): void {
+  if (!st.joined) return;
+  for (const [k, t] of Object.entries(st.joined)) if (t < oldestSec) delete st.joined[k];
+  if (!Object.keys(st.joined).length) delete st.joined;
 }
 
 /** Drop `seen` entries no scan can reach any more. */
@@ -439,6 +567,12 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
   try {
     release = acquireLock(opts.statePath);
     const state = loadState(opts.statePath, opts.identity);
+    // `joined` answers "is one of THESE ids in that thread": recorded for
+    // other ids (an explicit --state reused with a new --replies-to), drop it.
+    const joinedBy = opts.repliesTo ? [...opts.repliesTo].sort().join(",") : undefined;
+    if (state.joinedBy !== joinedBy) delete state.joined;
+    if (joinedBy) state.joinedBy = joinedBy;
+    else delete state.joinedBy;
     const ctx: Ctx = { opts, client, state, names: new Map(), matches: 0 };
     const skipped = new Set<string>();
     let channels: ChannelRef[] = [];
@@ -759,6 +893,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
 
         cycle++;
         pruneSeen(state, nowSec - opts.threadWindowSec - 86400);
+        pruneJoined(state, nowSec - JOINED_TTL_SEC);
         if (opts.once) {
           saveState(opts.statePath, state);
           if (ctx.matches === 0) _internals.err(`slack stream: no matches in ${channels.length - skipped.size} channel(s)`);

@@ -25,6 +25,10 @@ class FakeSlack implements StreamClient {
   calls: string[] = [];
   failNext: unknown[] = [];
   failChannel = new Map<string, unknown>();
+  /** replies() returns the parent without reply_users (a shape Slack documents). */
+  bareParents = false;
+  /** "thread_ts>oldest" of every replies() call. */
+  repliesFrom: string[] = [];
 
   post(channel: string, m: Msg): void {
     const list = this.msgs.get(channel) ?? [];
@@ -51,7 +55,7 @@ class FakeSlack implements StreamClient {
       .map((m) => {
         const reps = all.filter((r) => r.thread_ts === m.ts && r.ts !== m.ts);
         return reps.length && m.thread_ts !== undefined && m.thread_ts === m.ts
-          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts! }
+          ? { ...m, reply_count: reps.length, latest_reply: reps[reps.length - 1]!.ts!, ...replyUsers(reps) }
           : m;
       })
       .sort((a, b) => Number(b.ts) - Number(a.ts)); // newest first, like Slack
@@ -61,9 +65,12 @@ class FakeSlack implements StreamClient {
   }
   async replies(channel: string, threadTs: string, oldest: string, cursor?: string): Promise<Page> {
     this.calls.push(`replies ${channel} ${threadTs}`);
+    this.repliesFrom.push(`${threadTs}>${oldest}`);
     this.maybeFail(channel);
     const all = this.msgs.get(channel) ?? [];
-    const parent = all.find((m) => m.ts === threadTs)!;
+    const root = all.find((m) => m.ts === threadTs)!;
+    const thread = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs);
+    const parent = thread.length && !this.bareParents ? { ...root, ...replyUsers(thread) } : root;
     const reps = all.filter((r) => r.thread_ts === threadTs && r.ts !== threadTs && Number(r.ts) > Number(oldest));
     const start = cursor ? Number(cursor) : 0;
     const slice = [parent, ...reps.slice(start, start + 2)];
@@ -73,6 +80,13 @@ class FakeSlack implements StreamClient {
     this.calls.push(`user ${id}`);
     return ({ U00000001: "alice", U00000002: "bob" } as Record<string, string>)[id] ?? id;
   }
+}
+
+/** Like Slack: who replied — user ids, or the bot id of a post without one —
+ *  cut to five entries, with the true count beside it. */
+function replyUsers(reps: Msg[]): { reply_users: string[]; reply_users_count: number } {
+  const all = [...new Set(reps.map((r) => String(r.user ?? r.bot_id ?? "")).filter(Boolean))];
+  return { reply_users: all.slice(0, 5), reply_users_count: all.length };
 }
 
 let dir: string;
@@ -132,6 +146,7 @@ describe("runStream — grep", () => {
       user: { id: "U00000001", name: "alice" },
       text: "hey <@U00000099> <please> look",
       permalink: `https://acme.slack.com/archives/C00000001/p${ts(-60).replace(".", "")}`,
+      match: "grep",
     }]);
     const everything = [...out, ...err].join("\n");
     expect(everything).not.toContain("secret");
@@ -233,6 +248,190 @@ describe("runStream — threads", () => {
     s.post("D00000001", { ts: ts(-60), user: "U00000001", text: "@mybot hi" });
     await runStream(s, opts({ sinceSec: 120 }));
     expect(emitted()[0]!.channel).toEqual({ id: "D00000001", name: "@alice" });
+  });
+});
+
+describe("runStream — --replies-to (threads started by given senders)", () => {
+  /** A thread the bot (SELF) started, one a person started, and a top-level
+   *  post — none of the bodies match --grep. Slack stamps each reply with
+   *  parent_user_id; the fake does not compute it, so fixtures set it. */
+  function workspace(): FakeSlack {
+    const s = new FakeSlack();
+    const root = ts(-86400), other = ts(-3000);
+    s.post("C00000001", { ts: root, user: SELF, bot_id: SELF_BOT, text: "QA please check", thread_ts: root });
+    s.post("C00000001", { ts: ts(-90), user: "U00000001", text: "checked, looks fine", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-85), user: SELF, bot_id: SELF_BOT, text: "thanks", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-80), bot_id: SELF_BOT, username: "mybot", text: "posted by app", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: ts(-75), user: "U00000002", text: "ping @mybot here", thread_ts: root, parent_user_id: SELF });
+    s.post("C00000001", { ts: other, user: "U00000002", text: "lunch?", thread_ts: other });
+    s.post("C00000001", { ts: ts(-70), user: "U00000001", text: "sure", thread_ts: other, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-65), user: "U00000001", text: "unrelated post" });
+    return s;
+  }
+
+  test("a person's reply in a thread the bot started is emitted without --grep; own replies never", async () => {
+    expect(await runStream(workspace(), opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match, m.type])).toEqual([
+      ["checked, looks fine", "replies-to", "reply"],
+      ["ping @mybot here", "grep", "reply"],
+    ]);
+  });
+
+  test("without --replies-to the same workspace emits only the --grep match", async () => {
+    expect(await runStream(workspace(), opts({ sinceSec: 120 }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["ping @mybot here", "grep"]]);
+  });
+
+  test("a thread someone else started counts once the bot has replied in it; before that it does not", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "how do I export?", thread_ts: root });
+    s.post("C00000001", { ts: ts(-100), user: "U00000001", text: "me too", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(2);
+    expect(emitted()).toEqual([]); // not yet: the bot has not posted in it
+    out.length = 0;
+    s.post("C00000001", { ts: ts(-90), user: SELF, bot_id: SELF_BOT, text: "use File > Export", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-80), user: "U00000002", text: "thanks, works", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["me too", "replies-to"], ["thanks, works", "replies-to"]]);
+  });
+
+  test("a busy thread whose reply_users no longer shows the bot is read once in full, then remembered", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "big discussion", thread_ts: root });
+    // Five people reply first, then the bot (the sixth replier, cut from reply_users).
+    for (let i = 1; i <= 5; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `view ${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-85000), user: SELF, bot_id: SELF_BOT, text: "summary", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "agreed", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["agreed", "replies-to"]]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.joined).toEqual({ [`C00000001:${root}`]: Number(ts(-85000)) });
+    // Next reply: the remembered participation answers; no second full read.
+    out.length = 0;
+    const fullReads = (): number => s.calls.filter((c) => c === `replies C00000001 ${root}`).length;
+    const before = fullReads();
+    now += 60_000;
+    s.post("C00000001", { ts: ts(0), user: "U00000003", text: "+1", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["+1"]);
+    expect(fullReads() - before).toBe(1); // the scan's own read of the new reply, nothing more
+  });
+
+  test("a thread with five-plus repliers and no bot costs one full read, not one extra per reply", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-50), user: "U00000003", text: "b", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(2);
+    // ONE read: the whole thread (8 replies, 2 per page) instead of only the new
+    // replies, since reply_users cannot tell — never a second read on top.
+    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`).length).toBe(4);
+  });
+
+  test("a busy thread without the bot is checked incrementally on later polls, never re-read from its start", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000011", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      const t = now / 1000;
+      if (cycles <= 2) s.post("C00000001", { ts: (t - 10).toFixed(6), user: "U00000012", text: `more ${cycles}`, thread_ts: root, parent_user_id: "U00000002" });
+      if (cycles === 3) ac.abort();
+    };
+    expect(await runStream(s, opts({ sinceSec: 120, once: false, signal: ac.signal, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted()).toEqual([]);
+    const froms = s.repliesFrom.filter((f) => f.startsWith(`${root}>`)).map((f) => f.split(">")[1]);
+    // The first check reads the thread from its start (8 replies, 2 per page);
+    // each later poll reads only past what was already checked.
+    expect(froms).toEqual([...Array(4).fill("0.000000"), ts(-60), ts(20)]);
+  });
+
+  test("a bot listed in reply_users by its bot id (B…) counts", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "question", thread_ts: root });
+    s.post("C00000001", { ts: ts(-86000), bot_id: SELF_BOT, username: "mybot", text: "answer", thread_ts: root, parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "thanks", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["thanks"]);
+    out.length = 0;
+    // Listing only the user id misses it — which is why `self` expands to both.
+    expect(await runStream(s, opts({ sinceSec: 120, statePath: join(dir, "b.json"), repliesTo: new Set([SELF]) }))).toBe(2);
+  });
+
+  test("a cached 'bot not in this thread' is dropped once the thread moves (review: broadcast lost)", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "busy", thread_ts: root });
+    for (let i = 1; i <= 6; i++) {
+      s.post("C00000001", { ts: ts(-86000 + i), user: `U0000001${i}`, text: `x${i}`, thread_ts: root, parent_user_id: "U00000002" });
+    }
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      const t = (now / 1000);
+      if (cycles === 1) {
+        // Between polls the bot joins (7th replier, cut from reply_users), then a
+        // person posts a non-grep broadcast — the channel scan sees it first.
+        s.post("C00000001", { ts: (t - 20).toFixed(6), user: SELF, bot_id: SELF_BOT, text: "on it", thread_ts: root, parent_user_id: "U00000002" });
+        s.post("C00000001", { ts: (t - 10).toFixed(6), user: "U00000003", text: "fyi all", thread_ts: root, parent_user_id: "U00000002", subtype: "thread_broadcast" });
+      }
+      if (cycles === 2) ac.abort();
+    };
+    expect(await runStream(s, opts({ sinceSec: 120, once: false, signal: ac.signal, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["fyi all"]);
+  });
+
+  test("a thread the bot started counts by its bot id alone (review: starter check)", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, bot_id: SELF_BOT, username: "mybot", text: "deploy done", thread_ts: root });
+    s.post("C00000001", { ts: ts(-60), user: "U00000001", text: "nice", thread_ts: root });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["nice"]);
+  });
+
+  test("remembered threads are dropped when the state is reused with other --replies-to ids", async () => {
+    const s = new FakeSlack();
+    const root = ts(-86400);
+    s.post("C00000001", { ts: root, user: "U00000002", text: "q", thread_ts: root });
+    s.post("C00000001", { ts: ts(-100), user: SELF, bot_id: SELF_BOT, text: "a", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(2);
+    const read = (): StreamState => JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(Object.keys(read().joined ?? {})).toEqual([`C00000001:${root}`]);
+    now += 60_000;
+    s.post("C00000001", { ts: ts(0), user: "U00000001", text: "later", thread_ts: root, parent_user_id: "U00000002" });
+    expect(await runStream(s, opts({ repliesTo: new Set(["U00000003"]) }))).toBe(2);
+    expect(read().joined).toBeUndefined();
+    expect(read().joinedBy).toBe("U00000003");
+  });
+
+  test("only threads a listed sender started or replied in count; that sender's top-level posts do not", async () => {
+    const s = workspace();
+    s.post("C00000001", { ts: ts(-60), user: "U00000002", text: "a top-level post by the listed sender" });
+    s.post("C00000001", { ts: ts(-50), user: "U00000001", text: "a thread nobody listed is in", thread_ts: ts(-50) });
+    s.post("C00000001", { ts: ts(-40), user: "U00000003", text: "reply there", thread_ts: ts(-50), parent_user_id: "U00000001" });
+    expect(await runStream(s, opts({ sinceSec: 120, repliesTo: new Set(["U00000002"]) }))).toBe(0);
+    // U00000002 started the "lunch?" thread and replied in the bot's thread.
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([
+      ["checked, looks fine", "replies-to"], ["ping @mybot here", "grep"], ["sure", "replies-to"],
+    ]);
   });
 });
 
@@ -475,7 +674,7 @@ describe("helpers", () => {
   });
   test("humanLine marks replies", () => {
     expect(humanLine({
-      type: "reply", channel: { id: "C1", name: "#dev" }, ts: "1700000000.000100", thread_ts: "1", user: { id: "U1", name: "a" }, text: "t", permalink: "p",
+      type: "reply", channel: { id: "C1", name: "#dev" }, ts: "1700000000.000100", thread_ts: "1", user: { id: "U1", name: "a" }, text: "t", permalink: "p", match: "grep",
     })).toBe("2023-11-14T22:13:20Z  #dev  ↳ @a: t\n    p");
   });
   test("the real now/out/err seams", () => {
@@ -654,6 +853,100 @@ describe("runStream — relay", () => {
     }, ac);
     expect(await runStream(s, relayOpts(r, ac))).toBe(0);
     expect(emitted().map((m) => [m.type, m.thread_ts])).toEqual([["reply", parent]]);
+  });
+
+  test("--replies-to: a bell for a person's reply in the bot's thread emits it; the bot's own reply does not", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-3600);
+    s.post("C00000001", { ts: root, thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "QA please check" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000001", text: "done", parent_user_id: SELF });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      2: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "thanks", parent_user_id: SELF });
+        r.ring(2, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["done", "replies-to"]]);
+  });
+
+  test("--replies-to: a bell reaches a thread the bot replied in, even one older than the window", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-17 * 86400), quiet = ts(-17 * 86400 + 10);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "answer", parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: quiet, thread_ts: quiet, user: "U00000002", text: "unrelated old thread" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      2: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: quiet, user: "U00000001", text: "not ours", parent_user_id: "U00000002" });
+        r.ring(2, { channel: "C00000001", ts: t, thread_ts: quiet });
+      },
+      4: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
+  });
+
+  test("--replies-to: a parent without reply_users is unknown, not a no — the thread is read in full", async () => {
+    const s = new FakeSlack();
+    s.bareParents = true;
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-17 * 86400);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "answer", parent_user_id: "U00000002" });
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["follow-up", "replies-to"]]);
+  });
+
+  test("--replies-to: a bell in an unknown thread costs ONE read, and remembers the bot's LATEST post", async () => {
+    const s = new FakeSlack();
+    s.bareParents = true;
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-60 * 86400);
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    s.post("C00000001", { ts: ts(-40 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "first answer", parent_user_id: "U00000002" });
+    s.post("C00000001", { ts: ts(-5 * 86400), thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "second answer", parent_user_id: "U00000002" });
+    let bellTs = "";
+    stepper({
+      1: () => {
+        bellTs = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: bellTs, thread_ts: root, user: "U00000002", text: "follow-up", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: bellTs, thread_ts: root });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["follow-up"]);
+    // 3 replies, 2 per page: one read is 2 pages — no second read for membership.
+    expect(s.calls.filter((c) => c === `replies C00000001 ${root}`)).toHaveLength(2);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.joined).toEqual({ [`C00000001:${root}`]: Number(ts(-5 * 86400)) });
   });
 
   test("bells for other channels, own posts and non-matches print nothing", async () => {

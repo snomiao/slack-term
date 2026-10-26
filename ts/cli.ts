@@ -60,6 +60,7 @@ import { attributionEnabled, attributionMetadata, captureAttribution, markAskCol
 import {
   authTest,
   authScopes,
+  botsInfo,
   authTestSession,
   conversationInfoSession,
   createChannel,
@@ -7235,7 +7236,8 @@ async function main(): Promise<void> {
         .option("grep", { alias: "e", type: "string", demandOption: true, describe: "Regex matched against each message's text (raw, e.g. <@U00000001>). Non-matching messages are never printed or logged" })
         .option("ignore-case", { alias: "i", type: "boolean", default: false, describe: "Case-insensitive --grep" })
         .option("channel", { type: "array", string: true, describe: "Only these channels (#name, id or permalink); repeatable" })
-        .option("json", { type: "boolean", default: false, describe: "One JSON object per match: type, channel{id,name}, ts, thread_ts, user{id,name}, text, permalink" })
+        .option("replies-to", { type: "array", string: true, describe: "Also print replies in threads this id started or replied in (user U…/bot B…; `self` = the streaming identity), --grep or not; repeatable" })
+        .option("json", { type: "boolean", default: false, describe: "One JSON object per match: type, channel{id,name}, ts, thread_ts, user{id,name}, text, permalink, match (grep | replies-to)" })
         .option("once", { type: "boolean", default: false, describe: "Scan once from the saved cursor (or --since) and exit: 0 = matches printed, 2 = none, 3 = failure" })
         .option("since", { type: "string", describe: "Replay from this long ago (e.g. 30m, 2h), ignoring the saved cursor" })
         .option("interval", { type: "string", default: "45s", describe: "Poll interval (e.g. 30s, 2m)" })
@@ -7287,6 +7289,33 @@ async function main(): Promise<void> {
             if (b.botId) selfBots.add(b.botId);
           } catch { /* a dead bot token posts nothing to exclude */ }
         }
+        // Slack names a bot in a thread either way: `parent_user_id` holds its
+        // bot USER id (auth.test user_id), `reply_users` sometimes its B… bot
+        // id — so `self` stands for both.
+        let repliesTo: Set<string> | undefined;
+        if (argv["replies-to"]?.length) {
+          repliesTo = new Set();
+          for (const r of argv["replies-to"].map(String)) {
+            if (r === "self") {
+              for (const id of [me.userId, me.botId]) if (id) repliesTo.add(id);
+              continue;
+            }
+            if (!/^[UWB][A-Z0-9]{2,}$/.test(r)) {
+              console.error(`slack stream: --replies-to: "${r}" is not a user or bot id (U…/W…/B…) or "self"`);
+              process.exit(1);
+            }
+            repliesTo.add(r);
+            // A bot can be listed under its user id too: add that alias.
+            if (r.startsWith("B")) {
+              try {
+                const { userId } = await botsInfo(token, r, cookie);
+                if (userId) repliesTo.add(userId);
+              } catch (e) {
+                console.error(`slack stream: --replies-to ${r}: cannot resolve its bot user id (${e instanceof Error ? e.message : String(e)}); threads where it shows as a user id are missed`);
+              }
+            }
+          }
+        }
         let channels: string[] | undefined;
         if (argv.channel?.length) {
           try {
@@ -7298,7 +7327,10 @@ async function main(): Promise<void> {
           }
         }
         const key = createHash("sha256")
-          .update(JSON.stringify([me.url, me.userId, re.source, re.flags, [...(channels ?? [])].sort()]))
+          .update(JSON.stringify([me.url, me.userId, re.source, re.flags, [...(channels ?? [])].sort(),
+            // As given, not as resolved: a failed bots.info lookup must not
+            // move the stream to a fresh state file.
+            ...(argv["replies-to"]?.length ? [[...argv["replies-to"].map(String)].sort()] : [])]))
           .digest("hex").slice(0, 16);
         const stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
         const statePath = argv.state ?? join(stateHome, "slack-term", "stream", `${key}.json`);
@@ -7316,6 +7348,7 @@ async function main(): Promise<void> {
         process.on("SIGTERM", () => ac.abort());
         const code = await runStream(webClient(token, cookie), {
           grep: re,
+          ...(repliesTo ? { repliesTo } : {}),
           ...(channels ? { channels } : {}),
           selfUsers,
           selfBots,

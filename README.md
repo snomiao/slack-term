@@ -391,21 +391,32 @@ consumer (e.g. "wake an agent whenever someone @mentions the bot"):
 slack stream --grep '<@U00000001>|@mybot' --json            # runs until stopped
 slack stream --grep 'deploy' -i --channel '#dev' --once       # one scan, then exit
 slack stream --grep '<@U00000001>' --since 2h --json          # replay the last 2 hours
+slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in threads the bot is in
 ```
 
 - **One JSON line per match** with `--json`:
-  `{type: "message"|"reply", channel: {id, name}, ts, thread_ts, user: {id, name}, text, permalink}`.
+  `{type: "message"|"reply", channel: {id, name}, ts, thread_ts, user: {id, name}, text, permalink, match}`,
+  where `match` is `"grep"` or `"replies-to"`.
   `--grep` runs on the raw text (mentions look like `<@U…>`), plus legacy attachment
   text; the emitted `text` has `&lt; &gt; &amp;` decoded.
 - **Privacy-safe defaults.** With a bot token (`SLACK_BOT_TOKEN`) it streams **as the
   bot**, so it sees only channels the bot was invited to — never the user's DMs.
   `--as-user` opts into the user identity. Matching happens before anything is
   printed: a non-matching message is never printed, logged, or even name-resolved.
+- **Replies in a user's threads.** `--replies-to <user-id>` (repeatable; `self` = the
+  streaming identity) also prints every reply in a thread that user started or has
+  replied in, whether or not it matches `--grep` — people answer a bot in its thread
+  without tagging it. It matches Slack's `parent_user_id`, the parent's
+  `reply_users`, and the id's own replies the stream has seen (kept in the state
+  file for 30 days). `reply_users` lists at most five people, so a thread cut short
+  there is read once in full (as is one whose list is missing). A bot can appear
+  as its user id (`U…`) or bot id (`B…`); `self`, or a `B…` id, covers both. Polling only reaches threads inside `--thread-window`;
+  with the relay, a reply in an older thread is caught too.
 - **No self-echo.** Posts by the streaming identity are excluded by sender id (its user
   id and bot id; with `--as-user`, the bot's posts too) — the same text from anyone
   else still matches.
 - **Resumable.** A per-channel cursor (plus one per active thread) is saved under
-  `$XDG_STATE_HOME/slack-term/stream/` (one file per identity + grep + channels;
+  `$XDG_STATE_HOME/slack-term/stream/` (one file per identity + grep + channels + `--replies-to`;
   override with `--state`). A restart continues where it stopped: nothing lost,
   nothing repeated. The first run starts *now*; `--since` replays from a point,
   ignoring the saved cursor. Delivery is at-least-once only in one corner — a crash
