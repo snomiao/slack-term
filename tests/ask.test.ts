@@ -955,6 +955,22 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
 });
 
 describe("ask URL boundaries", () => {
+  test("poll guards a URL glued to preceding text in its body", async () => {
+    const m = await startMock({ inline: AUTH });
+    try {
+      const r = await run(["poll", "#chan", "Which?", "a", "b", "--body", "説明：https://example.com/x", "--channel-id", CHAN], m.baseUrl);
+      expect(r.stderr).toContain("Slack will NOT make it a link");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally { await m.stop(); }
+  });
+  test("ask --body guards a URL glued to preceding text", async () => {
+    const m = await startMock({ inline: AUTH });
+    try {
+      const r = await run(["ask", "#chan", "@bob Review?", "--body", "説明：https://example.com/x", "--channel-id", CHAN], m.baseUrl);
+      expect(r.stderr).toContain("Slack will NOT make it a link");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally { await m.stop(); }
+  });
   for (const field of ["question", "body", "choice"]) {
     test(`guards URLs in the ${field} and supports the warning override`, async () => {
       const m = await startMock({ inline: AUTH });

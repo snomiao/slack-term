@@ -760,6 +760,8 @@ function blocksToText(blocks: Json[]): string {
     if (node && typeof node === "object") {
       const obj = node as Record<string, Json>;
       if (typeof obj.text === "string") { parts.push(obj.text); return; }
+      // A bare `link` element carries only its url — which IS its visible text.
+      if (obj.type === "link" && typeof obj.url === "string") { parts.push(obj.url); return; }
       if (Array.isArray(obj.elements)) walk(obj.elements);
       else if (Array.isArray(obj.content)) walk(obj.content);
     }
@@ -3147,6 +3149,7 @@ interface PollArgs {
   cookie?: string;
   mentionToken?: string;
   mentionCookie?: string;
+  allowUrlAdjacent?: boolean;
 }
 
 /** The `slack poll --results=…` line handed back after posting. Printed as a
@@ -3210,6 +3213,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   const multi = !!args.multi;
   const until = args.until ?? "";
   const message = pollBuildText(question, body, choices, { multi, deadline: until });
+  guardUrlBoundaries(message, args.allowUrlAdjacent);
 
   // Preview the destination's last message, exactly as `send`/`ask` do. Fail-soft.
   let lastText = "";
@@ -3494,8 +3498,10 @@ interface ScheduleSendArgs {
   /** How the caller overrode the target text, e.g. `--user-id U0123`. Set only
    *  when a FLAG supplied it — never when the command resolved the id itself. */
   targetOverride?: string;
+  allowUrlAdjacent?: boolean;
 }
 async function cmdScheduleSend(token: string, args: ScheduleSendArgs): Promise<void> {
+  guardUrlBoundaries(args.message, args.allowUrlAdjacent);
   const getSelf = selfLookup(token, args.cookie);
   const { ref, threadTs } = parseTargetThread(args.target);
 
@@ -3641,8 +3647,10 @@ interface UploadArgs {
   channelId?: string;
   userId?: string;
   cookie?: string;
+  allowUrlAdjacent?: boolean;
 }
 async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
+  if (args.comment !== undefined) guardUrlBoundaries(args.comment, args.allowUrlAdjacent);
   const getSelf = selfLookup(token, args.cookie);
   const { statSync, existsSync } = await import("node:fs");
   const { basename } = await import("node:path");
@@ -4766,6 +4774,7 @@ async function main(): Promise<void> {
         .option("no-notify", { type: "boolean", default: false, describe: "With --results: do not write the invalid-ballot notice back into the message (keeps it strictly read-only)" })
         .option("code", { type: "string", describe: "Safety hash to confirm the post" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Post via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient — and so YOUR OWN vote counts, since the seeds are then the bot's" }),
@@ -4835,6 +4844,7 @@ async function main(): Promise<void> {
         if (argv.until) args.until = String(argv.until);
         if (argv.code) args.code = argv.code;
         if (argv.body) args.body = argv.body;
+        if (argv["allow-url-adjacent"]) args.allowUrlAdjacent = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
         // Always resolve @tags with the user token (it has users:read), even
@@ -4951,6 +4961,7 @@ async function main(): Promise<void> {
             .positional("message", { type: "string", demandOption: true })
             .option("at", { type: "string", demandOption: true, describe: "Delivery time (ISO datetime or Unix ts)" })
             .option("code", { type: "string", describe: "Safety hash to confirm" })
+            .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
             .option("channel-id", { type: "string", describe: "Raw channel ID" })
             .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
             .option("as-bot", { type: "boolean", default: false, describe: "Schedule via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient. Without it a scheduled DM to yourself is posted by you, and Slack never notifies you of your own message — it fires into silence." }),
@@ -4966,6 +4977,7 @@ async function main(): Promise<void> {
             }
             const args: ScheduleSendArgs = { target: argv.target!, message: argv.message!, at: argv.at! };
             if (argv.code) args.code = argv.code;
+            if (argv["allow-url-adjacent"]) args.allowUrlAdjacent = true;
             // Recorded here, not in the command, because only a flag counts as an
             // override — under --as-bot the command sets args.userId itself from
             // the target, and claiming THAT was an override would be a new lie.
@@ -5455,6 +5467,7 @@ async function main(): Promise<void> {
         .positional("file", { type: "string", array: true, demandOption: true, describe: "Path(s) to file(s)" })
         .option("title", { type: "string", describe: "Title (single file only)" })
         .option("comment", { type: "string", describe: "Initial comment (first file)" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
         .option("user-id", { type: "string" }),
@@ -5462,6 +5475,7 @@ async function main(): Promise<void> {
         const args: UploadArgs = { target: argv.target!, filePaths: argv.file as string[] };
         if (argv.title) args.title = argv.title;
         if (argv.comment) args.comment = argv.comment;
+        if (argv["allow-url-adjacent"]) args.allowUrlAdjacent = true;
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
@@ -5644,11 +5658,15 @@ async function main(): Promise<void> {
           "Create a draft",
           (y2) => y2
             .positional("channel", { type: "string", demandOption: true })
-            .positional("text", { type: "string", array: true, default: [] }),
+            .positional("text", { type: "string", array: true, default: [] })
+            .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing a bare URL that runs into non-ASCII text (it would link only up to that point)" }),
           async (argv) => {
             const token = tok(argv as W); const cookie = ck(argv as W);
             const text = (argv.text as string[]).join(" ");
             if (!text) { console.error("Usage: slack drafts new <#channel|@user> <text>"); process.exit(2); }
+            // Drafts emit explicit link elements, so a URL glued BEFORE is fine
+            // here; one that runs into text AFTER would be cut at a guess.
+            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, { sides: ["after"], markdown: false });
             const channelId = await resolveChannel(token, argv.channel!, cookie);
             const resp = (await createDraft(token, channelId, text, cookie)) as Record<string, Json>;
             console.log(`✓ Draft created (id: ${asRecord(resp.draft).id ?? "?"})`);
@@ -5668,11 +5686,13 @@ async function main(): Promise<void> {
           (y2) => y2
             .positional("id", { type: "string", demandOption: true })
             .positional("text", { type: "string", array: true, default: [] })
-            .option("code", { type: "string" }),
+            .option("code", { type: "string" })
+            .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing a bare URL that runs into non-ASCII text (it would link only up to that point)" }),
           async (argv) => {
             const token = tok(argv as W); const cookie = ck(argv as W);
             const text = (argv.text as string[]).join(" ");
             if (!text) { console.error("Usage: slack drafts edit <id> <new-text>"); process.exit(2); }
+            guardUrlBoundaries(text, argv["allow-url-adjacent"], undefined, { sides: ["after"], markdown: false });
             const listResp = (await listDrafts(token, cookie)) as Record<string, Json>;
             const d = asArray(listResp.drafts).map(asRecord).find((x) => String(x.id) === argv.id);
             if (!d) { console.error(`Draft not found: ${argv.id}`); process.exit(1); }

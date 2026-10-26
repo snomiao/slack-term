@@ -1791,3 +1791,49 @@ describe("send: empty body is refused before the confirm gate", () => {
     expect(r.stderr).not.toMatch(/--code=/);
   });
 });
+
+// A URL glued to the text before it (`説明：https://…`) is not autolinked by
+// Slack — it is stored as dead text. Every message-building path must refuse it.
+describe("URL glued to preceding text (CLI)", { timeout: 60_000 }, () => {
+  const GLUED = "① 説明：https://acme.slack.com/archives/C00000001/p1700000000000100";
+  const AT = "2099-01-01T00:00:00Z";
+  for (const [name, args] of [
+    ["send", ["send", "#channel-01", GLUED]],
+    ["send to a thread", ["send", "#channel-01:1700000000.000100", GLUED]],
+    ["edit", ["edit", MSG_PERMALINK, GLUED]],
+    ["schedule send", ["schedule", "send", "#channel-01", GLUED, "--at", AT]],
+    ["upload --comment", ["upload", "#channel-01", TS_ENTRY, "--comment", GLUED]],
+  ] as const) {
+    test(`${name} refuses it and posts nothing`, async () => {
+      const before = mock.requests.length;
+      const r = await run([...args]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("Slack will NOT make it a link");
+      expect(r.stderr).not.toContain("--code=");
+      expect(mock.requests.slice(before).some((q) =>
+        /^(chat\.(postMessage|update|scheduleMessage)|files\.)/.test(q.method))).toBe(false);
+    });
+  }
+  test("send with a space before the URL passes the gate and posts it unchanged", async () => {
+    const ok = GLUED.replace("：", "： ");
+    const dry = await run(["send", "#channel-01", ok]);
+    expect(dry.stderr).not.toContain("Ambiguous URL boundary");
+    const before = mock.requests.length;
+    const r = await run(["send", "#channel-01", ok, `--code=${extractCode(dry.stderr)}`]);
+    expect(r.exitCode).toBe(0);
+    const post = mock.requests.slice(before).find((q) => q.method === "chat.postMessage")!;
+    expect(JSON.parse(post.body).text).toBe(ok);
+  });
+  test("send with the URL in a code span is untouched", async () => {
+    const code = "説明：`https://example.com/x`";
+    const dry = await run(["send", "#channel-01", code]);
+    expect(dry.stderr).not.toContain("Ambiguous URL boundary");
+    expect(dry.stderr).toContain("--code=");
+  });
+  test("--allow-url-adjacent downgrades the refusal to a warning", async () => {
+    const dry = await run(["send", "#channel-01", GLUED, "--allow-url-adjacent"]);
+    expect(dry.stderr).toContain("Warning: Ambiguous URL boundary");
+    expect(dry.stderr).toContain("--code=");
+  });
+});
+
