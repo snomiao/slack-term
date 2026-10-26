@@ -96,7 +96,9 @@ import {
   userName,
   getPath,
   type Json,
+  savedList,
 } from "./slack.ts";
+import { isDone, messagePermalink, parseSavedItems, sortTodos, TODO_FILTERS, todoStatus, type TodoFilter, type TodoItem } from "./slackTodos.ts";
 import {
   buildTodoQuery,
   loadTodoConfig,
@@ -841,6 +843,64 @@ async function cmdDrafts(token: string, cookie?: string, showAll = false): Promi
     const resolved = resolveDateMarkup(await resolveMentions(token, text, mentionCache));
     console.log(`-- ${id}  ${chLabel}  [${stamp}]${sentTag}`);
     for (const line of resolved.split("\n")) console.log(`   ${line}`);
+  }
+}
+
+// --- todos (Slack's To-dos tab) ---
+// Read-only. Pages through saved.list up to `limit` items, then shows each
+// to-do with its due date, where it lives, and the message it points at.
+async function cmdTodos(
+  token: string,
+  cookie: string | undefined,
+  opts: { filter: TodoFilter; limit: number; json: boolean },
+): Promise<void> {
+  const items: TodoItem[] = [];
+  let cursor: string | undefined;
+  do {
+    const resp = asRecord((await savedList(token, { filter: opts.filter, limit: Math.min(opts.limit, 100), cursor }, cookie)) as Json);
+    items.push(...parseSavedItems(resp as Json));
+    const next = asRecord(resp.response_metadata).next_cursor;
+    cursor = typeof next === "string" && next ? next : undefined;
+  } while (cursor && items.length < opts.limit);
+  const shown = sortTodos(items).slice(0, opts.limit);
+
+  if (shown.length === 0) {
+    console.log(`No ${opts.filter === "todo" ? "to-dos" : `${opts.filter} items`}.`);
+    return;
+  }
+
+  let teamUrl = "";
+  let myUserId = "";
+  try { ({ url: teamUrl, userId: myUserId } = await authScopes(token, cookie)); } catch { /* links degrade to channel:ts */ }
+  const resolveChLabel = await buildChLabelResolver(token, cookie, myUserId);
+  const now = Date.now() / 1000;
+
+  for (const t of shown) {
+    // The message a to-do points at. conversations.replies on its own ts
+    // returns it whether or not it has a thread; a thread reply comes back
+    // inside its thread, so match by ts. Fail-soft: an unreadable message
+    // still lists, with its link.
+    let msg: Record<string, Json> | undefined;
+    if (t.channel && t.ts) {
+      try {
+        const r = asRecord((await replies(token, t.channel, t.ts, 1, cookie)) as Json);
+        msg = asArray(r.messages).map(asRecord).find((m) => m.ts === t.ts);
+      } catch { /* not readable */ }
+    }
+    const link = t.channel && t.ts
+      ? (teamUrl ? messagePermalink(teamUrl, t.channel, t.ts) : `${t.channel}:${t.ts}`)
+      : "";
+    if (opts.json) {
+      console.log(JSON.stringify({ ...t, done: isDone(t), permalink: link, user: msg?.user ?? null, text: msg?.text ?? null }));
+      continue;
+    }
+    const where = t.channel ? await resolveChLabel(t.channel) : `(${t.itemType || "item"})`;
+    const author = typeof msg?.user === "string" ? `@${await userName(token, msg.user, cookie)}: ` : "";
+    const raw = typeof msg?.text === "string" ? msg.text.split("\n")[0] ?? "" : "(message not readable)";
+    const head = raw.length > 100 ? `${raw.slice(0, 100)}…` : raw;
+    console.log(`${todoStatus(t, now, formatYmdHm)}  ${stripTerminalControls(where)}`);
+    console.log(`   ${stripTerminalControls(author + head)}`);
+    if (link) console.log(`   ${link}`);
   }
 }
 
@@ -5640,6 +5700,25 @@ async function main(): Promise<void> {
       async (argv) => {
         await cmdDump(tok(argv as W), argv.days, argv.limit, argv.filter);
       },
+    )
+    .command(
+      "todos",
+      "Slack's To-dos tab — your personal to-dos (read-only; requires xoxc desktop token). Not `slack todo` (reaction tasks)",
+      (y) => y.command(
+        ["$0", "ls", "list"],
+        "List your To-dos, soonest due first",
+        (y2) => y2
+          .option("filter", { type: "string", choices: [...TODO_FILTERS], default: "todo", describe: "todo = open to-dos; saved = everything saved; completed; archived" })
+          .option("limit", { alias: "n", type: "number", default: 50, describe: "At most this many items" })
+          .option("json", { type: "boolean", default: false, describe: "One JSON object per item (raw fields + permalink + message text)" }),
+        async (argv) => {
+          if (!Number.isInteger(argv.limit) || argv.limit < 1) {
+            console.error(`Error: --limit must be a whole number of at least 1 (got ${argv.limit}).`);
+            process.exit(2);
+          }
+          await cmdTodos(tok(argv as W), ck(argv as W), { filter: argv.filter as TodoFilter, limit: argv.limit, json: argv.json });
+        },
+      ),
     )
     .command(
       "drafts",
