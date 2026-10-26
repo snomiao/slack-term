@@ -54,6 +54,10 @@ slack msgs
 
 # Every new message matching a regex, across all channels + threads (long-running;
 # resumable cursor; as the bot when SLACK_BOT_TOKEN is set). Exit 0 match / 2 none / 3 failure.
+# Real time = the relay (primary mode): deploy worker/ (see worker/README.md) and set
+# SLACK_RELAY_URL + SLACK_RELAY_TOKEN. Without it the stream falls back to POLLING and
+# warns on stderr ("WARNING: polling mode") — a fallback only: paced (--calls-per-min 40),
+# cursor-only reads each --interval (45s), full --thread-window re-read every --thread-scan (3m).
 slack stream --grep '<@U00000001>|@mybot' --json
 slack stream --grep 'deploy' -i --once
 

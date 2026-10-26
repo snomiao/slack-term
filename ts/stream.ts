@@ -2,13 +2,20 @@
 // one line per match, across all of its channels (top-level posts AND thread
 // replies), resumable from a persisted per-channel cursor.
 //
-// Transport: polling. Slack's real-time paths need either a desktop session
-// (RTM, user identity only) or Socket Mode (an app-level xapp- token). The bot
-// identity — the privacy-safe default — has neither, so this polls
-// conversations.history over a sliding "thread window": one history scan per
-// channel yields both new top-level messages (ts past the cursor) and every
-// thread whose `latest_reply` moved past that thread's cursor, and only those
-// threads cost a conversations.replies call.
+// Transport: the relay is the primary mode, polling the fallback. Slack's
+// real-time paths need either a desktop session (RTM, user identity only) or
+// an Events API / Socket Mode endpoint — which a CLI cannot own, hence the
+// relay (worker/). Without it the stream polls, and says so loudly on stderr.
+//
+// Polling is paced so the fallback stays inside Slack's limits: every cycle
+// reads each channel's history from its cursor only (new top-level posts);
+// the full "thread window" re-read — which shows every thread whose
+// `latest_reply` moved past that thread's cursor, and only those threads cost
+// a conversations.replies call — runs once per --thread-scan period per
+// channel, spread across cycles. A channel with no top-level post inside the
+// window has no thread to watch and skips the window read; a DM/MPIM like that
+// is not read at all between periods. All history/replies calls go through one
+// token bucket (callsPerMin).
 //
 // Delivery is at-least-once: the cursor is saved right after each match is
 // written, so a crash between the write and the save can repeat that one line.
@@ -81,6 +88,11 @@ export type ChanState = {
   cursor: string;
   /** Per thread (parent ts): every reply with ts ≤ value has been matched. */
   threads: Record<string, string>;
+  /** Newest top-level ts any scan has seen: older than the thread window means
+   *  no thread in it can gain a reply the poll watches. */
+  latest?: string;
+  /** When the thread window was last read in full (sec). */
+  scanned?: string;
 };
 
 export type StreamState = {
@@ -147,7 +159,18 @@ export type StreamOpts = {
   /** Doorbell relay. While connected, the full poll only runs every
    *  max(intervalMs, reconcileMs) as a safety net. Ignored with --once. */
   relay?: { url: string; subscribe: Subscribe; reconcileMs: number };
+  /** Read each channel's full thread window at most this often (default 180 s);
+   *  the cycles in between read history from the cursor only. 0 = every cycle. */
+  threadScanSec?: number;
+  /** Pace history/replies calls to this many per minute (default 40, under
+   *  Slack's Tier 3 ~50/min); 0 = unpaced. */
+  callsPerMin?: number;
+  /** Why there is no relay, for the polling-mode warning. */
+  pollReason?: string;
 };
+
+/** Where the real-time setup is documented — the polling warning points here. */
+export const RELAY_DOCS = "https://github.com/snomiao/slack-term/blob/main/worker/README.md";
 
 export const PHI = 1.618;
 /** Relay bells handled per turn of the loop before the poll gets a look in. */
@@ -424,18 +447,23 @@ async function allPages(fetch: (cursor?: string) => Promise<Page>): Promise<Reco
   return out;
 }
 
-/** Scan one channel up to `horizon` (now − settle) and advance its cursors. */
-export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number): Promise<void> {
+/** Scan one channel up to `horizon` (now − settle) and advance its cursors.
+ *  `full` re-reads the whole thread window (finding replies under older
+ *  parents); otherwise only what is past the cursor is read. */
+export async function scanChannel(ctx: Ctx, ch: ChannelRef, nowSec: number, full = true): Promise<void> {
   const st = ctx.state.channels[ch.id]!;
   const horizon = nowSec - (ctx.opts.settleSec ?? 5);
   const windowStart = nowSec - ctx.opts.threadWindowSec;
   const cursor = num(st.cursor);
-  const oldest = Math.min(cursor, windowStart);
+  const oldest = full ? Math.min(cursor, windowStart) : cursor;
 
   const msgs = (await allPages((c) => ctx.client.history(ch.id, fmt(oldest), c)))
     .sort((a, b) => num(str(a.ts)) - num(str(b.ts)));
   // A broadcast's parent, for --replies-to.
   const byTs = ctx.opts.repliesTo ? new Map(msgs.map((x) => [str(x.ts), x])) : undefined;
+  const newest = msgs.at(-1);
+  if (newest && num(str(newest.ts)) > num(st.latest ?? "0")) st.latest = str(newest.ts);
+  if (full) st.scanned = fmt(nowSec);
 
   for (const m of msgs) {
     const t = num(str(m.ts));
@@ -548,6 +576,58 @@ function pruneSeen(st: StreamState, oldestSec: number): void {
   if (!Object.keys(st.seen).length) delete st.seen;
 }
 
+/** Calls let through at once before pacing starts. */
+const PACE_BURST = 10;
+
+/** A token bucket (GCRA) on history/replies: `perMin` sustained, PACE_BURST
+ *  at once. Slack's per-method limits are shared by every caller of the app,
+ *  so bells and the poll draw from the same bucket. */
+export function paced(client: StreamClient, perMin: number, signal?: AbortSignal): StreamClient {
+  if (!(perMin > 0)) return client;
+  const gap = 60_000 / perMin;
+  let tat = -Infinity; // theoretical arrival time of the next call
+  const pace = async (): Promise<void> => {
+    const now = _internals.now();
+    tat = Math.max(tat, now);
+    const wait = tat - now - (PACE_BURST - 1) * gap;
+    tat += gap;
+    if (wait > 0) await _internals.sleep(wait, signal);
+  };
+  return {
+    listChannels: () => client.listChannels(),
+    userName: (id) => client.userName(id),
+    history: async (c, oldest, cursor) => { await pace(); return client.history(c, oldest, cursor); },
+    replies: async (c, t, oldest, cursor) => { await pace(); return client.replies(c, t, oldest, cursor); },
+  };
+}
+
+/** What one poll cycle reads per channel: the full thread window, from the
+ *  cursor only, or nothing (an idle DM between periods). Full reads go to the
+ *  most overdue channels first, at most `cap` of them, so they spread across
+ *  the period instead of landing on one cycle. */
+export function planCycle(
+  channels: ChannelRef[], state: StreamState, nowSec: number,
+  o: { windowSec: number; periodSec: number; intervalSec: number; once: boolean },
+): Map<string, "full" | "cursor" | "skip"> {
+  const windowStart = nowSec - o.windowSec;
+  const st = (c: ChannelRef): ChanState | undefined => state.channels[c.id];
+  // Nothing top-level inside the window: no watched thread can gain a reply.
+  const idle = (c: ChannelRef): boolean => st(c)?.scanned !== undefined && num(st(c)!.latest ?? "0") < windowStart;
+  const due = (c: ChannelRef): boolean => o.once || st(c)?.scanned === undefined || nowSec - num(st(c)!.scanned!) >= o.periodSec;
+  const plan = new Map<string, "full" | "cursor" | "skip">();
+  const active = channels.filter((c) => !idle(c));
+  const cap = o.once || o.periodSec <= o.intervalSec
+    ? Infinity
+    : Math.max(1, Math.ceil(active.length * o.intervalSec / o.periodSec));
+  const fulls = active.filter(due).sort((a, b) => num(st(a)?.scanned ?? "0") - num(st(b)?.scanned ?? "0")).slice(0, cap);
+  for (const c of fulls) plan.set(c.id, "full");
+  for (const c of channels) {
+    if (plan.has(c.id)) continue;
+    plan.set(c.id, idle(c) && (c.isIm || c.isMpim) && !due(c) ? "skip" : "cursor");
+  }
+  return plan;
+}
+
 /** Run the stream. Resolves with the process exit code:
  *  0 — matches were emitted (--once) / stopped by a signal (long-running);
  *  2 — --once found no match;
@@ -558,6 +638,15 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
   const cap = opts.backoffCapMs ?? 300_000;
   const refreshEvery = opts.refreshEvery ?? 10;
   const relay = opts.once ? undefined : opts.relay;
+  if (!relay && !opts.once) {
+    _internals.err(
+      `slack stream: WARNING: polling mode (${opts.pollReason ?? "no relay configured"}) — this is the fallback, ` +
+      `not the intended setup: matches arrive up to ${Math.round(opts.intervalMs / 1000)}s late (replies under older ` +
+      `parents up to ${Math.round(Math.max(opts.threadScanSec ?? 180, opts.intervalMs / 1000))}s) and every cycle spends ` +
+      `Slack API calls. For real time, deploy the relay and set SLACK_RELAY_URL + SLACK_RELAY_TOKEN: ${RELAY_DOCS}`,
+    );
+  }
+  client = paced(client, opts.callsPerMin ?? 40, opts.signal);
 
   let release: (() => void) | undefined;
   // Stops the relay subscription when the stream ends, for any reason.
@@ -845,12 +934,24 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
         try {
           if (cycle % refreshEvery === 0) await refresh(nowSec);
 
+          const periodSec = Math.max(0, opts.threadScanSec ?? 180);
+          const plan = planCycle(channels.filter((c) => !skipped.has(c.id)), state, nowSec, {
+            windowSec: opts.threadWindowSec, periodSec, intervalSec: interval() / 1000, once: opts.once,
+          });
           for (const ch of channels) {
             if (opts.signal?.aborted) break;
             if (skipped.has(ch.id)) continue;
+            const mode = plan.get(ch.id) ?? "full";
+            if (mode === "skip") continue;
             for (;;) {
               try {
-                await scanChannel(ctx, ch, nowSec);
+                const st = state.channels[ch.id]!;
+                // An idle channel whose period is up has nothing in the window to
+                // re-read: the cursor read stands in for the full one.
+                const idleDue = mode === "cursor" && st.scanned !== undefined &&
+                  num(st.latest ?? "0") < nowSec - opts.threadWindowSec && nowSec - num(st.scanned) >= periodSec;
+                await scanChannel(ctx, ch, nowSec, mode === "full");
+                if (idleDue) { st.scanned = fmt(nowSec); saveState(opts.statePath, state); }
                 break;
               } catch (e) {
                 if (e instanceof RateLimitError) {

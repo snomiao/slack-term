@@ -7242,6 +7242,8 @@ async function main(): Promise<void> {
         .option("since", { type: "string", describe: "Replay from this long ago (e.g. 30m, 2h), ignoring the saved cursor" })
         .option("interval", { type: "string", default: "45s", describe: "Poll interval (e.g. 30s, 2m)" })
         .option("thread-window", { type: "string", default: "3d", describe: "Watch replies in threads whose parent is at most this old" })
+        .option("thread-scan", { type: "string", default: "3m", describe: "Polling: re-read each channel's whole --thread-window this often (cycles in between read only what is new)" })
+        .option("calls-per-min", { type: "number", default: 40, describe: "Polling: pace conversations.history/replies to this many calls per minute (0 = unpaced)" })
         .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
         .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (worker/) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
@@ -7251,11 +7253,13 @@ async function main(): Promise<void> {
         let reconcileMs: number;
         let intervalMs: number;
         let windowSec: number;
+        let threadScanSec: number;
         let sinceSec: number | undefined;
         try {
           re = new RegExp(argv.grep, argv["ignore-case"] ? "i" : "");
           intervalMs = parseDuration(argv.interval) * 1000;
           windowSec = parseDuration(argv["thread-window"]);
+          threadScanSec = parseDuration(argv["thread-scan"]);
           sinceSec = argv.since !== undefined ? parseDuration(argv.since) : undefined;
           reconcileMs = parseDuration(argv.reconcile) * 1000;
         } catch (e) {
@@ -7343,6 +7347,9 @@ async function main(): Promise<void> {
           ? { url: relayUrl, subscribe: relaySubscriber(relayUrl, relayToken), reconcileMs }
           : undefined;
         if (argv.relay && asUser && relayUrl) console.error("slack stream: relay not used with --as-user (it only sees the bot's channels)");
+        const pollReason = !argv.relay ? "--no-relay"
+          : asUser ? (relayUrl ? "--as-user: the relay only rings for the bot's channels" : "streaming as the user; the relay serves the bot identity")
+            : "SLACK_RELAY_URL / SLACK_RELAY_TOKEN not set";
         const ac = new AbortController();
         process.on("SIGINT", () => ac.abort());
         process.on("SIGTERM", () => ac.abort());
@@ -7357,6 +7364,9 @@ async function main(): Promise<void> {
           ...(sinceSec !== undefined ? { sinceSec } : {}),
           intervalMs,
           threadWindowSec: windowSec,
+          threadScanSec,
+          callsPerMin: argv["calls-per-min"],
+          ...(relay ? {} : { pollReason }),
           statePath,
           teamUrl: me.url,
           identity: me.userId,

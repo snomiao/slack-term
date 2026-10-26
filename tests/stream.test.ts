@@ -105,6 +105,10 @@ function opts(extra: Partial<StreamOpts> = {}): StreamOpts {
     once: true,
     intervalMs: 30_000,
     threadWindowSec: 3 * 86400,
+    // The pre-pacing behaviour (full window every cycle, unpaced); the pacing
+    // tests below opt back in.
+    threadScanSec: 0,
+    callsPerMin: 0,
     statePath: join(dir, "state.json"),
     teamUrl: "https://acme.slack.com/",
     identity: SELF,
@@ -1688,5 +1692,187 @@ describe("runStream — relay", () => {
     const r = new FakeRelay();
     expect(await runStream(s, opts({ relay: { url: "https://relay.example", subscribe: r.subscribe, reconcileMs: 1 } }))).toBe(2);
     expect(r.afters).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Polling is the fallback: it warns, and it is paced to stay inside Slack's limits.
+
+/** The oldest a full thread-window read (3 d) asks for at `atSec`. */
+const fullOldest = (atSec: number): string => (atSec - 3 * 86400).toFixed(6);
+
+describe("runStream — polling fallback", () => {
+  /** history() oldest per call, with the cycle's clock. */
+  function spyHistory(s: FakeSlack): [string, string][] {
+    const seen: [string, string][] = [];
+    const real = s.history.bind(s);
+    s.history = async (c, oldest, cursor) => { if (!cursor) seen.push([c, oldest]); return real(c, oldest, cursor); };
+    return seen;
+  }
+
+  test("a long-running stream without a relay warns once on stderr and points to the relay docs", async () => {
+    const s = new FakeSlack();
+    const ac = new AbortController();
+    onSleep = () => ac.abort();
+    await runStream(s, opts({ once: false, signal: ac.signal, pollReason: "SLACK_RELAY_URL / SLACK_RELAY_TOKEN not set" }));
+    const warn = err.filter((l) => l.includes("WARNING: polling mode"));
+    expect(warn).toHaveLength(1);
+    expect(warn[0]).toContain("(SLACK_RELAY_URL / SLACK_RELAY_TOKEN not set)");
+    expect(warn[0]).toContain("fallback");
+    expect(warn[0]).toContain("worker/README.md");
+  });
+
+  test("--once and a configured relay do not warn", async () => {
+    await runStream(new FakeSlack(), opts());
+    const ac = new AbortController();
+    onSleep = () => ac.abort();
+    const subscribe: Subscribe = async (_a, signal, on) => {
+      on.hello({ seq: 0, gap: false, retention_sec: 3600 });
+      await new Promise<void>((res) => signal.addEventListener("abort", () => res(), { once: true }));
+    };
+    await runStream(new FakeSlack(), opts({
+      once: false, signal: ac.signal, statePath: join(dir, "relay.json"),
+      relay: { url: "https://relay.example", subscribe, reconcileMs: 300_000 },
+    }));
+    expect(err.some((l) => l.includes("WARNING: polling mode"))).toBe(false);
+  });
+
+  test("between thread scans a cycle reads history from the cursor only; the window is re-read once per period", async () => {
+    const s = new FakeSlack();
+    const parent = ts(-3600);
+    s.post("C00000001", { ts: parent, thread_ts: parent, user: "U00000001", text: "old parent" });
+    const reads = spyHistory(s);
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      // A reply under the hour-old parent: only a window read can see it.
+      if (cycles === 1) s.post("C00000001", { ts: (now / 1000 - 10).toFixed(6), thread_ts: parent, user: "U00000002", text: "@mybot late reply" });
+      if (cycles === 7) ac.abort();
+    };
+    await runStream(s, opts({ once: false, signal: ac.signal, threadScanSec: 120 }));
+    const t = (n: number): number => T0 + 30 * n; // cycle n starts at T0 + 30·n s
+    expect(reads.map(([, o]) => o)).toEqual([
+      fullOldest(t(0)),          // first cycle: the whole window
+      t(0).toFixed(6),           // then from the cursor (where the channel started)
+      (t(1) - 5).toFixed(6),
+      (t(2) - 5).toFixed(6),
+      fullOldest(t(4)),          // 120 s later: the window again
+      (t(4) - 5).toFixed(6),
+      (t(5) - 5).toFixed(6),
+    ]);
+    // The reply was found by that window read, not before.
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot late reply"]);
+    expect(s.calls.filter((c) => c.startsWith("replies"))).toHaveLength(1);
+  });
+
+  test("window re-reads are spread across cycles (most overdue first), not all on one", async () => {
+    const s = new FakeSlack();
+    s.channels = Array.from({ length: 8 }, (_, i) => ({ id: `C0000001${i}`, name: `c${i}`, isIm: false }));
+    for (const c of s.channels) s.post(c.id, { ts: ts(-60), user: "U00000001", text: "chatter" });
+    const reads = spyHistory(s);
+    const ac = new AbortController();
+    let cycles = 0;
+    const perCycle: number[] = [];
+    let mark = 0;
+    onSleep = () => {
+      const full = reads.slice(mark).filter(([, o]) => Number(o) < now / 1000 - 86400).length;
+      perCycle.push(full);
+      mark = reads.length;
+      if (++cycles === 8) ac.abort();
+    };
+    // period 120 s at a 30 s interval: ceil(8·30/120) = 2 full reads a cycle.
+    await runStream(s, opts({ once: false, signal: ac.signal, threadScanSec: 120 }));
+    expect(perCycle).toEqual([2, 2, 2, 2, 2, 2, 2, 2]);
+    // Every channel got its window read within the period.
+    const firstFull = new Map<string, number>();
+    reads.forEach(([c, o], i) => { if (Number(o) < T0 - 86400 && !firstFull.has(c)) firstFull.set(c, i); });
+    expect(firstFull.size).toBe(8);
+  });
+
+  test("an idle DM (nothing inside the window) is not read between periods; an idle channel skips the window read", async () => {
+    const s = new FakeSlack();
+    s.channels = [
+      { id: "C00000001", name: "dev", isIm: false },
+      { id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" },
+    ];
+    const reads = spyHistory(s);
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => { if (++cycles === 6) ac.abort(); };
+    await runStream(s, opts({ once: false, signal: ac.signal, threadScanSec: 120 }));
+    const dm = reads.filter(([c]) => c === "D00000001").map(([, o]) => o);
+    const dev = reads.filter(([c]) => c === "C00000001").map(([, o]) => o);
+    // One window read per cycle for the two (ceil(2·30/120)): the DM gets a
+    // cursor read first, its window read next cycle shows it idle, and from
+    // then on it is read once per period, from the cursor.
+    expect(dm).toEqual([T0.toFixed(6), fullOldest(T0 + 30), (T0 + 30 - 5).toFixed(6)]);
+    // Channel: read every cycle (a post must not wait a period), but only from the cursor.
+    expect(dev).toHaveLength(6);
+    expect(dev.slice(1).every((o) => Number(o) > T0 - 60)).toBe(true);
+  });
+
+  test("a DM that wakes up is read every cycle again", async () => {
+    const s = new FakeSlack();
+    s.channels = [{ id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" }];
+    const reads = spyHistory(s);
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => {
+      cycles++;
+      if (cycles === 3) s.post("D00000001", { ts: (now / 1000 - 10).toFixed(6), user: "U00000001", text: "@mybot you there?" });
+      if (cycles === 8) ac.abort();
+    };
+    await runStream(s, opts({ once: false, signal: ac.signal, threadScanSec: 120 }));
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot you there?"]);
+    // Read at cycles 0 (window) and 4 (period up, finds the post), then every cycle.
+    expect(reads.length).toBe(1 + 1 + 3);
+  });
+
+  test("history/replies calls are paced to callsPerMin after a burst", async () => {
+    const s = new FakeSlack();
+    s.channels = Array.from({ length: 30 }, (_, i) => ({ id: `C000000${String(i).padStart(2, "0")}`, name: `c${i}`, isIm: false }));
+    const at: number[] = [];
+    const real = s.history.bind(s);
+    s.history = async (c, o, cur) => { at.push(now); return real(c, o, cur); };
+    await runStream(s, opts({ callsPerMin: 60 }));
+    expect(at).toHaveLength(30);
+    // 10 at once, then one a second.
+    expect(at.slice(0, 10).every((t) => t === T0 * 1000)).toBe(true);
+    expect(at[29]! - at[0]!).toBe(20_000);
+  });
+});
+
+describe("polling fallback against the mock Slack API", () => {
+  let mock: MockHandle;
+  beforeAll(async () => {
+    mock = await startMock({
+      inline: {
+        "users.conversations": {
+          ok: true, channels: [{ id: "C00000001", name: "dev" }, { id: "D00000001", is_im: true, user: "U00000001" }],
+          response_metadata: { next_cursor: "" },
+        },
+        "conversations.history": { ok: true, has_more: false, messages: [] },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+  });
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("cycles after the first ask Slack only for what is past the cursor, and idle DMs not at all", async () => {
+    const ac = new AbortController();
+    let cycles = 0;
+    onSleep = () => { if (++cycles === 3) ac.abort(); };
+    await runStream(webClient("xoxb-fake"), opts({ once: false, signal: ac.signal, threadScanSec: 180, callsPerMin: 40 }));
+    const hist = mock.requests.filter((r) => r.method === "conversations.history").map((r) => [r.params.channel, r.params.oldest]);
+    expect(hist).toEqual([
+      ["C00000001", fullOldest(T0)], ["D00000001", T0.toFixed(6)],     // one window read a cycle
+      ["C00000001", T0.toFixed(6)], ["D00000001", fullOldest(T0 + 30)], // C is idle: cursor only
+      ["C00000001", (T0 + 30 - 5).toFixed(6)],                          // the idle DM: not read
+    ]);
+    expect(err.some((l) => l.includes("WARNING: polling mode (no relay configured)"))).toBe(true);
   });
 });

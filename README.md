@@ -422,21 +422,30 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
   ignoring the saved cursor. Delivery is at-least-once only in one corner — a crash
   between printing a match and saving the cursor repeats that line, so dedupe on
   `channel.id + ts`. A lock file keeps two streams off the same state.
-- **Transport: polling** (`--interval`, default `45s`). Each cycle reads every
-  channel's history over a sliding `--thread-window` (default `3d`): that one scan
-  shows new posts and which threads gained replies, and only those threads are read.
+- **Transport: the relay is the primary mode; polling is the fallback.** Deploy
+  [`worker/`](worker/) (a Cloudflare Worker on Slack's Events API — setup in
+  [worker/README.md](worker/README.md)) and set `SLACK_RELAY_URL` and
+  `SLACK_RELAY_TOKEN`: the stream then hears a *doorbell* — `{channel, ts, thread_ts}`,
+  no text — within a second of each post, reads that one message through the Web API
+  with its own token and runs it through the same `--grep`. While the relay is
+  connected the poll still runs, every `--reconcile` (default `5m`), as the safety net;
+  when the relay is down it goes back to `--interval`. Both paths share one record of
+  what was printed, so a message is never printed twice. The relay is used only when
+  streaming as the bot (it rings for the bot's channels) and never with `--once`.
+- **Polling fallback** (no relay configured, `--as-user`, or `--no-relay`). The stream
+  prints a `WARNING: polling mode` line on stderr, pointing to the relay setup. It
+  polls every `--interval` (default `45s`), paced to stay inside Slack's rate limits:
+  - every cycle reads each channel's history **from its cursor only** (new posts);
+  - each channel's whole `--thread-window` (default `3d`) — which shows which threads
+    gained replies, and only those threads are read — is re-read once per
+    `--thread-scan` (default `3m`), spread across cycles rather than all at once, so a
+    reply under an older parent can take up to `--thread-scan` to appear;
+  - a channel with no post inside the window skips that re-read, and such an idle
+    DM/MPIM (`--as-user`) is not read at all between `--thread-scan` periods;
+  - all `conversations.history` / `conversations.replies` calls share one token
+    bucket, `--calls-per-min` (default `40`, under Tier 3's ~50/min; 10 at once).
   A message is held back until it is 5 s old, so a cursor never skips one Slack has
   not made visible yet. Rate limits honour `Retry-After`.
-- **Real time, optionally: the relay.** Set `SLACK_RELAY_URL` and `SLACK_RELAY_TOKEN`
-  to a deployed [`worker/`](worker/) (a Cloudflare Worker on Slack's Events API) and
-  the stream hears a *doorbell* — `{channel, ts, thread_ts}`, no text — within a
-  second of each post, then reads that one message through the Web API with its own
-  token and runs it through the same `--grep`. While the relay is connected the poll
-  still runs, every `--reconcile` (default `5m`), as the safety net; when the relay
-  is down it goes back to `--interval`. Both paths share one record of what was
-  printed, so a message is never printed twice. The relay is used only when
-  streaming as the bot (it rings for the bot's channels) and never with `--once`;
-  `--no-relay` turns it off.
 - **Not covered:** edits (a message edited *into* matching is not re-emitted), and —
   without the relay — replies in a thread whose parent is older than `--thread-window`.
 - **Failures are loud and distinguishable.** A network/API error retries the cycle
