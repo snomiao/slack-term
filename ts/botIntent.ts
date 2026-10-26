@@ -17,12 +17,23 @@ const WRITES = new Set([
   "todo set", "todo flag",
   "lists create", "lists add", "lists set", "lists share",
   "drafts new", "drafts save", "drafts edit", "drafts update", "drafts delete", "drafts rm",
-  "channel create", "channel new", "channel rename",
+  "channel create", "channel new", "channel rename", "channel mv",
 ]);
 
+/** `argv._` holds what was TYPED, so top-level aliases must be folded first. */
+const TOP_ALIAS: Record<string, string> = { channels: "channel", ch: "channel" };
+
 export function isWriteCommand(path: (string | number)[]): boolean {
-  const [a = "", b = ""] = path.map(String);
+  const [raw = "", b = ""] = path.map(String);
+  const a = TOP_ALIAS[raw] ?? raw;
   return WRITES.has(a) || WRITES.has(`${a} ${b}`);
+}
+
+/** Read-only modes of a write command. `ask --ls` only reads the local
+ *  sent-log and the questions' live state. (`ask --waitFor` and
+ *  `poll --results` are NOT here: both can edit the posted message.) */
+function isReadMode(path: (string | number)[], argv: Record<string, unknown>): boolean {
+  return String(path[0] ?? "") === "ask" && argv.ls === true;
 }
 
 export type BotIntent = {
@@ -44,7 +55,7 @@ export function botIntentRefusal(
   const src = intent.botTokenSource;
   if (!src || intent.globalPaths.includes(src)) return null;
   if (intent.slackTokenSet || intent.activeTokenIsBot) return null;
-  if (!isWriteCommand(cmd) || argv["as-bot"] === true) return null;
+  if (!isWriteCommand(cmd) || isReadMode(cmd, argv) || argv["as-bot"] === true) return null;
   const from = src === "shell" ? "exported in the environment" : `set in ${src}`;
   const canBot = "as-bot" in argv;
   return [

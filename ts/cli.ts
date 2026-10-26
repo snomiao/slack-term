@@ -138,6 +138,11 @@ import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, head
 
 // Which dotenv file supplied each variable (absent = the shell's own env).
 const dotenvSource = new Map<string, string>();
+// Every value a GLOBAL dotenv holds, even when the shell already had the key.
+// A child of `slack agent` (or any process the CLI spawned) inherits the
+// global SLACK_BOT_TOKEN as a plain env var; matching it back to its global
+// file keeps that inherited copy from reading as an explicit export.
+const globalDotenvValue = new Map<string, { path: string; val: string }[]>();
 const GLOBAL_DOTENVS = [join(homedir(), ".slack-cli", ".env.local"), join(homedir(), ".config/slack-cli", ".env")];
 
 function loadDotenv(path: string): void {
@@ -152,6 +157,9 @@ function loadDotenv(path: string): void {
     let val = line.slice(eq + 1).trim();
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
+    }
+    if (GLOBAL_DOTENVS.includes(path)) {
+      globalDotenvValue.set(key, [...(globalDotenvValue.get(key) ?? []), { path, val }]);
     }
     if (!(key in process.env)) {
       process.env[key] = val;
@@ -4975,7 +4983,11 @@ async function main(): Promise<void> {
         const active = resolveToken((argv as W).workspace);
         const bot = resolveBotToken();
         const refusal = botIntentRefusal(argv._ ?? [], argv as Record<string, unknown>, {
-          botTokenSource: bot ? dotenvSource.get("SLACK_BOT_TOKEN") ?? "shell" : undefined,
+          botTokenSource: bot
+            ? dotenvSource.get("SLACK_BOT_TOKEN")
+              ?? globalDotenvValue.get("SLACK_BOT_TOKEN")?.find((g) => g.val === bot)?.path
+              ?? "shell"
+            : undefined,
           globalPaths: GLOBAL_DOTENVS,
           slackTokenSet: !!process.env.SLACK_TOKEN,
           activeTokenIsBot: !!bot && active === bot,

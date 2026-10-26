@@ -8,7 +8,7 @@ const intent = (o: Partial<Parameters<typeof botIntentRefusal>[2]> = {}) => ({
 
 describe("isWriteCommand", () => {
   test("top-level and nested writes, aliases included", () => {
-    for (const c of [["send"], ["vote"], ["react"], ["pinlog", "new"], ["pinlog", "pin"], ["schedule", "send"], ["drafts", "save"], ["lists", "share"], ["channel", "new"]]) {
+    for (const c of [["send"], ["vote"], ["react"], ["pinlog", "new"], ["pinlog", "pin"], ["schedule", "send"], ["drafts", "save"], ["lists", "share"], ["channel", "new"], ["channel", "mv"], ["ch", "rename"], ["channels", "create"]]) {
       expect(isWriteCommand(c)).toBe(true);
     }
   });
@@ -42,6 +42,9 @@ describe("botIntentRefusal", () => {
   test("allows: --as-bot, reads, no/global bot token, SLACK_TOKEN set, bot is the active token", () => {
     expect(botIntentRefusal(["send"], { "as-bot": true }, intent())).toBeNull();
     expect(botIntentRefusal(["read"], {}, intent())).toBeNull();
+    expect(botIntentRefusal(["ask"], { ls: true }, intent())).toBeNull();
+    // --waitFor stamps ✅ into the question — a write.
+    expect(botIntentRefusal(["ask"], { waitFor: "https://acme.slack.com/archives/C00000001/p1700000000000100" }, intent())).not.toBeNull();
     expect(botIntentRefusal(["send"], {}, intent({ botTokenSource: undefined }))).toBeNull();
     expect(botIntentRefusal(["send"], {}, intent({ botTokenSource: GLOBAL[0] }))).toBeNull();
     expect(botIntentRefusal(["send"], {}, intent({ slackTokenSet: true }))).toBeNull();

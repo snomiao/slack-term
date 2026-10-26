@@ -3,7 +3,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,6 +78,38 @@ describe("exported SLACK_BOT_TOKEN without --as-bot (CLI)", { timeout: 60_000 },
     try {
       const r = await run(["pinlog", "ls", "#channel-01"], m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-fake" });
       expect(r.stderr).not.toContain("refusing to act as YOU");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("the GLOBAL ~/.config/slack-cli/.env bot token is not intent — nor is a child's inherited copy of it", async () => {
+    const globalEnv = join(tmpHome, ".config", "slack-cli", ".env");
+    writeFileSync(globalEnv, "SLACK_BOT_TOKEN=xoxb-global\n");
+    const m = await startMock({ inline: FIXTURES });
+    try {
+      const args = ["pinlog", "new", "#channel-01", "ok", "first"];
+      // Loaded from the global file only.
+      expect((await run(args, m.baseUrl, {})).stderr).not.toContain("refusing to act as YOU");
+      // The same value already in the env, as a process spawned by the CLI (e.g. under `slack agent`) inherits it.
+      expect((await run(args, m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-global" })).stderr).not.toContain("refusing to act as YOU");
+      // A DIFFERENT bot token exported over it is still intent.
+      const r = await run(args, m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-other" });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("refusing to act as YOU");
+    } finally {
+      await m.stop();
+      unlinkSync(globalEnv);
+    }
+  });
+
+  test("a typed alias (`ch mv`) is a write too", async () => {
+    const m = await startMock({ inline: FIXTURES });
+    try {
+      const r = await run(["ch", "mv", "#channel-01", "channel-02"], m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-fake" });
+      expect(r.exitCode).toBe(2);
+      expect(r.stderr).toContain("`ch mv`");
+      expect(m.requests.length).toBe(0);
     } finally {
       await m.stop();
     }
