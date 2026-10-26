@@ -4,7 +4,7 @@
 // every in-flight question uncollectable.
 
 import { describe, test, expect } from "./harness.ts";
-import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askResolvedKeep, askBuildVoidText, askSalvageUnreadable, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
+import { askBuildText, askBuildResolvedText, askParseMessage, askExplainReject, askMatchChoice, applyInvalidNotice, readInvalidNotice, askResolveLang, askDetectLang, askResolvedHow, askReplyPicked, askResolvedKeep, askBuildVoidText, askSalvageUnreadable, askLangOfLocale, ASK_KEYCAPS, ASK_LANGS, ASK_COPY } from "../ts/ask.ts";
 
 describe("ask body round-trips", () => {
   const cases: { name: string; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean }[] = [
@@ -777,5 +777,18 @@ describe("ask does not mistake ordinary messages for answered/void questions", (
     expect(askParseMessage(askBuildVoidText("q", "stale", "ja")).kind).toBe("void");
     expect(askParseMessage(`【superseded】 :question: *q*\n本文`).kind).toBe("void");
     expect(askParseMessage(":white_check_mark: *q*\n_リアクションで回答済み_\n\n> A").kind).toBe("resolved");
+  });
+});
+
+// --waitFor on an answered question must not hand the answering reply back as
+// a note: it is recognised the way it was collected, spelling and all.
+describe("askReplyPicked", () => {
+  test.each([
+    ["2"], ["2. 中止"], ["2️⃣"], ["中止"], ["「中止」。"], ["中止。"],
+  ])("%s picked choice 2 (中止)", (reply) => {
+    expect(askReplyPicked(reply, "中止", 2)).toBe(true);
+  });
+  test.each([["中止して別案で"], ["1"], ["20"]])("%s did not", (reply) => {
+    expect(askReplyPicked(reply, "中止", 2)).toBe(false);
   });
 });

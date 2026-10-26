@@ -30,6 +30,7 @@ import {
   readInvalidNotice,
   askResolveLang,
   askResolvedHow,
+  askReplyPicked,
   askResolvedKeep,
   askBuildVoidText,
   askSalvageUnreadable,
@@ -3908,7 +3909,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
       if (answerSkipped || !how.byReply) return false;
       if (editedTs && Number(m.ts) > Number(editedTs)) return false;
       const t = typeof m.text === "string" ? m.text.trim() : "";
-      const hit = t === parsed.answer || (how.n !== undefined && new RegExp(`^[(（]?${how.n}(?![0-9])`).test(t));
+      const hit = t === parsed.answer || (how.n !== undefined && (new RegExp(`^[(（]?${how.n}(?![0-9])`).test(t) || askReplyPicked(t, parsed.answer, how.n)));
       if (hit) answerSkipped = true;
       return hit;
     };

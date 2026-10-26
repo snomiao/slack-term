@@ -685,6 +685,15 @@ function askNormalizeChoice(s: string): string {
     .toLowerCase();
 }
 
+/** Is `reply` the one that picked choice `n` (text `answer`)? The same matcher
+ *  that chose it, run against a list where only slot `n` is known — so "2",
+ *  "2. 中止", 2️⃣ and 「中止」。 all count, exactly as they did when collected. */
+export function askReplyPicked(reply: string, answer: string, n: number): boolean {
+  const choices = Array.from({ length: n }, (_, i) => (i === n - 1 ? answer : ""));
+  const m = askMatchChoice(reply, choices);
+  return m.kind === "chosen" && m.index === n;
+}
+
 export function askMatchChoice(reply: string, choices: string[]): AskChoiceMatch {
   const norm = askNormalizeChoice(reply);
   if (!norm) return { kind: "none" };
