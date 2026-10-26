@@ -8,7 +8,11 @@
 // both bun and node, and never in a URL.
 
 /** A bell: where a message just appeared. */
-export type Doorbell = { channel: string; ts: string; thread_ts?: string };
+export type Doorbell = {
+  channel: string; ts: string; thread_ts?: string;
+  /** The relay app's bot user id, on that bot's own posts only. */
+  self?: string;
+};
 
 /** First frame of every connection. `seq` is the resume point the relay
  *  starts from; `gap` means bells after the requested seq are gone (expired,

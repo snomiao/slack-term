@@ -5,7 +5,14 @@
 /** What the relay keeps and serves: WHERE something happened, never what was
  *  said. A client that hears a doorbell reads the message itself, through the
  *  Slack Web API, with its own token — so the relay holds no message content. */
-export type Doorbell = { channel: string; ts: string; thread_ts?: string };
+export type Doorbell = {
+  channel: string; ts: string; thread_ts?: string;
+  /** Set only on a post by the receiving app's own bot: that bot's user id.
+   *  A consumer streaming as this bot never prints its own posts, so it can
+   *  skip the Web API read the bell would cost. Nothing about any other
+   *  sender is kept. */
+  self?: string;
+};
 
 /** Slack rejects replays older than five minutes; so do we. */
 export const MAX_SKEW_SEC = 300;
@@ -83,12 +90,25 @@ const SKIP_SUBTYPES = new Set([
 
 const TS = /^\d{6,}\.\d{1,9}$/;
 const CHANNEL = /^[CDG][A-Z0-9]{2,}$/;
+const USER = /^[UW][A-Z0-9]{2,}$/;
+
+/** The receiving app's bot user id when this event is that bot's own post:
+ *  the sender is the authorized bot user, or the post carries this app's id. */
+function selfPost(p: { api_app_id?: unknown; authorizations?: unknown }, e: Record<string, unknown>): string | undefined {
+  const auth = Array.isArray(p.authorizations) ? p.authorizations[0] as Record<string, unknown> | undefined : undefined;
+  const botUser = auth && auth.is_bot === true && typeof auth.user_id === "string" && USER.test(auth.user_id) ? auth.user_id : undefined;
+  if (!botUser) return undefined;
+  if (e.user === botUser) return botUser;
+  const appId = typeof e.app_id === "string" ? e.app_id
+    : e.bot_profile && typeof e.bot_profile === "object" ? (e.bot_profile as Record<string, unknown>).app_id : undefined;
+  return typeof p.api_app_id === "string" && appId === p.api_app_id && e.user === undefined ? botUser : undefined;
+}
 
 /** The doorbell for one event_callback, or null when there is nothing to ring
  *  for. Only ids and timestamps survive this function. */
 export function doorbellOf(payload: unknown, teamId?: string): Doorbell | null {
   if (!payload || typeof payload !== "object") return null;
-  const p = payload as { type?: unknown; team_id?: unknown; event?: Record<string, unknown> };
+  const p = payload as { type?: unknown; team_id?: unknown; api_app_id?: unknown; authorizations?: unknown; event?: Record<string, unknown> };
   if (p.type !== "event_callback" || !p.event || typeof p.event !== "object") return null;
   if (teamId && p.team_id !== teamId) return null;
   const e = p.event;
@@ -98,7 +118,10 @@ export function doorbellOf(payload: unknown, teamId?: string): Doorbell | null {
   const { channel, ts, thread_ts } = e;
   if (typeof channel !== "string" || !CHANNEL.test(channel)) return null;
   if (typeof ts !== "string" || !TS.test(ts)) return null;
-  return typeof thread_ts === "string" && TS.test(thread_ts) && thread_ts !== ts
-    ? { channel, ts, thread_ts }
-    : { channel, ts };
+  const self = selfPost(p, e);
+  return {
+    channel, ts,
+    ...(typeof thread_ts === "string" && TS.test(thread_ts) && thread_ts !== ts ? { thread_ts } : {}),
+    ...(self ? { self } : {}),
+  };
 }

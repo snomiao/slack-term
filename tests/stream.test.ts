@@ -882,6 +882,69 @@ describe("runStream — relay", () => {
     expect(emitted().map((m) => [m.text, m.match])).toEqual([["done", "replies-to"]]);
   });
 
+  test("a bell the relay marks as our own post costs no read and prints nothing", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: SELF, bot_id: SELF_BOT, text: "@mybot echo" });
+        r.ring(1, { channel: "C00000001", ts: t, self: SELF });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted()).toEqual([]);
+    expect(s.calls.filter((c) => c.startsWith("replies"))).toEqual([]);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.relay?.seq).toBe(1); // resolved, not left pending
+  });
+
+  test("a self bell from ANOTHER bot is read as usual (only the streaming identity is skipped)", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    stepper({
+      1: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, user: "U00000077", text: "@mybot from the other app" });
+        r.ring(1, { channel: "C00000001", ts: t, self: "U00000077" });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac))).toBe(0);
+    expect(emitted().map((m) => m.text)).toEqual(["@mybot from the other app"]);
+  });
+
+  test("--replies-to: our own reply's bell records the thread without a read; the next reply there counts", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    const root = ts(-20 * 86400); // older than the window: only the bell knows we joined
+    s.post("C00000001", { ts: root, thread_ts: root, user: "U00000002", text: "old question" });
+    let mine = "";
+    stepper({
+      1: () => {
+        mine = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: mine, thread_ts: root, user: SELF, bot_id: SELF_BOT, text: "on it", parent_user_id: "U00000002" });
+        r.ring(1, { channel: "C00000001", ts: mine, thread_ts: root, self: SELF });
+      },
+      3: () => {
+        const t = (now / 1000).toFixed(6);
+        s.post("C00000001", { ts: t, thread_ts: root, user: "U00000002", text: "thanks", parent_user_id: "U00000002" });
+        r.ring(2, { channel: "C00000001", ts: t, thread_ts: root });
+      },
+      5: () => ac.abort(),
+    }, ac);
+    expect(await runStream(s, relayOpts(r, ac, { repliesTo: new Set([SELF, SELF_BOT]) }))).toBe(0);
+    expect(emitted().map((m) => [m.text, m.match])).toEqual([["thanks", "replies-to"]]);
+    // One read in all: the reply's own bell. Membership came from the self bell.
+    expect(s.calls.filter((c) => c.startsWith("replies"))).toHaveLength(1);
+    const st = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")) as StreamState;
+    expect(st.joined?.[`C00000001:${root}`]).toBe(Number(mine));
+  });
+
   test("--replies-to: a bell reaches a thread the bot replied in, even one older than the window", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

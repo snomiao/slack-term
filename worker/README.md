@@ -23,7 +23,11 @@ slack stream ◀──GET /stream (SSE, Bearer)─────┘
 ## Privacy
 
 - **No message content is stored or served:** no text, no sender, no attachments.
-  A bell holds a channel id and two timestamps.
+  A bell holds a channel id and two timestamps — plus, on posts by **this app's own
+  bot** only, `self`: that bot's user id. A client streaming as the bot never prints
+  its own posts, so it skips the Web API read such a bell would cost (and, for
+  `--replies-to`, learns from it that the bot is in the thread). No other sender
+  is ever recorded.
 - **Bells are deleted 1 hour after arrival** (`RETENTION_SEC`, enforced by a
   Durable Object alarm). That window exists only so a client can resume.
   Anything older is covered by the client's catch-up poll, except replies

@@ -160,6 +160,29 @@ describe("worker: doorbellOf keeps ids and timestamps only", () => {
       message: { ts: "1700000000.000100", thread_ts: "1700000000.000100" } }))).toBeNull();
     expect(doorbellOf(cb({ type: "message", hidden: true, channel: "C00000001", ts: "1700000000.000300" }))).toBeNull();
   });
+  test("the receiving app's own bot posts are marked `self` (its bot user id); nobody else's sender is kept", () => {
+    const own = (event: Record<string, unknown>): unknown => ({
+      type: "event_callback", team_id: "T00000001", api_app_id: "A00000001",
+      authorizations: [{ user_id: "U00000099", is_bot: true }], event,
+    });
+    expect(doorbellOf(own({ type: "message", channel: "C00000001", ts: "1700000000.000100", user: "U00000099", bot_id: "B00000099", text: "x" })))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000100", self: "U00000099" });
+    // No user on the post, but this app's id: still ours.
+    expect(doorbellOf(own({ type: "message", subtype: "bot_message", channel: "C00000001", ts: "1700000000.000200", bot_id: "B00000099", app_id: "A00000001", thread_ts: "1700000000.000100" })))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000200", thread_ts: "1700000000.000100", self: "U00000099" });
+    // A person posting through the same app (a user token) is not the bot.
+    expect(doorbellOf(own({ type: "message", channel: "C00000001", ts: "1700000000.000300", user: "U00000001", app_id: "A00000001" })))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000300" });
+    // Another person, another app's bot: no mark.
+    expect(doorbellOf(own({ type: "message", channel: "C00000001", ts: "1700000000.000400", user: "U00000002" })))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000400" });
+    expect(doorbellOf(own({ type: "message", channel: "C00000001", ts: "1700000000.000500", bot_id: "B00000077", app_id: "A00000077" })))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000500" });
+    // An authorization that is not a bot marks nothing.
+    expect(doorbellOf({ type: "event_callback", authorizations: [{ user_id: "U00000099", is_bot: false }],
+      event: { type: "message", channel: "C00000001", ts: "1700000000.000600", user: "U00000099" } }))
+      .toEqual({ channel: "C00000001", ts: "1700000000.000600" });
+  });
   test("thread_broadcast still rings (it is a reply shown in the channel)", () => {
     expect(doorbellOf(cb({ type: "message", subtype: "thread_broadcast", channel: "C00000001", ts: "1700000000.000200", thread_ts: "1700000000.000100" })))
       .toEqual({ channel: "C00000001", ts: "1700000000.000200", thread_ts: "1700000000.000100" });

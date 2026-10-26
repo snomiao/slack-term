@@ -832,6 +832,18 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       // Nothing from before this channel was being watched (first run, or
       // --since): a replayed bell must not reach behind that.
       if (num(bell.ts) < num(st.since)) return true;
+      // Our own post (the relay marks the app bot's): never printed, so not
+      // worth a read — but for --replies-to it still says we are in the thread.
+      if (bell.self && opts.selfUsers.has(bell.self)) {
+        if (opts.repliesTo?.has(bell.self) && bell.thread_ts) {
+          const joined = (state.joined ??= {});
+          const k = `${ch.id}:${bell.thread_ts}`;
+          joined[k] = Math.max(joined[k] ?? 0, num(bell.ts));
+          ctx.notJoined?.delete(k);
+          saveState(opts.statePath, state);
+        }
+        return true;
+      }
       return ringBell(ctx, ch, bell);
     };
     /** Resume point: every bell up to it is resolved. A bell still being

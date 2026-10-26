@@ -6,7 +6,7 @@
 //   slack stream ◀──GET /stream (SSE, bearer)─────┘
 //
 // Privacy: the relay stores and serves ids and timestamps only — never message
-// text, never sender ids. A client that hears a bell reads the message itself
+// text, never sender ids (beyond marking the app's own bot posts, `self`). A client that hears a bell reads the message itself
 // through the Web API with its own token, so a forged or replayed bell costs at
 // most one extra scan. Bells are deleted RETENTION_SEC after they arrive; that
 // window only exists so a reconnecting client can resume from its last seq.
@@ -106,6 +106,9 @@ export class Relay extends DurableObject<Env> {
       at INTEGER NOT NULL,
       UNIQUE (channel, ts)
     )`);
+    // Added later: a relay deployed before it gets the column on its next start.
+    const cols = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(bells)").toArray().map((c) => c.name);
+    if (!cols.includes("self")) ctx.storage.sql.exec("ALTER TABLE bells ADD COLUMN self TEXT");
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     ctx.storage.sql.exec("INSERT OR IGNORE INTO meta (k, v) VALUES ('epoch', ?)", crypto.randomUUID());
     this.epoch = ctx.storage.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'epoch'").one().v;
@@ -115,8 +118,8 @@ export class Relay extends DurableObject<Env> {
   async ring(bell: Doorbell): Promise<void> {
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec<{ seq: number }>(
-      "INSERT OR IGNORE INTO bells (channel, ts, thread_ts, at) VALUES (?, ?, ?, ?) RETURNING seq",
-      bell.channel, bell.ts, bell.thread_ts ?? null, now,
+      "INSERT OR IGNORE INTO bells (channel, ts, thread_ts, self, at) VALUES (?, ?, ?, ?, ?) RETURNING seq",
+      bell.channel, bell.ts, bell.thread_ts ?? null, bell.self ?? null, now,
     ).toArray();
     const seq = rows[0]?.seq;
     if (seq === undefined) return; // a retry of a bell we already have
@@ -183,11 +186,15 @@ export class Relay extends DurableObject<Env> {
     let chunk = hello;
     let cursor = from;
     for (;;) {
-      const rows = this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null }>(
-        "SELECT seq, channel, ts, thread_ts FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", cursor, REPLAY_BATCH,
+      const rows = this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null; self: string | null }>(
+        "SELECT seq, channel, ts, thread_ts, self FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", cursor, REPLAY_BATCH,
       ).toArray();
       for (const r of rows) {
-        chunk += frame(r.seq, r.thread_ts ? { channel: r.channel, ts: r.ts, thread_ts: r.thread_ts } : { channel: r.channel, ts: r.ts });
+        chunk += frame(r.seq, {
+          channel: r.channel, ts: r.ts,
+          ...(r.thread_ts ? { thread_ts: r.thread_ts } : {}),
+          ...(r.self ? { self: r.self } : {}),
+        });
         cursor = r.seq;
       }
       if (!rows.length) c.replaying = false;
