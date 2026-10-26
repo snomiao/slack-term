@@ -24,6 +24,9 @@ jobs:
       # once reached npm. This is the gate that catches it before a merge.
       - run: bun run scan-pii:all
       - run: bun run typecheck
+      # The relay (worker/) has its own tsconfig and types
+      # (@cloudflare/workers-types), so the root typecheck does not see it.
+      - run: bun run typecheck:worker
       - run: bun run build
       # The suite runs under bun's own test runner. Native, so the whole class
       # of vitest-under-bun failures this repo spent a month on (v8 coverage
