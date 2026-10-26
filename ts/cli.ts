@@ -5588,12 +5588,14 @@ async function main(): Promise<void> {
           if (t === "void") { console.error(`✗ ${stripTerminalControls(voidFlag[0]!)}: すでに無効化済みです — 新しく聞くなら普通に slack ask で`); process.exit(ASK_EXIT_ERROR); }
           if (!t) process.exit(ASK_EXIT_ERROR);
           voidAfter = { ...t, reason: unescapeArg(String(argv.reason ?? "")).trim() };
-          // Same place, same words, unless new ones were given.
+          // Same place, same words, unless new ones were given. The create path
+          // below unescapes its arguments, so stored text goes in escaped: a
+          // literal `\n` in the old question must not turn into a line break.
           argv.target = t.threadTs ? `${t.channelId}:${t.threadTs}` : t.channelId;
           argv["channel-id"] = t.channelId;
-          argv.question = newQuestion ?? t.parsed.question;
-          argv.choices = newChoices.length ? newChoices : [...t.parsed.reactable, ...t.parsed.overflow];
-          if (argv.body === undefined && t.parsed.body) argv.body = t.parsed.body;
+          argv.question = newQuestion ?? escapeArg(t.parsed.question);
+          argv.choices = newChoices.length ? newChoices : [...t.parsed.reactable, ...t.parsed.overflow].map(escapeArg);
+          if (argv.body === undefined && t.parsed.body) argv.body = escapeArg(t.parsed.body);
           if (!argv.lang) argv.lang = t.parsed.lang;
           argv.void = undefined;
         }
