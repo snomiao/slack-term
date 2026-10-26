@@ -50,6 +50,7 @@ import {
   authTestSession,
   conversationInfoSession,
   createChannel,
+  renameChannel,
   inviteToChannel,
   createDraft,
   deleteDraft,
@@ -904,6 +905,7 @@ const SCOPE_FOR_METHOD: Record<string, string> = {
   "slackLists.items.update": "lists:write",
   "slackLists.items.list": "lists:read",
   "slackLists.access.set": "lists:write",
+  "conversations.rename": "channels:manage (or groups:write for a private channel)",
   "conversations.replies": "channels:history (or groups:history)",
   "conversations.history": "channels:history (or groups:history)",
 };
@@ -4260,6 +4262,89 @@ async function main(): Promise<void> {
                 }
               }
             }
+          },
+        )
+        .command(
+          ["rename <channel> <new-name>", "mv <channel> <new-name>"],
+          "Rename a channel (confirm-hash safety gate)",
+          (y2) => y2
+            .positional("channel", { type: "string", demandOption: true, describe: "#name, name, or channel ID (C…/G…)" })
+            .positional("new-name", { type: "string", demandOption: true, describe: "New channel name (Slack lowercases it; no spaces)" })
+            .option("dry-run", { type: "boolean", default: false, describe: "Resolve the channel and print old -> new without renaming" })
+            .option("code", { type: "string", describe: "Safety hash to confirm rename" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            const cookie = ck(argv as W);
+            const ref = argv.channel!;
+            if (ref.startsWith("@")) {
+              console.error(`Error: ${ref} is a DM — only channels can be renamed.`);
+              process.exit(1);
+            }
+            // A bare word is a channel name unless it is shaped like an ID.
+            const channelRef = ref.startsWith("#") || /^[CG][A-Z0-9]{8,}$/.test(ref) ? ref : `#${ref}`;
+            const newName = argv.newName!.replace(/^#/, "").toLowerCase();
+            let channelId: string;
+            let oldName: string;
+            try {
+              channelId = await resolveChannel(token, channelRef, cookie);
+            } catch (e: unknown) {
+              console.error(`Error: could not resolve channel ${ref}: ${e instanceof Error ? e.message : String(e)}`);
+              process.exit(1);
+            }
+            try {
+              const ch = asRecord(asRecord((await conversationInfo(token, channelId, cookie)) as Json).channel);
+              if (ch.is_im === true || ch.is_mpim === true) {
+                console.error(`Error: ${channelId} is a DM — only channels can be renamed.`);
+                process.exit(1);
+              }
+              oldName = typeof ch.name === "string" ? ch.name : channelRef.replace(/^#/, "");
+            } catch (e: unknown) {
+              // conversations.info is only for the preview label — a token without
+              // channels:read can still rename. A channel that doesn't exist can't.
+              const raw = e instanceof Error ? e.message : String(e);
+              if (/channel_not_found/.test(raw)) {
+                console.error(`Error: could not resolve channel ${ref}: channel not found (or not visible to this token).`);
+                process.exit(1);
+              }
+              oldName = channelRef.replace(/^#/, "");
+            }
+            if (argv.dryRun === true) {
+              console.log(`#${oldName} -> #${newName}  (${channelId})`);
+              console.log(`(dry run — conversations.rename not called)`);
+              return;
+            }
+            // The renamer is the actor of record in the channel's history, so the
+            // gate names them and the code is bound to them.
+            const self = await selfIdentity(token, cookie);
+            const code = safetyCode("rename", channelId, newName, self?.userId ?? "");
+            if (argv.code !== code) requireCode(argv.code, code, [
+              `--- Renaming channel -------------------------`,
+              fromLine(self, { pad: 9 }),
+              `  channel: ${channelId}`,
+              `  from:    #${oldName}`,
+              `  to:      #${newName}`,
+              `--------------------------------────────────`,
+            ]);
+            let renamed: { id: string; name: string };
+            try {
+              renamed = await renameChannel(token, channelId, newName, cookie);
+            } catch (e: unknown) {
+              const raw = e instanceof Error ? e.message : String(e);
+              const errCode = raw.match(/Slack error on conversations\.rename: (\w+)/)?.[1];
+              const hint: Record<string, string> = {
+                name_taken: `Error: a channel named #${newName} already exists.`,
+                invalid_name: `Error: "${newName}" is not a valid channel name (lowercase letters, numbers, hyphens, underscores; max 80 chars).`,
+                invalid_name_specials: `Error: "${newName}" contains characters Slack doesn't allow in channel names.`,
+                invalid_name_maxlength: `Error: "${newName}" is too long (max 80 chars).`,
+                invalid_name_required: `Error: the new channel name can't be empty.`,
+                not_authorized: `Error: this token isn't allowed to rename #${oldName} (workspace settings may restrict renaming to admins or the channel creator).`,
+                not_in_channel: `Error: this token isn't a member of #${oldName} — join it first.`,
+                is_archived: `Error: #${oldName} is archived — unarchive it before renaming.`,
+              };
+              console.error((errCode && hint[errCode]) ?? friendlySlackError(e));
+              process.exit(1);
+            }
+            console.log(`✓ Renamed #${oldName} -> #${renamed.name}  (${renamed.id})`);
           },
         )
         .demandCommand(1, "")

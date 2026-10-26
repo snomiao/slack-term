@@ -91,7 +91,7 @@ slack search "deploy" --count 50
 slack send "#general" "Hello team"
 # Prints who you're acting as (From: @handle (Uxxxx) — Workspace) + a destination
 # preview + confirm code; rerun with --code=<code> to actually send. Every gated write
-# (send/edit/delete/upload/schedule/channel create/lists/drafts) shows that From: line and
+# (send/edit/delete/upload/schedule/channel create/rename/lists/drafts) shows that From: line and
 # binds it into the code, so a profile switch mid-flow invalidates it instead of acting
 # as the wrong account.
 slack send "#general" "Hello team" --code=<code>
