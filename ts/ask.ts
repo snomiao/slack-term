@@ -494,9 +494,16 @@ export function askExplainReject(text: string): string {
 export function askParseMessage(text: string): AskParsed {
   const lines = text.split("\n");
 
+  // Every ✅ / 🚫 body this command has ever written is `<marker> *question*`
+  // followed by a `_…_` stamp line. Requiring that shape — not just the leading
+  // emoji — is what keeps an ordinary "🚫 deploy frozen" or "✅ Deployed\n> v1.2"
+  // from reading as a question (`slack edit` refuses to break one).
+  const stamped = (prefix: string) =>
+    text.startsWith(`${prefix}*`) && lines.some((l, i) => i > 0 && l.length > 1 && l.startsWith("_") && l.endsWith("_"));
+
   // Void before anything else: a voided question is neither open nor answered,
   // and must never be polled as one.
-  if (text.startsWith(ASK_VOID_PREFIX)) {
+  if (stamped(ASK_VOID_PREFIX)) {
     const stampAt = lines.findIndex((l, i) => i > 0 && l.startsWith("_") && l.endsWith("_"));
     const question = askDecodeEntities(
       lines.slice(0, stampAt > 0 ? stampAt : 1).join("\n").slice(ASK_VOID_PREFIX.length).replace(/^\*/, "").replace(/\*$/, ""),
@@ -505,18 +512,17 @@ export function askParseMessage(text: string): AskParsed {
     const link = stampAt > 0 ? lines[stampAt + 1]?.match(/^↪ [^:：]*[:：] (.+)$/)?.[1] : undefined;
     return link ? { kind: "void", question, reason, supersededBy: link } : { kind: "void", question, reason };
   }
-  const legacyVoid = lines[0]!.match(ASK_LEGACY_VOID_RE);
-  if (legacyVoid) {
-    // The hand-voided body still carries the original `:question: *…*` after
-    // the prefix — keep that as the question rather than dropping it.
-    const q = text.match(/:question: \*([^\n]*?)\*/);
-    return { kind: "void", question: q ? askDecodeEntities(q[1]!) : "", reason: askDecodeEntities(lines[0]!) };
+  // A hand-voided body is 【…作废…】 in front of the original `:question: *…*` —
+  // without that question it is just a message that happens to say "void".
+  const legacyQ = lines[0]!.match(ASK_LEGACY_VOID_RE) ? text.match(/:question: \*([^\n]*?)\*/) : null;
+  if (legacyQ) {
+    return { kind: "void", question: askDecodeEntities(legacyQ[1]!), reason: askDecodeEntities(lines[0]!) };
   }
 
   // Resolved is checked FIRST: a settled question carries the ✅ prefix where an
   // open one carries the ❓ marker, and reading a resolved body as an open one
   // would re-poll a question that already has its answer.
-  if (text.startsWith(ASK_RESOLVED_PREFIX)) {
+  if (stamped(ASK_RESOLVED_PREFIX)) {
     // `&gt; `, not only `> `: Slack HTML-escapes `&`, `<` and `>` in the text it
     // hands back, so the quote we wrote as `> ` is STORED as `&gt; `. Matching
     // only the raw form made every collected question unreadable — re-running

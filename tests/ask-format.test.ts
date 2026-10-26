@@ -757,3 +757,25 @@ describe("an ask flattened onto one line can still be read well enough to void",
     expect(askSalvageUnreadable(":question: *これは質問ではない* ただのお知らせ")).toBeNull();
   });
 });
+
+// `slack edit` refuses to break an ask, so anything misread as one becomes
+// un-editable without --force. Ordinary messages that merely START with the
+// ✅ / 🚫 shortcodes, or say "void" in 【…】, are not questions.
+describe("ask does not mistake ordinary messages for answered/void questions", () => {
+  test.each([
+    ["🚫 without a bold question and stamp", ":no_entry_sign: deploy frozen until Monday"],
+    ["🚫 with bold but no stamp line", ":no_entry_sign: *deploy frozen*"],
+    ["✅ with a quote but no bold question", ":white_check_mark: Deployed\n> v1.2 is live"],
+    ["✅ bold without a stamp line", ":white_check_mark: *Deployed*\n\n> v1.2 is live"],
+    ["【void】 without the original question", "【void】 this build is discarded"],
+    ["【作废】 without the original question", "【作废】このビルドは破棄"],
+  ])("%s", (_label, text) => {
+    expect(askParseMessage(text).kind).toBe("other");
+  });
+
+  test("real void / answered bodies still parse", () => {
+    expect(askParseMessage(askBuildVoidText("q", "stale", "ja")).kind).toBe("void");
+    expect(askParseMessage(`【superseded】 :question: *q*\n本文`).kind).toBe("void");
+    expect(askParseMessage(":white_check_mark: *q*\n_リアクションで回答済み_\n\n> A").kind).toBe("resolved");
+  });
+});
