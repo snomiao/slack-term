@@ -97,14 +97,37 @@ describe("slack todos (CLI)", { timeout: 60_000 }, () => {
     expect(reqs.filter((q) => /^(saved\.(add|update|delete)|chat\.|reactions\.)/.test(q.method))).toEqual([]);
   });
 
-  test("--filter and -n are passed through and cap the output", async () => {
+  test("--filter is passed through and -n caps the output after sorting", async () => {
     const before = m.requests.length;
     const r = await run(["todos", "ls", "--filter", "completed", "-n", "1"], m.baseUrl);
     expect(r.exitCode).toBe(0);
-    expect(r.stdout.trim().split("\n")).toHaveLength(3);
+    const lines = r.stdout.trim().split("\n");
+    expect(lines).toHaveLength(3);
+    // The overdue item is third in the response but first by due date.
+    expect(lines[0]).toContain("OVERDUE");
     const saved = m.requests.slice(before).find((q) => q.method === "saved.list");
     const p = new URLSearchParams(saved!.body);
-    expect([p.get("filter"), p.get("limit")]).toEqual(["completed", "1"]);
+    expect([p.get("filter"), p.get("limit")]).toEqual(["completed", "50"]);
+  });
+
+  test("-n cuts only after every page is read and sorted", async () => {
+    // Page 1 holds a later to-do; the overdue one is on page 2.
+    const page = (ts: string, due: number, next: string) => ({
+      ok: true,
+      saved_items: [{ item_id: "C00000001", item_type: "message", ts, date_due: due, todo_state: "to_do", state: "in_progress" }],
+      response_metadata: { next_cursor: next },
+    });
+    const e = await startMock({ inline: { ...fixtures, "saved.list": { __sequence: [page("1700000002.000200", FUTURE, "p2"), page("1700000001.000100", PAST, "")] } } });
+    try {
+      const r = await run(["todos", "-n", "1", "--json"], e.baseUrl);
+      expect(r.exitCode, r.stderr).toBe(0);
+      const rows = r.stdout.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ ts: "1700000001.000100", due: PAST });
+      expect(e.requests.filter((q) => q.method === "saved.list")).toHaveLength(2);
+    } finally {
+      await e.stop();
+    }
   });
 
   test("--json emits one object per item with the message text", async () => {

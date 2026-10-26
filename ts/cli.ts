@@ -847,8 +847,13 @@ async function cmdDrafts(token: string, cookie?: string, showAll = false): Promi
 }
 
 // --- todos (Slack's To-dos tab) ---
-// Read-only. Pages through saved.list up to `limit` items, then shows each
-// to-do with its due date, where it lives, and the message it points at.
+// Read-only. Reads the whole view, sorts it by due date, then shows the first
+// `limit` with where each lives and the message it points at. saved.list does
+// not return items in due order, so cutting before sorting could hide an
+// overdue to-do behind a later one; the read is capped at TODOS_MAX_PAGES.
+const TODOS_PAGE = 50;
+const TODOS_MAX_PAGES = 20;
+
 async function cmdTodos(
   token: string,
   cookie: string | undefined,
@@ -856,12 +861,14 @@ async function cmdTodos(
 ): Promise<void> {
   const items: TodoItem[] = [];
   let cursor: string | undefined;
+  let pages = 0;
   do {
-    const resp = asRecord((await savedList(token, { filter: opts.filter, limit: Math.min(opts.limit, 100), cursor }, cookie)) as Json);
+    const resp = asRecord((await savedList(token, { filter: opts.filter, limit: TODOS_PAGE, cursor }, cookie)) as Json);
     items.push(...parseSavedItems(resp as Json));
     const next = asRecord(resp.response_metadata).next_cursor;
     cursor = typeof next === "string" && next ? next : undefined;
-  } while (cursor && items.length < opts.limit);
+  } while (cursor && ++pages < TODOS_MAX_PAGES);
+  if (cursor) console.error(`Note: read the first ${items.length} items only (${TODOS_MAX_PAGES} pages); the order covers those.`);
   const shown = sortTodos(items).slice(0, opts.limit);
 
   if (shown.length === 0) {
