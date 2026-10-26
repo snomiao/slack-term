@@ -139,6 +139,9 @@ ANS=$(slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 slack ask "#eng" "@alice この PR 出してよい?" "出す" "待つ"     # only alice's answer counts
 slack ask "#eng" "@here 誰か見れる?" "見る" "あとで"            # anyone in #eng; real broadcast
 # (In a 1:1 DM the other party counts automatically — no tag needed.)
+# A tag that resolves to no one (no match, ambiguous, or the user list could not be read)
+# refuses the ask rather than dropping that answerer. With --as-bot, @tags and an
+# @user destination resolve with the bot token (it needs users:read).
 #
 # With no choices the question asks for a free-text reply and the reply is the answer.
 # In a DM a plain reply counts; in a channel only reactions and thread replies do.

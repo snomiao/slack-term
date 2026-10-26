@@ -852,8 +852,9 @@ function userNotFoundError(ref: string, found: UserSearch): Error {
 
 /**
  * Resolve `@name` (or a raw U…/W… id) to a user ID. Used when DMing as a bot:
- * the lookup runs on a *user* token (which has users:read), then the caller
- * opens the DM with the bot token — so the bot never needs users:read.
+ * the caller then opens the DM with the bot token. `send` runs the lookup on the
+ * *user* token; `ask`/`poll --as-bot` run it on the bot token (the bot scopes
+ * include users:read), so a dead user token cannot break a bot question.
  */
 export async function resolveUserId(token: string, ref: string, cookie?: string): Promise<string> {
   // `@U0123456789` — an id wearing the `@` that every other user target takes.

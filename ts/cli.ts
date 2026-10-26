@@ -131,7 +131,7 @@ import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
 import { attachmentLines, parseAttachments } from "./attachments.ts";
 import { botIntentRefusal } from "./botIntent.ts";
-import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult } from "./format.ts";
+import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult, type UnresolvedMention } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 import { installSyncConsole } from "./stdout.ts";
 import { LockBusyError, PINLOG_MARKER, acquireLock, composeHead, formatJst, headUpdatedAt, isPinlogHead, parsePinlogId, pinlogId, stripPinlogFooter } from "./pinlog.ts";
@@ -2525,6 +2525,22 @@ const ASK_ANSWERABLE_SUBTYPES = new Set(["thread_broadcast"]);
 // ends it (`\b` is unreliable outside ASCII).
 const ASK_BROADCAST_RE = /(?<![A-Za-z0-9._@<-])@(here|channel|everyone)(?![A-Za-z0-9._-])/giu;
 
+/** `ask` cannot degrade an unresolved @tag to plain text the way `send` does:
+ *  the tags ARE who may answer, so a tag that named nobody would silently drop
+ *  an intended answerer (or, in a 1:1 DM, hand the decision to the counterpart
+ *  the caller meant to bypass). Refuse instead, before anything is posted. */
+function askRefuseUnresolved(unresolved: UnresolvedMention[]): void {
+  if (!unresolved.length) return;
+  const reasons = unresolved.map((u) => {
+    const tag = stripTerminalControls(u.surface);
+    if (u.reason === "unavailable") return `${tag}: could not fetch the user list or channel members (users:read missing or an API/connection error)`;
+    if (u.reason === "ambiguous") return `${tag}: matches multiple people — use an explicit <@USERID> tag`;
+    return `${tag}: matched no one`;
+  });
+  console.error(`Error: \`ask\` will not post with unresolved answerer tags.\n  ${reasons.join("\n  ")}`);
+  process.exit(ASK_EXIT_ERROR);
+}
+
 /** Rewrite `@here`/`@channel`/`@everyone` to the `<!here>` form Slack actually
  *  broadcasts on, and report which were used. Run BEFORE user-mention encoding
  *  so those tokens are never offered to the directory as if they were handles. */
@@ -3181,9 +3197,9 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   const body = bRep.text;
   const resolved = [...qRep.resolved, ...bRep.resolved];
   const unresolved = [...qRep.unresolved, ...bRep.unresolved];
-  // An unresolved tag is not just cosmetic here: it names nobody, so it grants
-  // nobody the right to answer. Say so before the rejection below.
-  for (const line of mentionWarnings(unresolved)) console.error(`⚠ ${stripTerminalControls(line)}`);
+  // An unresolved tag names nobody, so it grants nobody the right to answer —
+  // and posting anyway would silently drop someone the caller meant to ask.
+  askRefuseUnresolved(unresolved);
 
   const broadcast = broadcastKinds.size > 0;
   // Tagging yourself grants nothing — your own reactions are the seeds.
@@ -3211,9 +3227,6 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     if (!audience.size) {
       console.error(
         `Error: \`ask\` will not post a question nobody is addressed to — no one is tagged.\n` +
-        (unresolved.length
-          ? `  (${unresolved.map((u) => stripTerminalControls(u.surface)).join(", ")} matched no one, so it names nobody.)\n`
-          : "") +
         `  Tag the person who should answer:  slack ask '${args.target}' '@alice ${args.question}' ...\n` +
         `  Or open it to the whole channel:   slack ask '${args.target}' '@here ${args.question}' ...\n` +
         `  (In a 1:1 DM the other person counts automatically.)`,
@@ -3505,7 +3518,9 @@ async function cmdAskEdit(token: string, args: {
   const old = t.parsed;
   const encode = async (raw: string): Promise<string> => {
     const enc = askEncodeBroadcasts(unescapeArg(raw));
-    return (await encodeMentionsDetailed(args.mentionToken, enc.text, t.channelId, args.mentionCookie)).text;
+    const rep = await encodeMentionsDetailed(args.mentionToken, enc.text, t.channelId, args.mentionCookie);
+    askRefuseUnresolved(rep.unresolved);
+    return rep.text;
   };
   const question = args.question !== undefined ? await encode(args.question) : old.question;
   const body = args.body !== undefined ? await encode(args.body) : old.body;
@@ -5531,7 +5546,7 @@ async function main(): Promise<void> {
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
-        .option("as-bot", { type: "boolean", default: false, describe: "Ask via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient" }),
+        .option("as-bot", { type: "boolean", default: false, describe: "Ask via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient. @tags and an @user target then resolve with the bot token too (needs users:read)." }),
       async (argv) => {
         // Verbs. A target is always #chan / @user / a permalink / a raw ID, so a
         // bare word here cannot be one — `slack ask void …` is unambiguous.
@@ -5580,7 +5595,9 @@ async function main(): Promise<void> {
           }
           const { token, cookie } = askTokenFor(!!argv["as-bot"]);
           const a: Parameters<typeof cmdAskEdit>[1] = {
-            link: String(argv.edit), asBot: !!argv["as-bot"], mentionToken: tok(argv as W),
+            // Tags resolve as whoever posts the question — the bot under --as-bot,
+            // so a dead or absent user token cannot break a bot edit.
+            link: String(argv.edit), asBot: !!argv["as-bot"], mentionToken: token,
             allowUrlAdjacent: !!argv["allow-url-adjacent"],
           };
           if (newQuestion !== undefined) a.question = newQuestion;
@@ -5588,9 +5605,7 @@ async function main(): Promise<void> {
           if (argv.body !== undefined) a.body = String(argv.body);
           if (argv.lang) a.lang = String(argv.lang);
           if (argv.code) a.code = String(argv.code);
-          if (cookie) a.cookie = cookie;
-          const mc = ck(argv as W);
-          if (mc) a.mentionCookie = mc;
+          if (cookie) { a.cookie = cookie; a.mentionCookie = cookie; }
           try {
             await cmdAskEdit(token, a);
           } catch (e: unknown) {
@@ -5757,11 +5772,6 @@ async function main(): Promise<void> {
         if (voidAfter) args.voidAfter = voidAfter;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
-        // Always resolve @tags with the user token (it has users:read), even
-        // when the question itself is posted by the bot.
-        args.mentionToken = tok(argv as W);
-        const mc = ck(argv as W);
-        if (mc) args.mentionCookie = mc;
 
         let askToken: string;
         if (argv["as-bot"]) {
@@ -5773,11 +5783,12 @@ async function main(): Promise<void> {
             );
             process.exit(ASK_EXIT_ERROR);
           }
-          // Resolve @user with the *user* token (has users:read), then let cmdAsk
-          // open the DM with the bot token — same split as `send --as-bot`.
+          // Resolve the @user destination AND the answerer tags as the posting
+          // bot: the bot's directory is the one the question is read against, and
+          // a revoked user credential must not break an otherwise valid bot ask.
           if (!args.channelId && !args.userId && args.target.startsWith("@")) {
             try {
-              args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
+              args.userId = await resolveUserId(botToken, args.target);
             } catch (e: unknown) {
               console.error(
                 `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
@@ -5788,11 +5799,13 @@ async function main(): Promise<void> {
             }
           }
           askToken = botToken;
+          args.mentionToken = botToken;
           args.asBot = true;
         } else {
           askToken = tok(argv as W);
+          args.mentionToken = askToken;
           const sc = ck(argv as W);
-          if (sc) args.cookie = sc;
+          if (sc) { args.cookie = sc; args.mentionCookie = sc; }
         }
         try {
           await cmdAsk(askToken, args);
@@ -5822,7 +5835,7 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
-        .option("as-bot", { type: "boolean", default: false, describe: "Post via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient — and so YOUR OWN vote counts, since the seeds are then the bot's" }),
+        .option("as-bot", { type: "boolean", default: false, describe: "Post via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient — and so YOUR OWN vote counts, since the seeds are then the bot's. @tags and an @user target then resolve with the bot token too (needs users:read)." }),
       async (argv) => {
         const readLink = argv.close ? String(argv.close) : argv.results ? String(argv.results) : "";
         if (argv.results && argv.close) {
@@ -5892,18 +5905,14 @@ async function main(): Promise<void> {
         if (argv["allow-url-adjacent"]) args.allowUrlAdjacent = true;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
-        // Always resolve @tags with the user token (it has users:read), even
-        // when the poll itself is posted by the bot.
-        args.mentionToken = tok(argv as W);
-        const mc = ck(argv as W);
-        if (mc) args.mentionCookie = mc;
 
         let pollToken: string;
         if (argv["as-bot"]) {
           const botToken = botTokenOrExit();
+          // Resolve the @user destination and @tags as the posting bot, same as `ask --as-bot`.
           if (!args.channelId && !args.userId && args.target.startsWith("@")) {
             try {
-              args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
+              args.userId = await resolveUserId(botToken, args.target);
             } catch (e: unknown) {
               console.error(
                 `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
@@ -5914,11 +5923,13 @@ async function main(): Promise<void> {
             }
           }
           pollToken = botToken;
+          args.mentionToken = botToken;
           args.asBot = true;
         } else {
           pollToken = tok(argv as W);
+          args.mentionToken = pollToken;
           const sc = ck(argv as W);
-          if (sc) args.cookie = sc;
+          if (sc) { args.cookie = sc; args.mentionCookie = sc; }
         }
         try {
           await cmdPoll(pollToken, args);

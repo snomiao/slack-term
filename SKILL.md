@@ -160,6 +160,9 @@ without losing clicks. A reaction is durable state anyone can read back later.
   whole channel). Only their reaction/reply is taken as the answer; an unaddressed
   question is refused (exit 3) rather than let the first bystander decide it. In a 1:1 DM
   the other party counts automatically.
+  A tag that resolves to no one (no match / ambiguous / user list unreadable) refuses the
+  ask (exit 3) — use `<@USERID>` to be explicit. With `--as-bot`, tags and an `@user`
+  destination resolve with the bot token (so the bot needs `users:read`).
 - **Answer paths**: a pill, or free text. In a DM a plain reply counts; in a channel only
   reactions and thread replies do (a channel carries unrelated traffic).
 - **❓ is the standing "other" choice.** Every question with choices lists it last

@@ -165,7 +165,7 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
   });
 
   test("a tag that matches nobody grants nobody — still refused, and says why", async () => {
-    const m = await startMock({ inline: { ...AUTH } });
+    const m = await startMock({ inline: { ...AUTH, "conversations.members": { ok: true, members: [] } } });
     try {
       const r = await run(["ask", "#chan", "@nobody やっていい?", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(3);
@@ -258,6 +258,205 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
 // question given a permalink target into a thread reply — buried under an
 // unrelated message, where the people it was addressed to never saw it.
 // (Reported against a real workspace 2026-08-20.)
+// A tag that did not resolve is not a cosmetic miss in `ask` the way it is in
+// `send`: the tags ARE who may answer. Posting anyway would silently drop an
+// intended answerer — or, in a 1:1 DM, fall back to the counterpart the caller
+// was explicitly NOT addressing. So any unresolved tag refuses the ask.
+describe("ask fails closed on unresolved answerer tags (CLI)", { timeout: 60_000 }, () => {
+  for (const dm of [false, true]) {
+    for (const outcome of ["resolved", "unavailable", "no-match", "ambiguous", "changed"] as const) {
+      test(`${dm ? "--user-id DM" : "channel"}: ${outcome} at confirmation`, async () => {
+        const directory: { ok: boolean; error?: string; members: typeof AUTH["users.list__limit=200"]["members"] } = {
+          ok: true, members: [...AUTH["users.list__limit=200"].members],
+        };
+        const channel = dm ? DM : CHAN;
+        const m = await startMock({ inline: {
+          ...AUTH,
+          "users.list__limit=200": directory,
+          "conversations.members": { ok: true, members: [] },
+          "conversations.open": { ok: true, channel: { id: DM } },
+          [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB } },
+          "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob" } },
+        } });
+        try {
+          const base = ["ask", dm ? "@bob" : "#chan", "@bob may I proceed?",
+            ...(dm ? ["--user-id", BOB] : ["--channel-id", CHAN])];
+          const preview = await run(base, m.baseUrl);
+          expect(preview.stdout, preview.stderr).toContain(`Answerable by: @Bob (${BOB})`);
+          const code = extractCode(preview.stderr);
+          const before = m.requests.length;
+          if (outcome === "unavailable") {
+            directory.ok = false;
+            directory.error = "missing_scope";
+          } else if (outcome === "no-match") {
+            directory.members = [];
+          } else if (outcome === "ambiguous") {
+            directory.members = [{ id: BOB, name: "bob", real_name: "Bob" }, { id: ALICE, name: "bob", real_name: "Alice" }];
+          } else if (outcome === "changed") {
+            directory.members = [{ id: ALICE, name: "bob", real_name: "Alice" }];
+          }
+          const sent = await run([...base, `--code=${code}`], m.baseUrl);
+          const calls = m.requests.slice(before);
+          expect(calls.some((q) => q.method === "users.list")).toBe(true);
+          const posts = calls.filter((q) => q.method === "chat.postMessage");
+          if (outcome === "resolved") {
+            expect(sent.exitCode).toBe(0);
+            expect(posts).toHaveLength(1);
+            const body = JSON.parse(posts[0]!.body);
+            expect(body.channel).toBe(channel);
+            expect(body.text).toContain(`<@${BOB}>`);
+            expect(body.text).not.toContain(`<@${ALICE}>`);
+          } else {
+            // In the DM case this is the boundary with the untagged-DM rule: a tag
+            // that names nobody must NOT fall back to the counterpart.
+            expect(sent.exitCode).not.toBe(0);
+            expect(posts).toHaveLength(0);
+            expect(calls.some((q) => q.method === "reactions.add")).toBe(false);
+            if (outcome === "unavailable") expect(sent.stderr).toContain("could not fetch");
+            if (outcome === "no-match") expect(sent.stderr).toContain("matched no one");
+            if (outcome === "ambiguous") expect(sent.stderr).toContain("matches multiple people");
+            if (outcome !== "changed") expect(sent.stderr).not.toContain("sent as plain text");
+          }
+        } finally {
+          await m.stop();
+        }
+      });
+    }
+  }
+
+  test("partial resolution cannot silently omit an intended answerer", async () => {
+    const m = await startMock({ inline: { ...AUTH, "conversations.members": { ok: true, members: [] } } });
+    try {
+      const r = await run(["ask", "#chan", "@bob and @nobody may I proceed?", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("@nobody: matched no one");
+      expect(r.stderr).not.toContain("--code=");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an unresolved body addressee prevents an otherwise valid ask", async () => {
+    const m = await startMock({ inline: { ...AUTH, "conversations.members": { ok: true, members: [] } } });
+    try {
+      const r = await run(["ask", "#chan", "@bob may I proceed?", "--body", "@nobody please decide", "--channel-id", CHAN], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("@nobody: matched no one");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("plain send still warns and posts unresolved mentions", async () => {
+    const m = await startMock({ inline: {
+      ...AUTH,
+      "users.list__limit=200": { ok: false, error: "missing_scope" },
+      "conversations.members": { ok: true, members: [] },
+    } });
+    try {
+      const base = ["send", "#chan", "@bob hello", "--channel-id", CHAN];
+      const preview = await run(base, m.baseUrl);
+      const sent = await run([...base, `--code=${extractCode(preview.stderr)}`], m.baseUrl);
+      expect(sent.exitCode).toBe(0);
+      expect(sent.stderr).toContain("sent as plain text");
+      const posts = m.requests.filter((q) => q.method === "chat.postMessage");
+      expect(posts).toHaveLength(1);
+      expect(JSON.parse(posts[0]!.body).text).toContain("@bob hello");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+// Under --as-bot the question is posted — and read — as the bot, so its tags and
+// its `@user` destination resolve with the bot token. A dead user token (revoked,
+// missing scope) must not break an otherwise valid bot ask or poll.
+describe("ask/poll --as-bot resolve with the bot token (CLI)", { timeout: 60_000 }, () => {
+  const botFixtures = (): InlineFixtures => ({
+    ...AUTH,
+    "auth.test": { __byAuth: {
+      "Bearer xoxb-test": AUTH["auth.test"],
+      "*": { ok: false, error: "token_revoked" },
+    } },
+    "users.list__limit=200": { __byAuth: {
+      "Bearer xoxb-test": AUTH["users.list__limit=200"],
+      "*": { ok: false, error: "token_revoked" },
+    } },
+    "conversations.open": { ok: true, channel: { id: DM } },
+    [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB } },
+  });
+  // SLACK_TOKEN pins a (dead) USER identity explicitly; without it the bot token
+  // could double as the user token and the test would prove nothing.
+  const env = { SLACK_MCP_XOXP_TOKEN: "xoxp-revoked", SLACK_TOKEN: "xoxp-revoked",
+    SLACK_BOT_TOKEN: "xoxb-test", SLACK_COOKIE: "fake-user-cookie" };
+
+  for (const cmd of ["ask", "poll"] as const) {
+    for (const target of ["channel", "dm-id", "dm-name"] as const) {
+      test(`${cmd} --as-bot ${target}: dead user token, bot token resolves everything`, async () => {
+        const m = await startMock({ inline: botFixtures() });
+        try {
+          const base = [cmd, target === "channel" ? "#chan" : "@bob", "@bob may I proceed?",
+            ...(cmd === "poll" ? ["yes", "no"] : []), "--as-bot",
+            ...(target === "channel" ? ["--channel-id", CHAN] : target === "dm-id" ? ["--user-id", BOB] : [])];
+          const preview = await run(base, m.baseUrl, env);
+          if (cmd === "ask") expect(preview.stdout, preview.stderr).toContain(`Answerable by: @Bob (${BOB})`);
+          const sent = await run([...base, `--code=${extractCode(preview.stderr)}`], m.baseUrl, env);
+          expect(sent.exitCode, sent.stderr).toBe(0);
+          expect(m.requests.filter((q) => q.method === "users.list").length).toBeGreaterThanOrEqual(2);
+          for (const request of m.requests) {
+            expect(request.headers.authorization).toBe("Bearer xoxb-test");
+            expect(request.headers.cookie).toBeUndefined();
+          }
+          const posts = m.requests.filter((q) => q.method === "chat.postMessage");
+          expect(posts).toHaveLength(1);
+          const body = JSON.parse(posts[0]!.body);
+          expect(body.channel).toBe(target === "channel" ? CHAN : DM);
+          expect(body.text).toContain(`<@${BOB}>`);
+        } finally {
+          await m.stop();
+        }
+      });
+    }
+  }
+
+  test("bot DM refuses when the bot's own directory fails, even if the user's works", async () => {
+    const m = await startMock({ inline: {
+      ...AUTH,
+      "users.list__limit=200": { __byAuth: {
+        "Bearer xoxb-test": { ok: false, error: "missing_scope" },
+        "*": AUTH["users.list__limit=200"],
+      } },
+      "conversations.members": { ok: true, members: [] },
+      "conversations.open": { ok: true, channel: { id: DM } },
+      [`conversations.info__channel=${DM}`]: { ok: true, channel: { id: DM, is_im: true, user: BOB } },
+    } });
+    try {
+      const r = await run(["ask", "@bob", "@bob may I proceed?", "--as-bot", "--user-id", BOB], m.baseUrl,
+        { SLACK_BOT_TOKEN: "xoxb-test" });
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("@bob: could not fetch");
+      expect(r.stderr).not.toContain("--code=");
+      expect(m.requests.some((q) => q.method === "chat.postMessage")).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an untagged 1:1 bot DM still needs no tag — the counterpart answers", async () => {
+    const m = await startMock({ inline: botFixtures() });
+    try {
+      const r = await run(["ask", "@bob", "may I proceed?", "--as-bot", "--user-id", BOB], m.baseUrl, env);
+      expect(r.exitCode).toBe(1); // reached the gate, i.e. not refused
+      expect(r.stdout).toContain(BOB);
+      expect(r.stderr).not.toContain("no one is tagged");
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
 describe("ask(permalink) posts top-level, never a thread reply", () => {
   const LINK = `http://example.slack.com/archives/${CHAN}/p1700000000000100`;
 
@@ -1532,6 +1731,18 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
       } finally {
         await m.stop();
       }
+    }
+  });
+
+  test("--edit refuses a tag that resolves to no one", async () => {
+    const m = await startMock({ inline: { ...fx({ type: "message", user: SELF, text: OPEN }), "conversations.members": { ok: true, members: [] } } });
+    try {
+      const r = await run(["ask", `--edit=${LINK}`, "@nobody 出してよい?"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("@nobody: matched no one");
+      expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
+    } finally {
+      await m.stop();
     }
   });
 
