@@ -1,6 +1,7 @@
 // Slack Web API client (user token, Authorization: Bearer)
 import { resolveCookie } from "./profiles.ts";
 import { linkifyRichText } from "./urlGuard.ts";
+import { repairMessageText } from "./newlines.ts";
 
 export class RateLimitError extends Error {
   retryAfter: number;
@@ -248,7 +249,21 @@ export async function history(
   if (oldest !== undefined) params.oldest = oldest;
   if (cursor !== undefined) params.cursor = cursor;
   if (inclusive) params.inclusive = "true";
-  return get(token, "conversations.history", params, cookie);
+  return repairMessages(await get(token, "conversations.history", params, cookie));
+}
+
+/** Give every message in a history/replies/search response its line breaks
+ *  back when Slack stored its text flattened (see newlines.ts). Done here, at
+ *  the fetch, so `read`, `--format jsonl`, `ask`'s parser and every other
+ *  reader of `.text` agree on one text. */
+function repairMessages(resp: Json): Json {
+  const r = resp as { messages?: Json };
+  const msgs = Array.isArray(r.messages) ? r.messages
+    : r.messages && typeof r.messages === "object" && Array.isArray((r.messages as { matches?: Json }).matches)
+      ? (r.messages as { matches: Json[] }).matches
+      : [];
+  for (const m of msgs) repairMessageText(m);
+  return resp;
 }
 
 export async function replies(
@@ -258,7 +273,7 @@ export async function replies(
   limit = 50,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie);
+  return repairMessages(await get(token, "conversations.replies", { channel, ts, limit: String(limit) }, cookie));
 }
 
 // Metadata for a single uploaded file (files.info). Carries url_private_download,
@@ -368,13 +383,13 @@ export async function searchPage(
   page: number,
   cookie?: string,
 ): Promise<Json> {
-  return get(token, "search.messages", {
+  return repairMessages(await get(token, "search.messages", {
     query,
     sort: "timestamp",
     sort_dir: "desc",
     count: String(Math.min(Math.max(count, 1), 100)),
     page: String(Math.max(page, 1)),
-  }, cookie);
+  }, cookie));
 }
 
 export async function search(token: string, query: string, cookie?: string): Promise<Json> {
