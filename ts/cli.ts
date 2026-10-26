@@ -926,13 +926,29 @@ type TodoOp =
   | { kind: "edit"; due?: number; todo?: boolean }
   | { kind: "rm" };
 
-// The saved item for one message, from any of the four views (saved.delete
-// answers ok even when there is nothing to delete, so writes check first).
-async function findSavedItem(token: string, cookie: string | undefined, channel: string, ts: string): Promise<TodoItem | undefined> {
-  for (const filter of TODO_FILTERS) {
+// The saved item for one message (saved.delete answers ok even when there is
+// nothing to delete, so writes check first). Views are searched in the order
+// the op most likely needs, stopping at the first match, and the whole search
+// is capped at TODOS_MAX_PAGES pages so a long saved history can't turn one
+// command into a burst of saved.list calls. "unknown" = cap hit, not found.
+function findOrder(op: TodoOp): TodoFilter[] {
+  if (op.kind === "done") return op.undo ? ["completed", "todo", "saved", "archived"] : ["todo", "saved", "completed", "archived"];
+  return ["todo", "saved", "completed", "archived"];
+}
+
+async function findSavedItem(
+  token: string,
+  cookie: string | undefined,
+  channel: string,
+  ts: string,
+  order: TodoFilter[],
+): Promise<TodoItem | "unknown" | undefined> {
+  let pages = 0;
+  for (const filter of order) {
     let cursor: string | undefined;
     do {
-      const resp = asRecord((await savedList(token, { filter, limit: 50, cursor }, cookie)) as Json);
+      if (pages++ >= TODOS_MAX_PAGES) return "unknown";
+      const resp = asRecord((await savedList(token, { filter, limit: TODOS_PAGE, cursor }, cookie)) as Json);
       const hit = parseSavedItems(resp as Json).find((t) => t.channel === channel && t.ts === ts);
       if (hit) return hit;
       const next = asRecord(resp.response_metadata).next_cursor;
@@ -967,7 +983,12 @@ async function cmdTodosWrite(token: string, cookie: string | undefined, target: 
     process.exit(2);
   }
   const channel = await resolveChannel(token, ref, cookie);
-  const existing = await findSavedItem(token, cookie, channel, ts);
+  const found = await findSavedItem(token, cookie, channel, ts, findOrder(op));
+  if (found === "unknown" && op.kind !== "add") {
+    console.error(`Error: not found in the first ${TODOS_MAX_PAGES * TODOS_PAGE} saved items — stopped there to stay under Slack's rate limits. Nothing was changed.`);
+    process.exit(1);
+  }
+  const existing = found === "unknown" ? undefined : found;
   if (op.kind === "add" && existing) {
     console.error(`Error: that message is already in your To-dos (${isDone(existing) ? "done" : existing.todoState || "saved"}) — use \`slack todos edit\` or \`done\`.`);
     process.exit(1);
@@ -1000,6 +1021,7 @@ async function cmdTodosWrite(token: string, cookie: string | undefined, target: 
       `  Msg:    ${stripTerminalControls(author + head)}`,
       ...(teamUrl ? [`  Link:   ${messagePermalink(teamUrl, channel, ts)}`] : []),
       ...(existing ? [`  Now:    ${todoStatus(existing, now, formatYmdHm)}`] : []),
+      ...(found === "unknown" ? [`  Note:   not checked beyond the first ${TODOS_MAX_PAGES * TODOS_PAGE} saved items — it may already be saved`] : []),
       ...todoOpLines(op, fmtPostAt),
       "----------------------------------------------",
     ]);

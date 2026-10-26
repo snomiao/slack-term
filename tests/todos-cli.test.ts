@@ -273,6 +273,24 @@ describe("slack todos add / done / edit / rm (CLI)", { timeout: 60_000 }, () => 
     expect(m.requests.slice(before).filter((q) => WRITE.test(q.method))).toEqual([]);
   });
 
+  test("the lookup stops at 20 saved.list pages instead of walking an endless history", async () => {
+    const endless = { ok: true, saved_items: [{ item_id: "C00000009", item_type: "message", ts: "1600000000.000100", todo_state: "to_do" }], response_metadata: { next_cursor: "more" } };
+    const e = await startMock({ inline: { ...fixtures, "saved.list": { __sequence: [endless] } } });
+    try {
+      const r = await run(["todos", "done", SAVED], e.baseUrl);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("not found in the first 1000 saved items");
+      expect(e.requests.filter((q) => q.method === "saved.list")).toHaveLength(20);
+      expect(e.requests.filter((q) => WRITE.test(q.method))).toEqual([]);
+      // add still previews, with a note that it could not rule out a duplicate.
+      const a = await run(["todos", "add", FRESH], e.baseUrl);
+      expect(a.exitCode).toBe(1);
+      expect(a.stdout).toContain("not checked beyond the first 1000 saved items");
+    } finally {
+      await e.stop();
+    }
+  });
+
   test("a target without a message ts is rejected", async () => {
     const r = await run(["todos", "add", "#channel-01"], m.baseUrl);
     expect(r.exitCode).toBe(2);
