@@ -125,6 +125,11 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 # one tap on an existing pill, no emoji picker. Same two-step confirm gate as send.
 # A ❓ "その他 (other)" pill always follows the choices: pressing it means "none of
 # these" and the answer comes as a reply (exit 5), not as the ❓ itself.
+# --explain (or SLACK_TERM_ASK_EXPLAIN=1) adds an ℹ️ "説明して (explain)" pill after ❓:
+# pressing it asks YOU to explain in the thread and is never an answer — the question
+# stays open. --wait/--waitFor say so on stderr and may post ONE thread note (once per
+# question) saying an explanation is coming; --explain-exit makes that exit 7.
+# --pending only reports a ℹ️ press — it posts nothing.
 # The instructions are posted in ja or en: --lang / SLACK_TERM_LANG, else the
 # answerers' Slack locale, else the question's own language, else $LANG, else ja.
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"

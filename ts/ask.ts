@@ -41,6 +41,15 @@ export type AskFound = { answer: string; how: string; who?: string; ts?: string;
 export const ASK_MARKER = "question";
 export const ASK_MARKER_PREFIX = `:${ASK_MARKER}: `;
 
+/** The "explain" pill (`--explain`): pressing it asks the asker to explain the
+ *  question, and is NEVER an answer. Reported 2026-10-14: an "explain" offered
+ *  as a numbered choice was collected as the decision and closed the question.
+ *  Not ❓: ❓ means "none of these fit — my answer follows as a reply", and that
+ *  reply resolves the question; ℹ️ means "I cannot answer yet", and the question
+ *  stays open for a real answer after the explanation. */
+export const ASK_EXPLAIN_MARKER = "information_source";
+export const ASK_EXPLAIN_PREFIX = `:${ASK_EXPLAIN_MARKER}: `;
+
 // The copy a reader sees, per language. Japanese is the default and its
 // strings are a WIRE FORMAT: questions already in flight were posted with them
 // and are recognised by them, so they must never be reworded. Adding a language
@@ -118,6 +127,14 @@ interface AskCopy {
   overflowNote: string;
   otherThread: string;
   otherHere: string;
+  /** The free-text parser matches this exactly (`askIsExplainCopy`), so it is
+   *  a wire format too: questions in flight carry it. */
+  explainLine: string;
+  /** WIRE FORMAT — never reword. `--wait`/`--waitFor` find a question's
+   *  thread note by this exact copy (`askIsExplainNote`), so a reworded note
+   *  is not found by later runs, which would post a second one, and the old
+   *  note would stop being excluded from answers and notes. */
+  explainNote: string;
   invalidPrefix: string;
   answeredVia: (how: string, who: string) => string;
   howReaction: (glyph: string) => string;
@@ -149,6 +166,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
     overflowNote: "_11 番目以降はリアクションがないので、返信で答えてください。_",
     otherThread: `${ASK_MARKER_PREFIX}その他 — スレッドで返信してください`,
     otherHere: `${ASK_MARKER_PREFIX}その他 — このメッセージに返信してください`,
+    explainLine: `${ASK_EXPLAIN_PREFIX}説明して — 押すと質問者に説明を頼みます (回答にはなりません)`,
+    explainNote: `${ASK_EXPLAIN_PREFIX}説明のリクエストを受け付けました — このスレッドで説明します。質問はまだ開いているので、回答はそのあとで大丈夫です。`,
     invalidPrefix: "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ",
     answeredVia: (how, who) => `_${how}で回答済み${who ? ` (${who})` : ""}_`,
     howReaction: (glyph) => `リアクション ${glyph}`,
@@ -168,6 +187,8 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
     overflowNote: "_Choices 11 and up have no reaction — answer them with a reply._",
     otherThread: `${ASK_MARKER_PREFIX}Other — reply in the thread`,
     otherHere: `${ASK_MARKER_PREFIX}Other — reply to this message`,
+    explainLine: `${ASK_EXPLAIN_PREFIX}Explain — press to ask the asker for more detail (not an answer)`,
+    explainNote: `${ASK_EXPLAIN_PREFIX}Explanation requested — it will follow in this thread. The question stays open; answer it after that.`,
     invalidPrefix: "_:warning: Several choices are selected, so this is not counted as an answer — keep only one: ",
     answeredVia: (how, who) => `_Answered by ${how}${who ? ` (${who})` : ""}_`,
     howReaction: (glyph) => `reaction ${glyph}`,
@@ -183,6 +204,22 @@ export const ASK_COPY: Record<AskLang, AskCopy> = {
  *  verbatim, so the copy stays free to change. */
 function askIsOtherLine(line: string | undefined): boolean {
   return line !== undefined && (line.startsWith(ASK_MARKER_PREFIX) || line.startsWith("❓ "));
+}
+
+/** True for the explain line, in either spelling. Matched by prefix, like the
+ *  other line — used where position alone identifies it (under ❓). */
+function askIsExplainLine(line: string | undefined): boolean {
+  return line !== undefined && (line.startsWith(ASK_EXPLAIN_PREFIX) || line.startsWith("ℹ️ "));
+}
+
+/** True only for this language's explain line AS WRITTEN (either spelling of
+ *  the marker). For a free-text question, where nothing but position separates
+ *  the explain line from the body above it: a body whose own last line starts
+ *  with ℹ️ must not be read as the pill, so the copy has to match exactly. */
+function askIsExplainCopy(line: string | undefined, c: AskCopy): boolean {
+  if (line === undefined) return false;
+  const norm = line.startsWith("ℹ️ ") ? ASK_EXPLAIN_PREFIX + line.slice("ℹ️ ".length) : line;
+  return norm === c.explainLine;
 }
 
 // The invalid-ballot notice, shared by `ask` and `poll` and written INTO the
@@ -226,6 +263,14 @@ export function applyInvalidNotice(text: string, invalid: string[], lang: AskLan
   }
   const out = lines.join("\n");
   return out === text ? text : out;
+}
+
+/** True for the thread note `--wait`/`--waitFor` posts when ℹ️ is pressed, in
+ *  either language. Our own bookkeeping: never an answer, never a note — even
+ *  when the identity that posted it is in the audience (an @here question
+ *  collected with another token). */
+export function askIsExplainNote(text: unknown): boolean {
+  return typeof text === "string" && ASK_LANGS.some((l) => ASK_COPY[l].explainNote === text.trim());
 }
 
 /** True if this line is the notice — parsers skip it when walking up. */
@@ -293,7 +338,7 @@ export function askFlatten(s: string): string {
 /** Question body: the prompt, the numbered choices matching the seeded pills,
  *  and an instruction naming the answer paths this command actually reads.
  *  `askParseMessage` is its inverse — keep the two in step. */
-export function askBuildText(question: string, body: string, reactable: string[], overflow: string[], threadOnly: boolean, lang: AskLang = "ja"): string {
+export function askBuildText(question: string, body: string, reactable: string[], overflow: string[], threadOnly: boolean, lang: AskLang = "ja", explain = false): string {
   const c = ASK_COPY[lang];
   const lines: string[] = [`${ASK_MARKER_PREFIX}*${question}*`];
   if (body) lines.push("", body);
@@ -309,6 +354,8 @@ export function askBuildText(question: string, body: string, reactable: string[]
     lines.push(...reactable.map((s, i) => `${askPill(i)} ${askFlatten(s)}`));
     // Directly under the pills, matching the ❓ seeded right after them.
     lines.push(threadOnly ? c.otherThread : c.otherHere);
+    // Under ❓, matching the ℹ️ seeded right after it.
+    if (explain) lines.push(c.explainLine);
     if (overflow.length) {
       lines.push("");
       lines.push(...overflow.map((s, i) => `(${i + 11}) ${askFlatten(s)}`));
@@ -321,6 +368,7 @@ export function askBuildText(question: string, body: string, reactable: string[]
     lines.push(threadOnly ? c.instructionReactionThread : c.instructionReactionHere);
   } else {
     lines.push("");
+    if (explain) lines.push(c.explainLine, "");
     lines.push(threadOnly ? c.instructionTextThread : c.instructionTextHere);
   }
   return lines.join("\n");
@@ -405,7 +453,7 @@ export function askSalvageUnreadable(text: string): { question: string; body: st
     for (const instr of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere]) {
       if (body.includes(instr)) wasAsk = true;
     }
-    for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere]) {
+    for (const fixed of [c.instructionReactionThread, c.instructionReactionHere, c.instructionTextThread, c.instructionTextHere, c.overflowNote, c.otherThread, c.otherHere, c.explainLine]) {
       body = body.split(fixed).join(" ");
     }
     const at = body.indexOf(c.invalidPrefix);
@@ -454,7 +502,8 @@ function askDecodeEntities(s: string): string {
 }
 
 export type AskParsed =
-  | { kind: "open"; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang }
+  /** `explain`: the body offers the ℹ️ explain pill (`--explain`). */
+  | { kind: "open"; question: string; body: string; reactable: string[]; overflow: string[]; threadOnly: boolean; lang: AskLang; explain: boolean }
   | { kind: "resolved"; question: string; answer: string }
   /** Voided (無効化). `reason` is the stamp line as written; `supersededBy` the
    *  replacement's link when one was given. */
@@ -594,6 +643,7 @@ export function askParseMessage(text: string): AskParsed {
   // there is the body — kept by the ✅ rewrite.
   let bodyEnd = lines.length - 1;
   if (isInvalidNotice(lines[bodyEnd - 1])) bodyEnd--;
+  let explain = false;
   if (hasChoices) {
     // Walk UP from the instruction line rather than down from the question. The
     // choice block is anchored to the bottom of the body, and scanning downward
@@ -609,6 +659,7 @@ export function askParseMessage(text: string): AskParsed {
       if (lines[i] !== "") return { kind: "other" };
       i--;
     }
+    if (askIsExplainLine(lines[i])) { explain = true; i--; }
     if (askIsOtherLine(lines[i])) i--;
     const raw: string[] = [];
     while (i >= 0) {
@@ -634,10 +685,16 @@ export function askParseMessage(text: string): AskParsed {
     for (let n = 0; n < overflow.length; n++) {
       if (!lines.includes(`(${n + 11}) ${overflow[n]}`)) return { kind: "other" };
     }
+  } else if (lines[bodyEnd - 1] === "" && askIsExplainCopy(lines[bodyEnd - 2], c) && lines[bodyEnd - 3] === "" && bodyEnd - 3 >= end) {
+    // A free-text question's explain line: blank, the line, blank, instruction
+    // — and the line is our copy verbatim. A body that merely ENDS on a line
+    // starting with ℹ️ (a question built without --explain) stays body.
+    explain = true;
+    bodyEnd -= 2;
   }
 
   const body = lines.slice(end + 1, bodyEnd).join("\n").replace(/^\n+|\n+$/g, "");
-  return { kind: "open", question, body, reactable, overflow, threadOnly, lang };
+  return { kind: "open", question, body, reactable, overflow, threadOnly, lang, explain };
 }
 
 /** Did a free-text reply actually PICK one of the offered choices?

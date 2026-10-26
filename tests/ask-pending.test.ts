@@ -221,6 +221,21 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     expect(r.stdout).toContain(`collect: slack ask --waitFor='${LINK}' --after=${REPLY_TS}`);
   });
 
+  test("an ℹ️ press on an --explain question is reported, and NO thread note is posted (read-only)", async () => {
+    await askLogged();
+    const fx = slackHas({
+      text: askBuildText(`<@${BOB}> ok?`, "", ["yes", "no"], [], true, "ja", true),
+      reactions: [{ name: "one", users: [SELF] }, { name: "two", users: [SELF] }, { name: "question", users: [SELF] }, { name: "information_source", users: [SELF, BOB] }],
+    });
+    fx[`users.info__user=${BOB}`] = { ok: true, user: { id: BOB, name: "bob", is_bot: false, profile: { display_name: "bob" } } };
+    const r = await pending(fx);
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toContain(`ℹ️ 説明を求められています (<@${BOB}>)`);
+    expect(r.stderr).toContain("1 件が未回答, 1 件は ℹ️ 説明のリクエストあり");
+    // The note is the waiting session's to post — --pending writes nothing.
+    expect(r.writes).toEqual([]);
+  });
+
   test("there is no --deliver: answers are collected with --waitFor, never relayed via another tool", async () => {
     await askLogged();
     const r = await pending(slackHas(PRESSED_NO), ["--deliver"]);

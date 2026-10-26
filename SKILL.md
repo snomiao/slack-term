@@ -178,6 +178,16 @@ without losing clicks. A reaction is durable state anyone can read back later.
   (`1️⃣ … 2️⃣ … 3️⃣ … ❓ その他 — スレッドで返信`) and seeds it after the keycaps. Pressing it
   is not an answer — `--wait` notes it on stderr and keeps waiting for the reply, which
   arrives as free text (exit `5`).
+- **ℹ️ is the "explain first" pill** — offered with `--explain` (or
+  `SLACK_TERM_ASK_EXPLAIN=1`; `--no-explain` overrides), listed under ❓ and seeded after
+  it. ❓ means "none fit, my answer follows"; ℹ️ means "I can't answer yet — explain".
+  It **never answers or closes** the question: no ✅, the pills stay. `--wait`/`--waitFor`
+  print who pressed it on stderr (`--json`: `explain: [user ids]`) and may post ONE thread
+  note per question saying an explanation is coming (the thread is the record — re-presses
+  and re-runs post nothing more). Then explain in the thread and keep collecting.
+  `--explain-exit` stops with exit `7` (stdout empty; `--json` `status: "explain"`) on the
+  run that posts that note, so a `--timeout 0` poller hears about it once. Only the
+  question's audience counts; bots and the asker are ignored.
 - **The instructions are posted in `ja` or `en`.** `--lang` (or `SLACK_TERM_LANG`) decides;
   otherwise the answerers' Slack locale when they all share one, else the language the
   question is written in, else the system locale, else `ja`. The confirm gate prints the
@@ -187,7 +197,7 @@ without losing clicks. A reaction is durable state anyone can read back later.
 - **Exit codes** are the contract: `0` answered (the answer alone on stdout), `2` nobody
   replied, `3` transport/config failure, `4` a reply matched several choices (stdout
   empty), `6` the question was **voided** (stop waiting), `5` a **free-text reply** that picked none of the offered choices — the reply
-  text is on stdout. Everything human-facing goes to stderr, so
+  text is on stdout. `7` (only with `--explain-exit`) — ℹ️ pressed, explain and collect again. Everything human-facing goes to stderr, so
   `ANS=$(slack ask … --wait)` is safe.
 - **A reply that chooses nothing is delivered, but is not a decision.** When choices were
   offered, only a reaction, the choice text, or its number is a decision (`0`). A reply
@@ -254,7 +264,8 @@ an answer can be pressed and nobody ever hears about it.
 collected, and lists the ones somebody answered — grouped by the asking session, with
 the agent pid and whether it is still alive (pid running, started before the ask, same
 CLI), and per item the exact `collect:` line to run (cursor included). It is read-only —
-nothing is posted, edited, stamped or relayed. Collecting is that `slack ask --waitFor=…`
+nothing is posted, edited, stamped or relayed (an ℹ️ explain request is reported on
+stderr, but its thread note is left to `--wait`/`--waitFor`). Collecting is that `slack ask --waitFor=…`
 line: an answer it hands over (exit 0) takes the ask off the list; a free-text reply it
 hands over (exit 5) is not reported again, but a pill pressed after it is.
 
