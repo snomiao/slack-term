@@ -1395,7 +1395,7 @@ describe("slack edit refuses an edit that BREAKS an ask / poll (CLI)", { timeout
   // must pass with no new flag — older builds on other hosts run the same script.
   for (const [name, resolved] of [
     ["the ask-devteam ✅ rewrite", `:white_check_mark: *<@${BOB}> 出してよい?*\n_リアクション 2️⃣で回答済み (bob)_\n\n> B`],
-    ["the ask-devteam split-vote close", `:white_check_mark: *<@${BOB}> 出してよい?*\n_両者の回答が分かれたため taku の決定で回答済み (ask-taku: x)_\n\n> A`],
+    ["the ask-devteam split-vote close", `:white_check_mark: *<@${BOB}> 出してよい?*\n_両者の回答が分かれたため alice の決定で回答済み (ask-alice: x)_\n\n> A`],
   ] as const) {
     test(`${name} passes without --force, with the ordinary gate`, async () => {
       const m = await startMock({ inline: fx(OPEN) });
@@ -1452,7 +1452,7 @@ describe("slack edit refuses an edit that BREAKS an ask / poll (CLI)", { timeout
   });
 });
 
-// The rest of the lifecycle (design agreed with taku 2026-10-05): change a
+// The rest of the lifecycle (design agreed with the maintainer 2026-10-05): change a
 // question through the builder, re-ask one whose options must change after a
 // vote, and list what I asked with its live state.
 describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {

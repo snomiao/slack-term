@@ -5506,7 +5506,7 @@ async function main(): Promise<void> {
         // bare word here cannot be one — `slack ask void …` is unambiguous.
         //   slack ask void <link…> [--reason …] [--superseded-by <link>]   作废
         //   slack ask collect <link>                                        = --waitFor
-        // Lifecycle flags (taku: "maybe slack ask --edit=<target>"), primary;
+        // Lifecycle flags (maintainer: "maybe slack ask --edit=<target>"), primary;
         // the bare verbs `void` / `collect` stay as aliases.
         if (argv.ls) {
           const user = (() => { try { return tok(argv as W); } catch { return undefined; } })();
