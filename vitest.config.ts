@@ -107,6 +107,7 @@ export default defineConfig({
         "ts/profiles.ts",
         "ts/quietHours.ts",
         "ts/reactionSeed.ts",
+        "ts/relay.ts",
         "ts/rtm.ts",
         "ts/slack.ts",
         "ts/slackTodos.ts",
