@@ -52,6 +52,11 @@ slack news --limit 5
 # Recent messages across joined channels
 slack msgs
 
+# Every new message matching a regex, across all channels + threads (long-running;
+# resumable cursor; as the bot when SLACK_BOT_TOKEN is set). Exit 0 match / 2 none / 3 failure.
+slack stream --grep '<@U00000001>|@mybot' --json
+slack stream --grep 'deploy' -i --once
+
 # Full-text search
 slack search "deploy"
 slack search "deploy" --count 50

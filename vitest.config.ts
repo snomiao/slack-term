@@ -110,6 +110,7 @@ export default defineConfig({
         "ts/rtm.ts",
         "ts/slack.ts",
         "ts/slackTodos.ts",
+        "ts/stream.ts",
         "ts/tail.ts",
         "ts/todo.ts",
         "ts/urlGuard.ts",
