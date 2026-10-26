@@ -115,13 +115,13 @@ async function callSession(token: string, method: string, init: RequestInit, coo
     if (err === "ratelimited") throw new RateLimitError(60, method);
     if ((err === "invalid_auth" || err === "not_authed") && !token.startsWith("xoxc-")) {
       throw new Error(
-        `The draft API requires a desktop app session token (xoxc-).\n` +
+        `${method} requires a desktop app session token (xoxc-).\n` +
         `Import from Slack desktop:  slack auth login`,
       );
     }
     if ((err === "invalid_auth" || err === "not_authed") && !cookie) {
       throw new Error(
-        `drafts.list also requires the xoxd session cookie.\n` +
+        `${method} also requires the xoxd session cookie.\n` +
         `Attach it with:  slack auth firefox   (Linux/macOS/Windows)   or   slack auth chrome   (macOS/Linux)`,
       );
     }

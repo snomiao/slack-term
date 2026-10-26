@@ -865,7 +865,8 @@ async function cmdTodos(
   const shown = sortTodos(items).slice(0, opts.limit);
 
   if (shown.length === 0) {
-    console.log(`No ${opts.filter === "todo" ? "to-dos" : `${opts.filter} items`}.`);
+    // --json is JSONL on stdout: an empty list is no lines, the note goes to stderr.
+    (opts.json ? console.error : console.log)(`No ${opts.filter === "todo" ? "to-dos" : `${opts.filter} items`}.`);
     return;
   }
 

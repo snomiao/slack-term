@@ -128,6 +128,11 @@ describe("slack todos (CLI)", { timeout: 60_000 }, () => {
       expect(r.stdout.trim()).toBe("No archived items.");
       const t = await run(["todos"], e.baseUrl);
       expect(t.stdout.trim()).toBe("No to-dos.");
+      // --json stays JSONL: no rows means no stdout at all.
+      const j = await run(["todos", "--json"], e.baseUrl);
+      expect(j.exitCode).toBe(0);
+      expect(j.stdout.trim()).toBe("");
+      expect(j.stderr).toContain("No to-dos.");
     } finally {
       await e.stop();
     }
