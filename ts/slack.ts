@@ -1119,6 +1119,38 @@ export async function savedList(
   return postSession(token, "saved.list", params, cookie);
 }
 
+// To-dos writes (internal, session token). Verified live 2026-10-26: add with
+// todo_state=to_do (+ date_due) creates a to-do; update mark=completed checks it
+// off (todo_state becomes "completed"); delete removes it. A To-do always
+// points at a message: item_type=message, item_id=channel, ts=message ts.
+export type SavedRef = { channel: string; ts: string };
+const savedIds = (r: SavedRef) => ({ item_type: "message", item_id: r.channel, ts: r.ts });
+
+export async function savedAdd(token: string, ref: SavedRef, opts: { todo?: boolean; due?: number } = {}, cookie?: string): Promise<Json> {
+  const params: Record<string, string> = { ...savedIds(ref), todo_state: opts.todo === false ? "saved" : "to_do" };
+  if (opts.due) params.date_due = String(opts.due);
+  return postSession(token, "saved.add", params, cookie);
+}
+
+/** `mark`: completed | uncompleted | archived | unarchived. `due`: epoch seconds, 0 clears it. */
+export async function savedUpdate(
+  token: string,
+  ref: SavedRef,
+  opts: { mark?: "completed" | "uncompleted" | "archived" | "unarchived"; todo?: boolean; due?: number },
+  cookie?: string,
+): Promise<Json> {
+  const params: Record<string, string> = savedIds(ref);
+  if (opts.mark) params.mark = opts.mark;
+  if (opts.todo !== undefined) params.todo_state = opts.todo ? "to_do" : "saved";
+  if (opts.due !== undefined) params.date_due = String(opts.due);
+  return postSession(token, "saved.update", params, cookie);
+}
+
+/** Slack answers ok even when nothing was saved — callers check first. */
+export async function savedDelete(token: string, ref: SavedRef, cookie?: string): Promise<Json> {
+  return postSession(token, "saved.delete", savedIds(ref), cookie);
+}
+
 // Draft API (internal — requires xoxc session token + xoxd cookie)
 export async function listDrafts(token: string, cookie?: string): Promise<Json> {
   return postSession(token, "drafts.list", {}, cookie);

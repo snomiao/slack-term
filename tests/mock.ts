@@ -81,6 +81,7 @@ export async function startMock(
     : await loadFixtures();
 
   const requests: RecordedRequest[] = [];
+  const sequenceCalls = new Map<string, number>();
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -121,6 +122,15 @@ export async function startMock(
         // otherwise — lets a test refuse one FIELD of a write (e.g. `metadata`)
         // and check the caller retries without it.
         const cond = (override as { __whenBodyIncludes?: { needle: string; response: unknown } } | undefined)?.__whenBodyIncludes;
+        // `{ __sequence: [r1, r2, …] }` answers each call with the next response
+        // (repeating the last) — lets a test walk a paged read page by page.
+        const seq = (override as { __sequence?: unknown[] } | undefined)?.__sequence;
+        if (seq) {
+          const n = (sequenceCalls.get(method) ?? 0) + 1;
+          sequenceCalls.set(method, n);
+          respond(seq[Math.min(n, seq.length) - 1]);
+          return;
+        }
         if (cond) {
           if (body.includes(cond.needle)) {
             respond(cond.response);

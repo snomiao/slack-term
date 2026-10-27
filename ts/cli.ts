@@ -117,7 +117,10 @@ import {
   userName,
   getPath,
   type Json,
+  savedAdd,
+  savedDelete,
   savedList,
+  savedUpdate,
 } from "./slack.ts";
 import { isDone, messagePermalink, parseSavedItems, sortTodos, TODO_FILTERS, todoStatus, type TodoFilter, type TodoItem } from "./slackTodos.ts";
 import {
@@ -883,8 +886,13 @@ async function cmdDrafts(token: string, cookie?: string, showAll = false): Promi
 }
 
 // --- todos (Slack's To-dos tab) ---
-// Read-only. Pages through saved.list up to `limit` items, then shows each
-// to-do with its due date, where it lives, and the message it points at.
+// Read-only. Reads the whole view, sorts it by due date, then shows the first
+// `limit` with where each lives and the message it points at. saved.list does
+// not return items in due order, so cutting before sorting could hide an
+// overdue to-do behind a later one; the read is capped at TODOS_MAX_PAGES.
+const TODOS_PAGE = 50;
+const TODOS_MAX_PAGES = 20;
+
 async function cmdTodos(
   token: string,
   cookie: string | undefined,
@@ -892,12 +900,14 @@ async function cmdTodos(
 ): Promise<void> {
   const items: TodoItem[] = [];
   let cursor: string | undefined;
+  let pages = 0;
   do {
-    const resp = asRecord((await savedList(token, { filter: opts.filter, limit: Math.min(opts.limit, 100), cursor }, cookie)) as Json);
+    const resp = asRecord((await savedList(token, { filter: opts.filter, limit: TODOS_PAGE, cursor }, cookie)) as Json);
     items.push(...parseSavedItems(resp as Json));
     const next = asRecord(resp.response_metadata).next_cursor;
     cursor = typeof next === "string" && next ? next : undefined;
-  } while (cursor && items.length < opts.limit);
+  } while (cursor && ++pages < TODOS_MAX_PAGES);
+  if (cursor) console.error(`Note: read the first ${items.length} items only (${TODOS_MAX_PAGES} pages); the order covers those.`);
   const shown = sortTodos(items).slice(0, opts.limit);
 
   if (shown.length === 0) {
@@ -938,6 +948,139 @@ async function cmdTodos(
     console.log(`${todoStatus(t, now, formatYmdHm)}  ${stripTerminalControls(where)}`);
     console.log(`   ${stripTerminalControls(author + head)}`);
     if (link) console.log(`   ${link}`);
+  }
+}
+
+// --- todos add / done / edit / rm — gated writes to your To-dos ---
+// Every To-do points at a message, so the target is a message (permalink or
+// #chan:<ts>). Same two-step as send: the first run previews and prints a code,
+// the rerun with --code=<code> writes. Your own To-dos only — the session token
+// can touch no one else's.
+type TodoOp =
+  | { kind: "add"; due?: number; saved?: boolean }
+  | { kind: "done"; undo: boolean }
+  | { kind: "edit"; due?: number; todo?: boolean }
+  | { kind: "rm" };
+
+// The saved item for one message (saved.delete answers ok even when there is
+// nothing to delete, so writes check first). Views are searched in the order
+// the op most likely needs, stopping at the first match, and the whole search
+// is capped at TODOS_MAX_PAGES pages so a long saved history can't turn one
+// command into a burst of saved.list calls. "unknown" = cap hit, not found.
+function findOrder(op: TodoOp): TodoFilter[] {
+  if (op.kind === "done") return op.undo ? ["completed", "todo", "saved", "archived"] : ["todo", "saved", "completed", "archived"];
+  return ["todo", "saved", "completed", "archived"];
+}
+
+async function findSavedItem(
+  token: string,
+  cookie: string | undefined,
+  channel: string,
+  ts: string,
+  order: TodoFilter[],
+): Promise<TodoItem | "unknown" | undefined> {
+  let pages = 0;
+  for (const filter of order) {
+    let cursor: string | undefined;
+    do {
+      if (pages++ >= TODOS_MAX_PAGES) return "unknown";
+      const resp = asRecord((await savedList(token, { filter, limit: TODOS_PAGE, cursor }, cookie)) as Json);
+      const hit = parseSavedItems(resp as Json).find((t) => t.channel === channel && t.ts === ts);
+      if (hit) return hit;
+      const next = asRecord(resp.response_metadata).next_cursor;
+      cursor = typeof next === "string" && next ? next : undefined;
+    } while (cursor);
+  }
+  return undefined;
+}
+
+function todoOpLines(op: TodoOp, fmtDue: (sec: number) => string): string[] {
+  const due = (d: number | undefined) => (d === undefined ? [] : [`  Due:    ${d ? fmtDue(d) : "(clear the due date)"}`]);
+  switch (op.kind) {
+    case "add": return [`  Action: add as ${op.saved ? "a saved item (no checkbox)" : "a to-do"}`, ...due(op.due)];
+    case "done": return [`  Action: mark ${op.undo ? "NOT done (reopen)" : "done"}`];
+    case "edit": return [
+      "  Action: edit",
+      ...(op.todo === undefined ? [] : [`  Kind:   ${op.todo ? "to-do" : "saved item (no checkbox)"}`]),
+      ...due(op.due),
+    ];
+    case "rm": return ["  Action: REMOVE from your To-dos (the message itself is untouched)"];
+  }
+}
+
+async function cmdTodosWrite(token: string, cookie: string | undefined, target: string, op: TodoOp, code?: string): Promise<void> {
+  const { ref, ts } = splitRefTs(target);
+  if (!ts) {
+    console.error("Error: a To-do points at a message — give its permalink or #chan:<ts> (see `slack todos ls`).");
+    process.exit(2);
+  }
+  if (op.kind === "edit" && op.due === undefined && op.todo === undefined) {
+    console.error("Error: nothing to edit — pass --due <time|none>, --todo or --saved.");
+    process.exit(2);
+  }
+  const channel = await resolveChannel(token, ref, cookie);
+  const found = await findSavedItem(token, cookie, channel, ts, findOrder(op));
+  if (found === "unknown" && op.kind !== "add") {
+    console.error(`Error: not found in the first ${TODOS_MAX_PAGES * TODOS_PAGE} saved items — stopped there to stay under Slack's rate limits. Nothing was changed.`);
+    process.exit(1);
+  }
+  const existing = found === "unknown" ? undefined : found;
+  if (op.kind === "add" && existing) {
+    console.error(`Error: that message is already in your To-dos (${isDone(existing) ? "done" : existing.todoState || "saved"}) — use \`slack todos edit\` or \`done\`.`);
+    process.exit(1);
+  }
+  if (op.kind !== "add" && !existing) {
+    console.error("Error: that message is not in your To-dos — nothing to change. `slack todos ls --filter saved` lists everything saved.");
+    process.exit(1);
+  }
+
+  let teamUrl = "";
+  let me = "";
+  try { ({ url: teamUrl, userId: me } = await authScopes(token, cookie)); } catch { /* preview degrades */ }
+  const label = await (await buildChLabelResolver(token, cookie, me))(channel);
+  let msg: Record<string, Json> | undefined;
+  try {
+    const r = asRecord((await replies(token, channel, ts, 1, cookie)) as Json);
+    msg = asArray(r.messages).map(asRecord).find((m) => m.ts === ts);
+  } catch { /* not readable */ }
+  const author = typeof msg?.user === "string" ? `@${await userName(token, msg.user, cookie)}: ` : "";
+  const raw = typeof msg?.text === "string" ? msg.text.split("\n")[0] ?? "" : "(message not readable)";
+  const head = maskSecrets(raw.length > 100 ? `${raw.slice(0, 100)}…` : raw);
+  const now = Date.now() / 1000;
+
+  const expected = safetyCode("todos", JSON.stringify(op), channel, ts, me);
+  if (code !== expected) {
+    requireCode(code, expected, [
+      "--- To-do ------------------------------------",
+      `  For:    ${me ? `@${await userName(token, me, cookie)} (your own To-dos)` : "(your own To-dos)"}`,
+      `  Where:  ${stripTerminalControls(label)}`,
+      `  Msg:    ${stripTerminalControls(author + head)}`,
+      ...(teamUrl ? [`  Link:   ${messagePermalink(teamUrl, channel, ts)}`] : []),
+      ...(existing ? [`  Now:    ${todoStatus(existing, now, formatYmdHm)}`] : []),
+      ...(found === "unknown" ? [`  Note:   not checked beyond the first ${TODOS_MAX_PAGES * TODOS_PAGE} saved items — it may already be saved`] : []),
+      ...todoOpLines(op, fmtPostAt),
+      "----------------------------------------------",
+    ]);
+  }
+
+  const at = { channel, ts };
+  switch (op.kind) {
+    case "add":
+      await savedAdd(token, at, { todo: !op.saved, ...(op.due ? { due: op.due } : {}) }, cookie);
+      console.log(`✓ Added to your To-dos${op.due ? ` (due ${formatYmdHm(op.due)})` : ""}`);
+      break;
+    case "done":
+      await savedUpdate(token, at, { mark: op.undo ? "uncompleted" : "completed" }, cookie);
+      console.log(op.undo ? "✓ Reopened" : "✓ Marked done");
+      break;
+    case "edit":
+      await savedUpdate(token, at, { ...(op.todo === undefined ? {} : { todo: op.todo }), ...(op.due === undefined ? {} : { due: op.due }) }, cookie);
+      console.log("✓ Updated");
+      break;
+    case "rm":
+      await savedDelete(token, at, cookie);
+      console.log("✓ Removed from your To-dos");
+      break;
   }
 }
 
@@ -4752,6 +4895,16 @@ async function botDmForTarget(
   return openDm(botToken, userId);
 }
 
+/** A `--due` value as epoch seconds; exits 2 on an unparseable one. */
+function todoDue(v: string): number {
+  try {
+    return parsePostAt(v);
+  } catch {
+    console.error(`Error: cannot parse --due "${v}" — use an ISO datetime (2026-11-01T18:00) or a Unix ts.`);
+    process.exit(2);
+  }
+}
+
 function parsePostAt(at: string): number {
   if (/^\d{10,}$/.test(at)) return parseInt(at, 10);
   const d = new Date(at.replace(" ", "T"));
@@ -7147,7 +7300,7 @@ async function main(): Promise<void> {
     )
     .command(
       "todos",
-      "Slack's To-dos tab — your personal to-dos (read-only; requires xoxc desktop token). Not `slack todo` (reaction tasks)",
+      "Slack's To-dos tab — your personal to-dos (requires xoxc desktop token). Not `slack todo` (reaction tasks)",
       (y) => y.command(
         ["$0", "ls", "list"],
         "List your To-dos, soonest due first",
@@ -7162,7 +7315,59 @@ async function main(): Promise<void> {
           }
           await cmdTodos(tok(argv as W), ck(argv as W), { filter: argv.filter as TodoFilter, limit: argv.limit, json: argv.json });
         },
-      ),
+      )
+        .command(
+          "add <target>",
+          "Add a message to your To-dos (two-step: preview, then --code)",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "Message permalink or #chan:<ts>" })
+            .option("due", { type: "string", describe: "Due time (ISO datetime or Unix ts)" })
+            .option("saved", { type: "boolean", default: false, describe: "Save it without a checkbox instead of as a to-do" })
+            .option("code", { type: "string", describe: "Confirmation code from the preview" }),
+          async (argv) => {
+            const due = argv.due === undefined ? undefined : todoDue(argv.due);
+            await cmdTodosWrite(tok(argv as W), ck(argv as W), argv.target!, { kind: "add", ...(due ? { due } : {}), saved: argv.saved }, argv.code);
+          },
+        )
+        .command(
+          ["done <target>", "complete <target>"],
+          "Check a to-do off (--undo reopens it)",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "Message permalink or #chan:<ts>" })
+            .option("undo", { type: "boolean", default: false, describe: "Mark it not done again" })
+            .option("code", { type: "string", describe: "Confirmation code from the preview" }),
+          async (argv) => {
+            await cmdTodosWrite(tok(argv as W), ck(argv as W), argv.target!, { kind: "done", undo: argv.undo }, argv.code);
+          },
+        )
+        .command(
+          "edit <target>",
+          "Change a to-do's due date, or switch it between to-do and saved item",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "Message permalink or #chan:<ts>" })
+            .option("due", { type: "string", describe: "New due time (ISO datetime or Unix ts), or `none` to clear it" })
+            .option("todo", { type: "boolean", describe: "Make it a to-do (with a checkbox)" })
+            .option("saved", { type: "boolean", describe: "Make it a plain saved item (no checkbox)" })
+            .conflicts("todo", "saved")
+            .option("code", { type: "string", describe: "Confirmation code from the preview" }),
+          async (argv) => {
+            const due = argv.due === undefined ? undefined : argv.due === "none" ? 0 : todoDue(argv.due);
+            const todo = argv.todo ? true : argv.saved ? false : undefined;
+            await cmdTodosWrite(tok(argv as W), ck(argv as W), argv.target!, {
+              kind: "edit", ...(due === undefined ? {} : { due }), ...(todo === undefined ? {} : { todo }),
+            }, argv.code);
+          },
+        )
+        .command(
+          ["rm <target>", "remove <target>", "delete <target>"],
+          "Remove a message from your To-dos (the message stays)",
+          (y2) => y2
+            .positional("target", { type: "string", demandOption: true, describe: "Message permalink or #chan:<ts>" })
+            .option("code", { type: "string", describe: "Confirmation code from the preview" }),
+          async (argv) => {
+            await cmdTodosWrite(tok(argv as W), ck(argv as W), argv.target!, { kind: "rm" }, argv.code);
+          },
+        ),
     )
     .command(
       "drafts",

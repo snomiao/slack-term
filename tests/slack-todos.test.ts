@@ -51,6 +51,10 @@ describe("sortTodos", () => {
 });
 
 describe("todoStatus / isDone", () => {
+  test("a checked-off to-do reports todo_state completed", () => {
+    expect(isDone(item({ todoState: "completed" }))).toBe(true);
+  });
+
   test("open to-do, with and without a due date", () => {
     expect(todoStatus(item({ due: 500 }), 100, fmt)).toBe("☐ due T500");
     expect(todoStatus(item(), 100, fmt)).toBe("☐ no due date");

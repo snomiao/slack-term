@@ -362,7 +362,7 @@ Reason flags stack independently of progress and of each other: ❗ `exclamation
 `slack thread`/`slack read` before replying to avoid duplicates; consolidate multiple
 points into one message.
 
-### todos — Slack's To-dos tab (read-only)
+### todos — Slack's To-dos tab
 
 Not `slack todo`: that tracks tasks as reactions. `slack todos` reads Slack's own
 **personal** To-dos tab (the successor of "Later"), the list in the sidebar.
@@ -371,12 +371,23 @@ Not `slack todo`: that tracks tasks as reactions. `slack todos` reads Slack's ow
 slack todos                       # open to-dos, soonest due first (OVERDUE marked)
 slack todos --filter completed    # also: saved (everything saved), archived
 slack todos --json -n 20          # one object per item: due, done, permalink, text
+
+# Writes — gated like send: the first run previews and prints a code, rerun with --code=<code>
+slack todos add  "<permalink>" --due 2026-11-01T18:00   # --saved: no checkbox
+slack todos done "<permalink>"                          # --undo reopens it
+slack todos edit "<permalink>" --due none               # or --due <time>, --todo / --saved
+slack todos rm   "<permalink>"                          # removes the to-do; the message stays
 ```
+
+A To-do always points at a message, so the target is a message permalink or
+`#chan:<ts>`. `add` refuses a message that is already saved; `done`/`edit`/`rm`
+refuse one that isn't (Slack's delete answers ok even when there is nothing to
+delete, so the CLI checks first).
 
 There is no public API: it uses the desktop client's internal `saved.list`, so
 it needs the **xoxc session** (`slack auth login`) and shows only your own
-to-dos. Bots can't see them. Slack can change this endpoint without notice.
-Adding and completing to-dos is not supported yet.
+to-dos. Bots can't see them. Writes use the internal `saved.add` /
+`saved.update` / `saved.delete`. Slack can change these endpoints without notice.
 
 ## Output formatting
 

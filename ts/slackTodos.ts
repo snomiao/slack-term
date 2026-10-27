@@ -1,4 +1,4 @@
-// Slack's To-dos tab (app.slack.com/client/<team>/to-dos) — read-only helpers.
+// Slack's To-dos tab (app.slack.com/client/<team>/to-dos) — parsing helpers.
 //
 // Not to be confused with `slack todo` (todo.ts), which tracks tasks as
 // reactions on messages. To-dos are Slack's own PERSONAL list: it replaced
@@ -26,7 +26,7 @@ export type TodoItem = {
   due: number;
   /** Epoch seconds; 0 = not completed. */
   completed: number;
-  /** "to_do" | "saved" (as Slack reports it). */
+  /** "to_do" | "saved" | "completed" (as Slack reports it). */
   todoState: string;
   state: string;
   archived: boolean;
@@ -68,7 +68,8 @@ export function sortTodos(items: TodoItem[]): TodoItem[] {
 }
 
 export function isDone(t: TodoItem): boolean {
-  return t.completed > 0 || t.state === "completed";
+  // Checking one off sets state AND todo_state to "completed" (seen live).
+  return t.completed > 0 || t.state === "completed" || t.todoState === "completed";
 }
 
 /** The status column: a checkbox, plus the due date (and OVERDUE when past it). */
