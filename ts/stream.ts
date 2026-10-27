@@ -643,7 +643,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       `slack stream: WARNING: polling mode (${opts.pollReason ?? "no relay configured"}) — this is the fallback, ` +
       `not the intended setup: matches arrive up to ${Math.round(opts.intervalMs / 1000)}s late (replies under older ` +
       `parents up to ${Math.round(Math.max(opts.threadScanSec ?? 180, opts.intervalMs / 1000))}s) and every cycle spends ` +
-      `Slack API calls. For real time, deploy the relay and set SLACK_RELAY_URL + SLACK_RELAY_TOKEN: ${RELAY_DOCS}`,
+      `Slack API calls. For real time, set up the relay (slack relay init) and set SLACK_RELAY_URL + SLACK_RELAY_TOKEN: ${RELAY_DOCS}`,
     );
   }
   client = paced(client, opts.callsPerMin ?? 40, opts.signal);

@@ -33,6 +33,7 @@ export default defineConfig({
       "tests/read-thread.test.ts",
       "tests/read-shares.test.ts",
       "tests/bot-intent-cli.test.ts",
+      "tests/relay-init-cli.test.ts",
       "tests/upload.test.ts",
       "tests/todo-cli.test.ts",
       "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
@@ -108,6 +109,7 @@ export default defineConfig({
         "ts/quietHours.ts",
         "ts/reactionSeed.ts",
         "ts/relay.ts",
+        "ts/relayInit.ts",
         "ts/rtm.ts",
         "ts/slack.ts",
         "ts/slackTodos.ts",

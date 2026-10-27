@@ -15,6 +15,7 @@ import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAut
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { runStream, webClient } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
+import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
 
 import {
@@ -5558,8 +5559,9 @@ async function main(): Promise<void> {
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
-      // `sent` reads only the local log — no token, no network.
-      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent") return;
+      // `sent` reads only the local log — no token, no network. `relay` writes
+      // local files (init) or talks to the user's own relay (health): no Slack token.
+      if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent" || cmd === "relay") return;
       try {
         const active = resolveToken((argv as W).workspace);
         const bot = resolveBotToken();
@@ -7639,6 +7641,46 @@ async function main(): Promise<void> {
         .command("$0", false as unknown as string, () => {}, () => { y.showHelp(); process.exit(0); }),
     )
     .command(
+      "relay",
+      "Set up / check the real-time relay for `slack stream` (a Cloudflare Worker)",
+      (y) => y
+        .command(
+          "init [dir]",
+          "Scaffold a deployable relay Worker folder (local files only; prints a fresh RELAY_TOKEN and the next steps)",
+          (y2) => y2
+            .positional("dir", { type: "string", default: DEFAULT_DIR, describe: "Folder to create" })
+            .option("name", { type: "string", describe: "Worker name (default: the folder's name)" })
+            .option("force", { type: "boolean", default: false, describe: "Overwrite files that already exist" })
+            .option("slack-term", { type: "string", describe: "slack-term dependency spec (default: this CLI's version), e.g. latest or file:../slack-term" }),
+          (argv) => {
+            const r = initRelay(argv.dir, {
+              force: argv.force,
+              ...(argv.name !== undefined ? { name: argv.name } : {}),
+              ...(argv["slack-term"] !== undefined ? { slackTerm: argv["slack-term"] } : {}),
+            });
+            if (!r.ok) {
+              console.error(`slack relay init: ${r.error}`);
+              for (const f of r.existing ?? []) console.error(`  exists: ${f}`);
+              process.exit(2);
+            }
+            console.log(initReport(r));
+          },
+        )
+        .command(
+          "health",
+          "GET /health on the relay (SLACK_RELAY_URL / SLACK_RELAY_TOKEN); exit 0 = ok",
+          (y2) => y2
+            .option("url", { type: "string", describe: "Relay URL (default: $SLACK_RELAY_URL)" })
+            .option("token", { type: "string", describe: "Relay token (default: $SLACK_RELAY_TOKEN)" }),
+          async (argv) => {
+            const r = await relayHealth(argv.url ?? process.env.SLACK_RELAY_URL, argv.token ?? process.env.SLACK_RELAY_TOKEN);
+            (r.code === 0 ? console.log : console.error)(r.out);
+            process.exit(r.code);
+          },
+        )
+        .demandCommand(1, "Specify a relay subcommand (init, health)"),
+    )
+    .command(
       "stream",
       "Print every new message matching --grep, across all channels the identity is in (threads included); resumable",
       (y) => y
@@ -7655,7 +7697,7 @@ async function main(): Promise<void> {
         .option("calls-per-min", { type: "number", default: 40, describe: "Polling: pace conversations.history/replies to this many calls per minute (0 = unpaced)" })
         .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
-        .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (worker/) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
+        .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (`slack relay init`) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
         .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" }),
       async (argv) => {
         let re: RegExp;

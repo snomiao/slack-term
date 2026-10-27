@@ -13,7 +13,7 @@ describe("isWriteCommand", () => {
     }
   });
   test("reads are not writes", () => {
-    for (const c of [["read"], ["pinlog", "ls"], ["pinlog", "get"], ["schedule", "ls"], ["drafts"], ["lists"], ["channel", "ls"], ["todos"], ["todos", "ls"], ["todos", "list"], []]) {
+    for (const c of [["read"], ["pinlog", "ls"], ["pinlog", "get"], ["schedule", "ls"], ["drafts"], ["lists"], ["channel", "ls"], ["todos"], ["todos", "ls"], ["todos", "list"], ["relay", "init"], ["relay", "health"], []]) {
       expect(isWriteCommand(c)).toBe(false);
     }
   });
