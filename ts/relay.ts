@@ -650,7 +650,8 @@ export async function main(argv: string[]): Promise<void> {
     for (const [root, th] of Object.entries(st.threads)) if (Date.now() - th.touched > THREAD_TTL_MS) delete st.threads[root];
     for (const root of Object.keys(st.replySeen)) if (Number(root) < dayAgo && !oldRoots.some((m) => m.ts === root)) delete st.replySeen[root];
 
-    // 3) outbox → thread
+    // 3) outbox → thread (macOS's periodic /tmp cleanup can remove an idle outbox dir)
+    mkdirSync(outbox, { recursive: true });
     for (const f of readdirSync(outbox).filter((x) => /^\d+\.md$/.test(x))) {
       const pid = f.replace(/\.md$/, "");
       const path = join(outbox, f);
