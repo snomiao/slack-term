@@ -107,6 +107,41 @@ a hibernating object runs no timers.
 
 ## Deploy
 
+### Without cloning (recommended)
+
+The relay ships in the npm package as `slack-term/worker`. Scaffold a Worker
+folder with the CLI:
+
+```sh
+slack relay init my-relay        # or: npx slack-term relay init my-relay
+cd my-relay && npm install
+npx wrangler login               # or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (below)
+npx wrangler deploy
+```
+
+`init` writes `package.json` (slack-term pinned to the CLI's version, wrangler
+pinned), `wrangler.jsonc` (the same config as this folder's, with `--name` or
+the folder's name), `src/index.ts`, `.gitignore` and a `README.md`. It makes no
+network calls and refuses to overwrite existing files unless `--force`. It
+prints a freshly generated `RELAY_TOKEN` — not saved anywhere — and the
+remaining steps: the secrets, the Slack app settings and the client env, all
+as described below (run them from the new folder, with `npx wrangler`).
+
+Already have a Worker project? `src/index.ts` is just
+
+```ts
+export { default, Relay } from "slack-term/worker";
+```
+
+with a `RELAY` Durable Object binding to class `Relay` and a
+`new_sqlite_classes: ["Relay"]` migration — copy them from
+[`wrangler.jsonc`](wrangler.jsonc). `Env` is exported too, for typing.
+`@cloudflare/workers-types` is an optional peer dependency of slack-term.
+
+To update, bump `slack-term` in the folder's package.json and redeploy.
+
+### From a clone of this repo (contributors)
+
 Wrangler 4 needs **Node ≥ 22**.
 
 Cloudflare credentials, in the environment:
@@ -127,10 +162,14 @@ Redeploying an existing relay keeps its storage (and epoch): no migration is
 needed, the Durable Object class is unchanged. A deploy restarts the object,
 which drops every connection; clients reconnect and resume from their last seq.
 
+### Then, either way
+
 Check it (expects `{"ok":true,…}`):
 
 ```sh
 curl -H "Authorization: Bearer $RELAY_TOKEN" https://<worker>/health
+# or, with SLACK_RELAY_URL / SLACK_RELAY_TOKEN set:
+slack relay health
 ```
 
 Then, in the Slack app:

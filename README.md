@@ -435,8 +435,8 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
   between printing a match and saving the cursor repeats that line, so dedupe on
   `channel.id + ts`. A lock file keeps two streams off the same state.
 - **Transport: the relay is the primary mode; polling is the fallback.** Deploy
-  [`worker/`](worker/) (a Cloudflare Worker on Slack's Events API — setup in
-  [worker/README.md](worker/README.md)) and set `SLACK_RELAY_URL` and
+  the relay (a Cloudflare Worker on Slack's Events API — see
+  [Setting up the relay](#setting-up-the-relay)) and set `SLACK_RELAY_URL` and
   `SLACK_RELAY_TOKEN`: the stream then hears a *doorbell* — `{channel, ts, thread_ts}`,
   no text — within a second of each post, reads that one message through the Web API
   with its own token and runs it through the same `--grep`. While the relay is
@@ -470,6 +470,34 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
 - **Exit codes** (same contract as `ask`): `0` matches printed (`--once`) or stopped by
   SIGINT/SIGTERM; `2` `--once` found nothing; `3` transport/auth failure (stderr says
   which); `1` bad arguments (e.g. an invalid regex).
+
+#### Setting up the relay
+
+No clone needed — the relay ships in the npm package as `slack-term/worker`:
+
+```sh
+slack relay init my-relay      # writes package.json, wrangler.jsonc, src/index.ts, .gitignore, README.md
+```
+
+It writes local files only (no network; refuses to overwrite without `--force`) and
+prints a freshly generated `RELAY_TOKEN` (never saved to disk) with the next steps:
+`npm install`, `npx wrangler login` (or `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`),
+`npx wrangler deploy` (Node ≥ 22), `wrangler secret put SLACK_SIGNING_SECRET` /
+`RELAY_TOKEN` / optional `SLACK_TEAM_ID`, then the Slack app's Event Subscriptions
+Request URL `https://<worker>/slack/events`. Check it with `slack relay health`
+(GET `/health` using `SLACK_RELAY_URL` / `SLACK_RELAY_TOKEN`) and `slack stream`,
+which says `relay connected (websocket)`.
+
+An existing Worker project needs only the re-export (plus the `RELAY` Durable
+Object binding and a `new_sqlite_classes: ["Relay"]` migration in wrangler config):
+
+```ts
+// src/index.ts
+export { default, Relay } from "slack-term/worker";
+```
+
+Endpoints, privacy and protocol: [worker/README.md](worker/README.md), which also
+covers deploying straight from a clone of this repo (for contributors).
 
 ## Configuration
 
