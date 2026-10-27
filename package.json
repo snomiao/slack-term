@@ -25,6 +25,10 @@
   "bin": {
     "slack": "./ts/cli.ts"
   },
+  "exports": {
+    "./worker": "./worker/src/index.ts",
+    "./package.json": "./package.json"
+  },
   "description": "Slack CLI — read activity/news/mentions, search, send messages with a confirm-hash safety gate.",
   "engines": {
     "node": ">=18"
@@ -32,6 +36,7 @@
   "files": [
     "ts/",
     "dist/",
+    "worker/src/",
     "README.md",
     "SKILL.md",
     "LICENSE"
@@ -75,5 +80,13 @@
   "type": "module",
   "dependencies": {
     "yargs": "^18.0.0"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "^4"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    }
   }
 }
