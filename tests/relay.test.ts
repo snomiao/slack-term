@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, clip, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -85,10 +85,24 @@ describe("forwardText / clip", () => {
     expect(t).toContain("/tmp/ob/103.md");
     expect(t).toContain("\nping\n");
   });
-  test("clip bounds lines and chars", () => {
-    const long = Array.from({ length: 30 }, (_, i) => `l${i}`).join("\n");
-    expect(clip(long, 5).split("\n").length).toBe(6);
-    expect(clip("x".repeat(100), 15, 10)).toBe("x".repeat(10) + "…");
+  test("splitForSlack keeps every line, splitting long text into parts", () => {
+    const long = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n");
+    expect(splitForSlack(long)).toEqual([long]);
+    const parts = splitForSlack(long, 60);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts.every((p) => p.length <= 60)).toBe(true);
+    expect(parts.join("\n")).toBe(long);
+  });
+  test("splitForSlack hard-cuts one over-long line without losing chars", () => {
+    const parts = splitForSlack("x".repeat(250), 100);
+    expect(parts.every((p) => p.length <= 100)).toBe(true);
+    expect(parts.join("")).toBe("x".repeat(250));
+  });
+  test("splitForSlack closes and reopens a code fence at a cut", () => {
+    const text = ["intro", "```", ...Array.from({ length: 20 }, (_, i) => `code ${i}`), "```", "outro"].join("\n");
+    const parts = splitForSlack(text, 80);
+    for (const p of parts) expect((p.match(/^```/gm) ?? []).length % 2).toBe(0);
+    expect(parts.join("\n").replace(/\n```\n```/g, "")).toBe(text);
   });
 });
 

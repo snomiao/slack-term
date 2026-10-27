@@ -210,13 +210,30 @@ export function splitOutbox(chunk: string): { reply: string; threads: string[] }
   return { reply: reply.trim(), threads: threads.map((t) => t.trim()).filter(Boolean) };
 }
 
-/** Keep outbound posts short: at most `maxLines` lines / `maxChars` chars. */
-export function clip(text: string, maxLines = 15, maxChars = 2500): string {
-  let t = text.trim();
-  const lines = t.split("\n");
-  if (lines.length > maxLines) t = lines.slice(0, maxLines).join("\n") + `\n… (+${lines.length - maxLines} lines)`;
-  if (t.length > maxChars) t = t.slice(0, maxChars) + "…";
-  return t;
+/** Split an outbound post into Slack-sized parts on line boundaries, never dropping text.
+ *  A code fence open at a cut is closed there and reopened in the next part. */
+export function splitForSlack(text: string, maxChars = 3500): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let fence = false;
+  const flush = (): void => {
+    if (!cur.trim()) { cur = ""; return; }
+    parts.push(fence ? `${cur}\n\`\`\`` : cur);
+    cur = fence ? "```" : "";
+  };
+  for (let line of text.trim().split("\n")) {
+    while (line.length > maxChars - 8) { // one line longer than a part: hard-cut it
+      if (cur) flush();
+      cur += (cur ? "\n" : "") + line.slice(0, maxChars - 8);
+      line = line.slice(maxChars - 8);
+      flush();
+    }
+    if (cur && cur.length + 1 + line.length > maxChars - 4) flush();
+    cur += (cur ? "\n" : "") + line;
+    if (/^\s*```/.test(line)) fence = !fence;
+  }
+  if (cur.trim() && cur !== "```") parts.push(cur);
+  return parts;
 }
 
 // ── state ───────────────────────────────────────────────────────────────────
@@ -649,8 +666,14 @@ export async function main(argv: string[]): Promise<void> {
       // A top-level post made with the pid binds the new thread to the agent (see post()).
       const out = async (text: string, ts?: string): Promise<void> => {
         text = wrapAdjacentUrls(text); // an agent can't be asked to retry: make CJK-glued URLs clickable
-        if (a && creds!.mode === "bot") await post(clip(text), ts, Number(pid), await identityOf(a));
-        else await post(`*${who}*: ${clip(text)}`, ts, Number(pid));
+        // Long replies go out whole, as consecutive posts; a part that opened a new thread
+        // carries the rest of the reply in that thread.
+        for (const part of splitForSlack(text)) {
+          const posted = a && creds!.mode === "bot"
+            ? await post(part, ts, Number(pid), await identityOf(a))
+            : await post(`*${who}*: ${part}`, ts, Number(pid));
+          ts ??= posted || undefined;
+        }
       };
       if (reply) await out(reply, threadTs);
       for (const t of fresh) await out(t);
