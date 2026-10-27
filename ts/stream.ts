@@ -733,7 +733,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
       if (bus.live === live) return;
       bus.live = live;
       _internals.err(live
-        ? `slack stream: relay connected — polling every ${Math.round(Math.max(opts.intervalMs, relay!.reconcileMs) / 1000)}s as a safety net`
+        ? `slack stream: relay connected${why ? ` (${why})` : ""} — polling every ${Math.round(Math.max(opts.intervalMs, relay!.reconcileMs) / 1000)}s as a safety net`
         : `slack stream: relay unavailable${why ? ` (${why})` : ""} — polling every ${Math.round(opts.intervalMs / 1000)}s`);
       ring();
     };
@@ -777,7 +777,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
                 for (const p of [...bus.queue, ...bus.retry, ...(bus.inflight ? [bus.inflight] : [])]) p.seq = Math.min(p.seq, h.seq);
               }
               after = { seq: h.seq, ...(h.epoch ? { epoch: h.epoch } : {}) };
-              setLive(true);
+              setLive(true, h.via);
             },
             bell: (seq, bell) => {
               if (paused) return;

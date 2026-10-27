@@ -444,6 +444,9 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
   when the relay is down it goes back to `--interval`. Both paths share one record of
   what was printed, so a message is never printed twice. The relay is used only when
   streaming as the bot (it rings for the bot's channels) and never with `--once`.
+  The connection is a WebSocket (the relay hibernates between bells, so an idle
+  connection costs next to nothing); against a relay deployed before that, it falls
+  back to Server-Sent Events. `SLACK_RELAY_TRANSPORT=websocket|sse` pins one.
 - **Polling fallback** (no relay configured, `--as-user`, or `--no-relay`). The stream
   prints a `WARNING: polling mode` line on stderr, pointing to the relay setup. It
   polls every `--interval` (default `45s`), paced to stay inside Slack's rate limits:

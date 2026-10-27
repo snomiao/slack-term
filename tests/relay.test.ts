@@ -2,7 +2,7 @@ import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createHmac } from "node:crypto";
-import { parseSse, relaySubscriber, RelayAuthError, type Doorbell, type Hello } from "../ts/relay.ts";
+import { parseSse, relaySubscriber, RelayAuthError, type Doorbell, type Hello, type Subscribe } from "../ts/relay.ts";
 import { doorbellOf, plausiblySigned, readLimited, safeEqual, verifySlack } from "../worker/src/slack.ts";
 
 describe("parseSse", () => {
@@ -22,7 +22,10 @@ describe("parseSse", () => {
   });
 });
 
-describe("relaySubscriber (against a local SSE server)", () => {
+/** The SSE transport alone, as relays from before /ws serve it. */
+const sseOnly = (base: string, token: string, idleMs?: number): Subscribe => relaySubscriber(base, token, idleMs, { transport: "sse" });
+
+describe("relaySubscriber over SSE (against a local SSE server)", () => {
   let server: Server;
   let base: string;
   const seen: { auth: string | undefined; url: string | undefined }[] = [];
@@ -57,23 +60,23 @@ describe("relaySubscriber (against a local SSE server)", () => {
     mode = "ok";
     const hellos: Hello[] = [];
     const bells: [number, Doorbell][] = [];
-    await relaySubscriber(base, "tok-1")({ seq: 4, epoch: "e 1" }, new AbortController().signal, {
+    await sseOnly(base, "tok-1")({ seq: 4, epoch: "e 1" }, new AbortController().signal, {
       hello: (h) => hellos.push(h), bell: (s, b) => bells.push([s, b]),
     });
     expect(seen.at(-1)).toEqual({ auth: "Bearer tok-1", url: "/stream?after=4&epoch=e%201" });
-    expect(hellos).toEqual([{ seq: 4, gap: false, retention_sec: 3600 }]);
+    expect(hellos).toEqual([{ seq: 4, gap: false, retention_sec: 3600, via: "sse" }]);
     expect(bells).toEqual([
       [5, { channel: "C00000001", ts: "1.000001" }],
       [6, { channel: "C00000001", ts: "2.000001", thread_ts: "1.000001" }],
     ]);
-    await relaySubscriber(base, "tok-1")(undefined, new AbortController().signal, { hello: () => {}, bell: () => {} });
+    await sseOnly(base, "tok-1")(undefined, new AbortController().signal, { hello: () => {}, bell: () => {} });
     expect(seen.at(-1)!.url).toBe("/stream");
   });
 
   test("a CRLF pair split across chunks still separates frames", async () => {
     mode = "crlf";
     const got: string[] = [];
-    await relaySubscriber(base, "x")(undefined, new AbortController().signal, {
+    await sseOnly(base, "x")(undefined, new AbortController().signal, {
       hello: (h) => got.push(`hello ${h.seq}`), bell: (sq) => got.push(`bell ${sq}`),
     });
     expect(got).toEqual(["hello 1", "bell 2"]);
@@ -82,17 +85,17 @@ describe("relaySubscriber (against a local SSE server)", () => {
   test("401 is a RelayAuthError; other statuses are plain errors", async () => {
     mode = "401";
     const noop = { hello: () => {}, bell: () => {} };
-    await expect(relaySubscriber(base, "bad")(undefined, new AbortController().signal, noop)).rejects.toBeInstanceOf(RelayAuthError);
+    await expect(sseOnly(base, "bad")(undefined, new AbortController().signal, noop)).rejects.toBeInstanceOf(RelayAuthError);
     mode = "500";
-    await expect(relaySubscriber(base, "x")(undefined, new AbortController().signal, noop)).rejects.toThrow("relay: HTTP 500");
+    await expect(sseOnly(base, "x")(undefined, new AbortController().signal, noop)).rejects.toThrow("relay: HTTP 500");
   });
 
   test("silence past idleMs is an error; an abort resolves quietly", async () => {
     mode = "silent";
     const noop = { hello: () => {}, bell: () => {} };
-    await expect(relaySubscriber(base, "x", 150)(undefined, new AbortController().signal, noop)).rejects.toThrow("relay: no data for 0s");
+    await expect(sseOnly(base, "x", 150)(undefined, new AbortController().signal, noop)).rejects.toThrow("relay: no data for 0s");
     const ac = new AbortController();
-    const p = relaySubscriber(base, "x", 60_000)(undefined, ac.signal, noop);
+    const p = sseOnly(base, "x", 60_000)(undefined, ac.signal, noop);
     setTimeout(() => ac.abort(), 50);
     await expect(p).resolves.toBeUndefined();
   });

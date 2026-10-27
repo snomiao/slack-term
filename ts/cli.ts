@@ -14,7 +14,7 @@ import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { runStream, webClient } from "./stream.ts";
-import { relaySubscriber } from "./relay.ts";
+import { relaySubscriber, relayTransport } from "./relay.ts";
 import { agentCommands } from "./agent.ts";
 
 import {
@@ -7753,7 +7753,7 @@ async function main(): Promise<void> {
         const relayUrl = process.env.SLACK_RELAY_URL;
         const relayToken = process.env.SLACK_RELAY_TOKEN;
         const relay = argv.relay && !asUser && !argv.once && relayUrl && relayToken
-          ? { url: relayUrl, subscribe: relaySubscriber(relayUrl, relayToken), reconcileMs }
+          ? { url: relayUrl, subscribe: relaySubscriber(relayUrl, relayToken, undefined, { transport: relayTransport(process.env.SLACK_RELAY_TRANSPORT) }), reconcileMs }
           : undefined;
         if (argv.relay && asUser && relayUrl) console.error("slack stream: relay not used with --as-user (it only sees the bot's channels)");
         const pollReason = !argv.relay ? "--no-relay"
