@@ -362,9 +362,15 @@ into a second board.
 
 ### tail — real-time message stream
 
-`slack tail` polls a channel every 3 seconds (configurable via `--interval`) and
-prints new messages as they arrive, in the same `[ts]  @handle:  text` format as
-the `read` command.
+`slack tail` prints new messages in a channel as they arrive, in the same
+`[ts]  @handle:  text` format as the `read` command.
+
+- **Transport: RTM WebSocket** (default) when the token is a desktop session
+  (`xoxc-` + cookie) and none of `--since`, `--timeout`, `--exit-on-message` is
+  given. If RTM can't connect it says `RTM unavailable — switching to polling.`
+- **Fallback: polling** every `--interval` ms (default `60000` = 60 s; e.g.
+  `--interval=3000` for near-real-time at the cost of more API calls). Used for
+  other tokens, with any of the three flags above, or with `--no-rtm`.
 
 ```sh
 slack tail "#general"               # follow new messages from now
