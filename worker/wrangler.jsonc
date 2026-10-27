@@ -1,5 +1,5 @@
 // slack-term relay. Deploy: `npx --yes wrangler@4.105.0 deploy` from this dir
-// (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN in the environment), then:
+// (Node >= 22; CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN in the environment), then:
 //   wrangler secret put SLACK_SIGNING_SECRET   # Slack app → Basic Information
 //   wrangler secret put RELAY_TOKEN            # any long random string; give it to consumers
 //   wrangler secret put SLACK_TEAM_ID          # optional: accept one workspace only

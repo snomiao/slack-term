@@ -3,7 +3,13 @@
 //
 //   Slack ──POST /slack/events──▶ Worker ──▶ Relay (Durable Object, SQLite)
 //                                                 │  {seq, channel, ts, thread_ts}
-//   slack stream ◀──GET /stream (SSE, bearer)─────┘
+//   slack stream ◀──GET /ws (WebSocket, hibernating)┤
+//   older clients ◀──GET /stream (SSE, bearer)──────┘
+//
+// Clients connect over a hibernatable WebSocket (hub.ts): between bells the
+// object is evicted from memory and not billed, and keepalive pings are
+// answered by the runtime without waking it. /stream (SSE) stays for clients
+// from before the switch — every connected SSE client keeps the object awake.
 //
 // Privacy: the relay stores and serves ids and timestamps only — never message
 // text, never sender ids (beyond marking the app's own bot posts, `self`). A client that hears a bell reads the message itself
@@ -14,6 +20,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import { type Doorbell, doorbellOf, MAX_BODY_BYTES, plausiblySigned, readLimited, safeEqual, verifySlack } from "./slack.ts";
+import * as hub from "./hub.ts";
 
 export interface Env {
   RELAY: DurableObjectNamespace<Relay>;
@@ -63,6 +70,19 @@ export default {
       return new Response(null, { status: 200 });
     }
 
+    if (url.pathname === "/ws") {
+      // Checked here, before the object is touched or the socket accepted.
+      // The bearer rides in a subprotocol (Node's WebSocket cannot set
+      // headers); an Authorization header works too.
+      const bearer = !!env.RELAY_TOKEN && safeEqual(req.headers.get("authorization") ?? "", `Bearer ${env.RELAY_TOKEN}`);
+      if (!bearer && !hub.protocolAuthorized(req.headers.get("sec-websocket-protocol"), env.RELAY_TOKEN)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      if (req.method !== "GET") return new Response("method not allowed", { status: 405 });
+      if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("upgrade required", { status: 426 });
+      return relay.fetch(req);
+    }
+
     if (url.pathname === "/stream" || url.pathname === "/health") {
       if (!env.RELAY_TOKEN || !safeEqual(req.headers.get("authorization") ?? "", `Bearer ${env.RELAY_TOKEN}`)) {
         return new Response("unauthorized", { status: 401 });
@@ -75,7 +95,8 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
-/** `pending`: writes not yet taken by the consumer. A client that stops
+/** An SSE client (GET /stream, kept for clients from before /ws).
+ *  `pending`: writes not yet taken by the consumer. A client that stops
  *  reading is cut off past MAX_PENDING instead of buffering without bound;
  *  it reconnects with ?after and gets the rest from storage. */
 type Client = {
@@ -86,7 +107,7 @@ type Client = {
 };
 const MAX_PENDING = 64;
 /** Backlog rows read and written per step of a replay. */
-const REPLAY_BATCH = 100;
+const REPLAY_BATCH = hub.REPLAY_BATCH;
 /** A replay write the reader has not taken by then frees its slot. */
 const REPLAY_WRITE_MS = 30_000;
 const enc = new TextEncoder();
@@ -103,6 +124,8 @@ export class Relay extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    // Answered by the runtime, without waking a hibernating object.
+    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS bells (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL, ts TEXT NOT NULL, thread_ts TEXT,
@@ -131,6 +154,7 @@ export class Relay extends DurableObject<Env> {
       this.alarmArmed = true;
     }
     this.broadcast(frame(seq, bell));
+    hub.deliver(this.sockets(), seq, bell, now);
   }
 
   /** TTL sweep: drop expired bells, re-arm while any remain. */
@@ -140,37 +164,74 @@ export class Relay extends DurableObject<Env> {
     const next = this.ctx.storage.sql.exec<{ at: number | null }>("SELECT MIN(at) AS at FROM bells").one().at;
     if (next !== null) await this.ctx.storage.setAlarm(next + RETENTION_SEC * 1000);
     this.alarmArmed = next !== null;
+    hub.sweep(this.sockets(), Date.now());
+  }
+
+  override webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): void {
+    hub.message(this.sock(ws), data, this.store, Date.now());
+  }
+
+  // Socket state lives on the socket: nothing to clean up but the socket.
+  override webSocketClose(ws: WebSocket, code: number): void {
+    try { ws.close(code === 1005 || code === 1006 ? 1000 : code, "bye"); } catch { /* already closed */ }
+  }
+
+  override webSocketError(ws: WebSocket): void {
+    try { ws.close(1011, "error"); } catch { /* already closed */ }
+  }
+
+  private readonly store: hub.Store = {
+    rowsAfter: (seq, limit) => this.ctx.storage.sql.exec<hub.Row>(
+      "SELECT seq, channel, ts, thread_ts, self FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", seq, limit,
+    ).toArray(),
+  };
+
+  private sock(ws: WebSocket): hub.Sock {
+    return {
+      send: (d) => ws.send(d),
+      close: (code, reason) => { try { ws.close(code, reason); } catch { /* already closed */ } },
+      attachment: () => ws.deserializeAttachment() as hub.Attachment | null,
+      setAttachment: (a) => ws.serializeAttachment(a),
+      lastPing: () => this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? null,
+    };
+  }
+
+  private sockets(): hub.Sock[] {
+    return this.ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN).map((ws) => this.sock(ws));
   }
 
   override async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const { oldest, latest } = this.bounds();
+    const now = Date.now();
+    const sockets = hub.sweep(this.sockets(), now);
     if (url.pathname === "/health") {
-      return Response.json({ ok: true, epoch: this.epoch, latest, oldest, clients: this.clients.size, retention_sec: RETENTION_SEC });
+      return Response.json({
+        ok: true, epoch: this.epoch, latest, oldest, clients: this.clients.size + sockets.length,
+        websocket_clients: sockets.length, sse_clients: this.clients.size, retention_sec: RETENTION_SEC,
+      });
     }
 
-    if (this.clients.size >= MAX_CLIENTS) return new Response("too many clients", { status: 503 });
-    // Resume point: ?after=<seq> or the SSE Last-Event-ID header. Absent means
-    // "from now". A seq we can no longer serve (expired, or from a relay whose
-    // storage was reset) is a gap — the client must catch up by polling.
-    const raw = url.searchParams.get("after") ?? req.headers.get("last-event-id");
-    const after = raw !== null && /^\d+$/.test(raw) ? Number(raw) : null;
-    const epoch = url.searchParams.get("epoch");
-    let from = latest;
-    let gap = false;
-    if (after !== null) {
-      // Older than what is kept, or from the future (this relay's storage was
-      // reset): either way say so, and replay everything still kept.
-      const reset = after > latest || (epoch !== null && epoch !== this.epoch);
-      gap = reset || (oldest !== null ? after < oldest - 1 : after < latest);
-      from = reset ? 0 : after;
+    if (this.clients.size + sockets.length >= MAX_CLIENTS) return new Response("too many clients", { status: 503 });
+    // Resume point: ?after=<seq> or the SSE Last-Event-ID header (hub.resumePoint).
+    const { from, gap } = hub.resumePoint(
+      url.searchParams.get("after") ?? req.headers.get("last-event-id"), url.searchParams.get("epoch"), this.epoch, oldest, latest,
+    );
+    const hello = { seq: from, gap, retention_sec: RETENTION_SEC, epoch: this.epoch };
+
+    if (url.pathname === "/ws") {
+      const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
+      this.ctx.acceptWebSocket(server);
+      hub.open(this.sock(server), from, hello, this.store, now);
+      const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").some((p) => p.trim() === hub.PROTOCOL);
+      return new Response(null, { status: 101, webSocket: client, headers: offered ? { "sec-websocket-protocol": hub.PROTOCOL } : {} });
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
     const client: Client = { writer: writable.getWriter(), pending: 0, replaying: true };
     this.clients.add(client);
     this.keepalive ??= setInterval(() => this.broadcast(": ka\n\n"), KEEPALIVE_MS);
-    void this.replay(client, from, `event: hello\ndata: ${JSON.stringify({ seq: from, gap, retention_sec: RETENTION_SEC, epoch: this.epoch })}\n\n`);
+    void this.replay(client, from, `event: hello\ndata: ${JSON.stringify(hello)}\n\n`);
 
     return new Response(readable, {
       headers: { "content-type": "text/event-stream", "cache-control": "no-store", "x-accel-buffering": "no" },
@@ -193,15 +254,9 @@ export class Relay extends DurableObject<Env> {
     let chunk = hello;
     let cursor = from;
     for (;;) {
-      const rows = this.ctx.storage.sql.exec<{ seq: number; channel: string; ts: string; thread_ts: string | null; self: string | null }>(
-        "SELECT seq, channel, ts, thread_ts, self FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", cursor, REPLAY_BATCH,
-      ).toArray();
+      const rows = this.store.rowsAfter(cursor, REPLAY_BATCH);
       for (const r of rows) {
-        chunk += frame(r.seq, {
-          channel: r.channel, ts: r.ts,
-          ...(r.thread_ts ? { thread_ts: r.thread_ts } : {}),
-          ...(r.self ? { self: r.self } : {}),
-        });
+        chunk += frame(r.seq, hub.bellOf(r));
         cursor = r.seq;
       }
       if (!rows.length) c.replaying = false;
