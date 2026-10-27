@@ -8,12 +8,12 @@ const intent = (o: Partial<Parameters<typeof botIntentRefusal>[2]> = {}) => ({
 
 describe("isWriteCommand", () => {
   test("top-level and nested writes, aliases included", () => {
-    for (const c of [["send"], ["vote"], ["react"], ["pinlog", "new"], ["pinlog", "pin"], ["schedule", "send"], ["drafts", "save"], ["lists", "share"], ["channel", "new"], ["channel", "mv"], ["ch", "rename"], ["channels", "create"]]) {
+    for (const c of [["send"], ["vote"], ["react"], ["pinlog", "new"], ["pinlog", "pin"], ["schedule", "send"], ["drafts", "save"], ["lists", "share"], ["channel", "new"], ["channel", "mv"], ["ch", "rename"], ["channels", "create"], ["todos", "add"], ["todos", "done"], ["todos", "complete"], ["todos", "edit"], ["todos", "rm"], ["todos", "remove"], ["todos", "delete"]]) {
       expect(isWriteCommand(c)).toBe(true);
     }
   });
   test("reads are not writes", () => {
-    for (const c of [["read"], ["pinlog", "ls"], ["pinlog", "get"], ["schedule", "ls"], ["drafts"], ["lists"], ["channel", "ls"], []]) {
+    for (const c of [["read"], ["pinlog", "ls"], ["pinlog", "get"], ["schedule", "ls"], ["drafts"], ["lists"], ["channel", "ls"], ["todos"], ["todos", "ls"], ["todos", "list"], []]) {
       expect(isWriteCommand(c)).toBe(false);
     }
   });

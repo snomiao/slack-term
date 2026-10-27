@@ -61,6 +61,22 @@ describe("exported SLACK_BOT_TOKEN without --as-bot (CLI)", { timeout: 60_000 },
     }
   });
 
+  test("todos writes (aliases included) are refused too; todos ls is not", async () => {
+    const m = await startMock({ inline: FIXTURES });
+    try {
+      for (const sub of ["add", "done", "complete", "edit", "rm", "remove", "delete"]) {
+        const r = await run(["todos", sub, "#channel-01:1700000000.000100", "--due", "none"], m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-fake" });
+        expect(r.exitCode).toBe(2);
+        expect(r.stderr).toContain(`\`todos ${sub}\``);
+      }
+      expect(m.requests.length).toBe(0);
+      const ls = await run(["todos", "ls"], m.baseUrl, { SLACK_BOT_TOKEN: "xoxb-fake" });
+      expect(ls.stderr).not.toContain("refusing to act as YOU");
+    } finally {
+      await m.stop();
+    }
+  });
+
   test("clearing the bot token, or setting SLACK_TOKEN, lets the user write again", async () => {
     const m = await startMock({ inline: FIXTURES });
     try {

@@ -15,6 +15,7 @@ const WRITES = new Set([
   "schedule send", "schedule rm",
   "pinlog new", "pinlog set", "pinlog note", "pinlog pin",
   "todo set", "todo flag",
+  "todos add", "todos done", "todos complete", "todos edit", "todos rm", "todos remove", "todos delete",
   "lists create", "lists add", "lists set", "lists share",
   "drafts new", "drafts save", "drafts edit", "drafts update", "drafts delete", "drafts rm",
   "channel create", "channel new", "channel rename", "channel mv",
