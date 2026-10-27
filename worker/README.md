@@ -119,7 +119,7 @@ npx wrangler login               # or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_
 npx wrangler deploy
 ```
 
-`init` writes `package.json` (slack-term pinned to the CLI's version, wrangler
+`init` writes `package.json` (slack-term as `^` the CLI's version, wrangler
 pinned), `wrangler.jsonc` (the same config as this folder's, with `--name` or
 the folder's name), `src/index.ts`, `.gitignore` and a `README.md`. It makes no
 network calls and refuses to overwrite existing files unless `--force`. It

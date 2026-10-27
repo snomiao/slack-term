@@ -35,7 +35,8 @@ export function workerNameFrom(dir: string): string {
 export type ScaffoldOptions = {
   /** Worker name; default: the directory's basename. */
   name?: string;
-  /** The `slack-term` dependency spec; default: this CLI's own version. */
+  /** The `slack-term` dependency spec; default: `^` this CLI's version (a source
+   *  checkout carries a stale placeholder version; the range still resolves). */
   slackTerm?: string;
 };
 
@@ -46,7 +47,7 @@ export function relayFiles(name: string, opts: { slackTerm?: string } = {}): Rec
     private: true,
     type: "module",
     scripts: { deploy: "wrangler deploy", dev: "wrangler dev --local" },
-    dependencies: { "slack-term": opts.slackTerm ?? pkg.version },
+    dependencies: { "slack-term": opts.slackTerm ?? `^${pkg.version}` },
     devDependencies: { wrangler: WRANGLER_VERSION },
     engines: { node: ">=22" },
   };

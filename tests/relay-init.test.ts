@@ -49,7 +49,7 @@ describe("scaffold contents", () => {
   test("package.json: private, slack-term pinned to this version, wrangler pinned", () => {
     const p = JSON.parse(relayFiles("r")["package.json"]!) as Record<string, any>;
     expect(p.private).toBe(true);
-    expect(p.dependencies).toEqual({ "slack-term": rootPkg.version });
+    expect(p.dependencies).toEqual({ "slack-term": `^${rootPkg.version}` });
     expect(p.devDependencies).toEqual({ wrangler: WRANGLER_VERSION });
     expect(p.engines.node).toBe(">=22");
     expect(JSON.parse(relayFiles("r", { slackTerm: "file:../x" })["package.json"]!).dependencies["slack-term"]).toBe("file:../x");
