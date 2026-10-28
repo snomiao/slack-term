@@ -32,6 +32,7 @@ import { authTest, conversationsJoin, history, memberChannels, reactionAdd, repl
 import { resolveCookie, resolveToken } from "./profiles.ts";
 import { connectRelayStream, wakeableSleep } from "./relayStream.ts";
 import { wrapAdjacentUrls } from "./urlGuard.ts";
+import { agentUploadIds } from "./agentUploads.ts";
 
 const run = promisify(execFile);
 
@@ -41,17 +42,19 @@ export const FORWARD_PREFIX = "[slack-relay]";
 export type Agent = { pid: number; cwd: string; status: string; cli: string; seen?: number /* last output, ms */ };
 export type SlackMsg = {
   ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
-  reply_count?: number; latest_reply?: string; username?: string;
+  reply_count?: number; latest_reply?: string; username?: string; files?: { id: string }[];
 };
 
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
 
 /** Only a plain message written by the token owner — and not by the relay
  *  itself — may become an instruction. Everything else is data. */
-export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<string>): boolean {
+export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<string>, agentFiles: ReadonlySet<string> = new Set()): boolean {
   if (!selfId || m.user !== selfId) return false;
   if (m.subtype !== undefined || m.bot_id !== undefined) return false;
   if (ownTs.has(m.ts)) return false;
+  // An agent's upload under the owner's account (see agentUploads.ts) is not the owner speaking.
+  if (m.files?.length && m.files.every((f) => agentFiles.has(f.id))) return false;
   const text = (m.text ?? "").trim();
   return text !== "" && !text.startsWith(RELAY_MARK);
 }
@@ -620,6 +623,7 @@ export async function main(argv: string[]): Promise<void> {
     // roots are scanned: a thread started before a restart still gets new replies.
     const h = (await history(c.token, CHANNEL, 200, String(dayAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
     const recent = h.messages ?? [];
+    const agentFiles = agentUploadIds();
     const woken = [...wokenRoots];
     wokenRoots.clear();
     const oldRoots: SlackMsg[] = [];
@@ -631,7 +635,7 @@ export async function main(argv: string[]): Promise<void> {
     }
     for (const m of [...recent.slice().reverse(), ...oldRoots]) {
       if (Number(m.ts) > Number(st.cursor)) {
-        if (isInstruction(m, c.owner, ownTs) && mentionGate(m, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: false })) await deliver(m, m.ts);
+        if (isInstruction(m, c.owner, ownTs, agentFiles) && mentionGate(m, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: false })) await deliver(m, m.ts);
         st.cursor = m.ts;
         save();
       }
@@ -642,7 +646,7 @@ export async function main(argv: string[]): Promise<void> {
       const tHost = threadHostOf(r.messages ?? []);
       for (const x of r.messages ?? []) {
         if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
-        if (isInstruction(x, c.owner, ownTs) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost);
+        if (isInstruction(x, c.owner, ownTs, agentFiles) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost);
         st.replySeen[m.ts] = x.ts;
         save();
       }

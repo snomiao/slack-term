@@ -8,6 +8,14 @@ const SELF = "U00000001";
 const OTHER = "U00000002";
 
 describe("isInstruction", () => {
+  test("an owner upload whose files an agent posted is not an instruction", () => {
+    const own = new Set<string>();
+    const agentFiles = new Set(["F00000001"]);
+    const m = { ts: "1", user: SELF, text: "chart attached", files: [{ id: "F00000001" }] };
+    expect(isInstruction(m, SELF, own, agentFiles)).toBe(false);
+    expect(isInstruction({ ...m, files: [{ id: "F00000001" }, { id: "F00000002" }] }, SELF, own, agentFiles)).toBe(true);
+    expect(isInstruction(m, SELF, own)).toBe(true);
+  });
   const own = new Set(["1700000000.000300"]);
   test("accepts the owner's plain message", () => {
     expect(isInstruction({ ts: "1700000000.000100", user: SELF, text: "@otoji hi" }, SELF, own)).toBe(true);

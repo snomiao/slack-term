@@ -76,6 +76,9 @@ slack send "#general" "Hello team" --code=<code>
 slack send "#general:1700000000.000100" "Replying in thread"
 slack send "https://acme.slack.com/archives/C0123456789/p1700000000000100" "Replying in thread"
 
+# Upload a file (same gate); --as-bot posts it as the app (the bot needs files:write)
+slack upload "#general:1700000000.000100" chart.png --comment "latest numbers" --as-bot
+
 # Edit or delete a sent message (same confirm-code gate)
 slack edit "<permalink>" "fixed wording"
 slack delete "<permalink>"

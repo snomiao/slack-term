@@ -42,6 +42,7 @@ import {
   pollTally,
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
+import { recordAgentUpload } from "./agentUploads.ts";
 import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
@@ -3588,6 +3589,8 @@ interface UploadArgs {
   code?: string;
   channelId?: string;
   userId?: string;
+  /** Upload via the bot token (`--as-bot`); `token` is then the bot's. */
+  asBot?: boolean;
   cookie?: string;
 }
 async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
@@ -3611,7 +3614,7 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
 
   // Same silent-delivery footgun as `send`: a file uploaded to your own DM
   // notifies nobody, so it lands and is never seen.
-  if (await isSelfDmChannel(token, channelId, (await getSelf())?.userId, args.cookie)) {
+  if (!args.asBot && await isSelfDmChannel(token, channelId, (await getSelf())?.userId, args.cookie)) {
     console.error(`Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own upload.`);
   }
 
@@ -3631,14 +3634,14 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     const lines = isBatch
       ? [
           `--- Uploading ${files.length} files ------------------------`,
-          fromLine(self, { pad: 7 }),
+          fromLine(self, { pad: 7, asBot: args.asBot }),
           destLine,
           ...files.map((f) => `    ${f.filename}  (${f.sizeFmt})`),
           `--------------------------------────────────`,
         ]
       : [
           `--- Uploading file ---------------------------`,
-          fromLine(self, { pad: 7 }),
+          fromLine(self, { pad: 7, asBot: args.asBot }),
           destLine,
           `  File:  ${files[0]!.fp}`,
           `  Title: ${files[0]!.title}`,
@@ -3655,6 +3658,8 @@ async function cmdUpload(token: string, args: UploadArgs): Promise<void> {
     if (threadTs !== undefined) uploadOpts.threadTs = threadTs;
     if (args.comment !== undefined && i === 0) uploadOpts.initialComment = args.comment;
     const { fileId, permalink } = await uploadFile(token, channelId, f.fp, uploadOpts, args.cookie);
+    const agentPid = Number(process.env.AGENT_YES_PID);
+    if (!args.asBot && agentPid) recordAgentUpload(fileId, agentPid);
     const prefix = total > 1 ? `[${i + 1}/${total}] ` : "";
     console.log(`${prefix}✓ Uploaded (file_id: ${fileId}${permalink ? `, url: ${permalink}` : ""})`);
   }
@@ -5131,7 +5136,8 @@ async function main(): Promise<void> {
         .option("comment", { type: "string", describe: "Initial comment (first file)" })
         .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
-        .option("user-id", { type: "string" }),
+        .option("user-id", { type: "string" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Upload via the bot token (xoxb / SLACK_BOT_TOKEN); the bot app needs the files:write scope" }),
       async (argv) => {
         const args: UploadArgs = { target: argv.target!, filePaths: argv.file as string[] };
         if (argv.title) args.title = argv.title;
@@ -5139,6 +5145,15 @@ async function main(): Promise<void> {
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
+        if (argv["as-bot"]) {
+          // @user is looked up as the user and the DM opened as the bot, like `send --as-bot`;
+          // with --user-id, cmdUpload opens that DM with the bot token itself.
+          args.asBot = true;
+          const { botToken, channelId } = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId ?? args.userId);
+          if (channelId) args.channelId = channelId;
+          await cmdUpload(botToken, args);
+          return;
+        }
         const cookie = ck(argv as W);
         if (cookie) args.cookie = cookie;
         await cmdUpload(tok(argv as W), args);

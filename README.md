@@ -355,8 +355,12 @@ Each message reaches the agent through `ay send --force <pid>` behind a
 `[slack-relay]` prefix, and gets 👀 on receipt, then ✅ once delivered (⏳ when
 `ay` queued it because the agent was busy — still delivered, never resent). The agent
 answers by appending to `~/.config/slack-cli/relay/outbox/<pid>.md`; the relay
-posts that text (clipped) into the message's thread, plus one line when the agent
-needs input, goes idle without answering, or exits.
+posts that text into the message's thread (a long reply as several consecutive
+posts, cut between lines), plus one line when the agent needs input, goes idle
+without answering, or exits. An agent should post files with `slack upload --as-bot`
+(the bot app then needs `files:write`); a file it uploads under your own account is
+noted in `~/.config/slack-cli/agent-uploads.jsonl` so the relay does not hand it
+back to the agent as your message.
 
 **Bot mode.** Create an app with a bot user (scopes `channels:history`,
 `channels:read`, `channels:join`, `groups:history`, `chat:write`,

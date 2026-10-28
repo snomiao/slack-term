@@ -195,3 +195,70 @@ describe("upload self-DM warning (CLI)", { timeout: 60_000 }, () => {
     }
   });
 });
+
+// `upload --as-bot`: the file is posted by the app (so an agent's upload is not the
+// owner's own message), with the bot token and no session cookie.
+describe("upload --as-bot (CLI)", { timeout: 60_000 }, () => {
+  test("gate says [as bot]; the confirmed upload uses the bot token, no cookie", async () => {
+    const m = await startMock({ inline: {} });
+    try {
+      const filePath = join(tmpHome, "as-bot.txt");
+      writeFileSync(filePath, "hello");
+      const env = { SLACK_MCP_XOXP_TOKEN: "xoxc-fake", SLACK_COOKIE: "xoxd-secret", SLACK_BOT_TOKEN: "xoxb-fake" };
+      const args = ["upload", "#channel-01", filePath, "--channel-id", "C00000001", "--as-bot"];
+      const dry = await run(args, { baseUrl: m.baseUrl, env });
+      expect(dry.exitCode).toBe(1);
+      expect(dry.stdout).toContain("[as bot]");
+
+      const before = m.requests.length;
+      const r = await run([...args, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      const files = m.requests.slice(before).filter((q) => q.method.startsWith("files."));
+      expect(files.length).toBeGreaterThan(0);
+      for (const q of files) {
+        expect(q.headers.authorization).toBe("Bearer xoxb-fake");
+        expect(q.headers.cookie).toBeUndefined();
+      }
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("without a bot token it refuses instead of uploading as the user", async () => {
+    const m = await startMock({ inline: {} });
+    try {
+      const filePath = join(tmpHome, "as-bot-none.txt");
+      writeFileSync(filePath, "hello");
+      const r = await run(["upload", "#channel-01", filePath, "--channel-id", "C00000001", "--as-bot"], { baseUrl: m.baseUrl });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("--as-bot needs a bot token");
+      expect(m.requests.some((q) => q.method.startsWith("files."))).toBe(false);
+    } finally {
+      await m.stop();
+    }
+  });
+});
+
+// Inside an agent (AGENT_YES_PID), an upload under the owner's account records its
+// file id so the relay does not hand the upload back to the agent as an instruction.
+describe("upload inside an agent records the file for the relay (CLI)", { timeout: 60_000 }, () => {
+  test("AGENT_YES_PID set: the uploaded file id is appended to the log", async () => {
+    const m = await startMock({ inline: {} });
+    const log = join(tmpHome, "agent-uploads.jsonl");
+    try {
+      const filePath = join(tmpHome, "agent-up.txt");
+      writeFileSync(filePath, "hello");
+      const env = { AGENT_YES_PID: "4242", SLACK_TERM_AGENT_UPLOADS: log };
+      const args = ["upload", "#channel-01", filePath, "--channel-id", "C00000001"];
+      const dry = await run(args, { baseUrl: m.baseUrl, env });
+      const r = await run([...args, `--code=${extractCode(dry.stderr)}`], { baseUrl: m.baseUrl, env });
+      expect(r.exitCode).toBe(0);
+      const fileId = r.stdout.match(/file_id: (\w+)/)?.[1];
+      expect(fileId).toBeDefined();
+      const { agentUploadIds } = await import("../ts/agentUploads.ts");
+      expect(agentUploadIds(log).has(fileId!)).toBe(true);
+    } finally {
+      await m.stop();
+    }
+  });
+});
