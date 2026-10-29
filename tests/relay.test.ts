@@ -2,12 +2,22 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
 
 describe("isInstruction", () => {
+  test("a forwarded message is passed on, quoted, with its author and link", () => {
+    const m = {
+      ts: "1", user: SELF, text: "fix it",
+      attachments: [{ is_share: true, author_name: "alice", text: "line one\nline two", from_url: "https://acme.slack.com/archives/C00000001/p1700000000000100" }],
+    };
+    expect(sharedText(m)).toBe("[forwarded message from @alice, https://acme.slack.com/archives/C00000001/p1700000000000100]\n> line one\n> line two");
+    expect(sharedText({ ts: "1", attachments: [{ text: "a link preview" }] })).toBe("");
+    // A bare forward with no comment of its own is still the owner speaking.
+    expect(isInstruction({ ...m, text: "" }, SELF, new Set())).toBe(true);
+  });
   test("an owner upload whose files an agent posted is not an instruction", () => {
     const own = new Set<string>();
     const agentFiles = new Set(["F00000001"]);

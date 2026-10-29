@@ -43,7 +43,26 @@ export type Agent = { pid: number; cwd: string; status: string; cli: string; see
 export type SlackMsg = {
   ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
   reply_count?: number; latest_reply?: string; username?: string; files?: { id: string }[];
+  attachments?: SharedAttachment[];
 };
+type SharedAttachment = {
+  is_share?: boolean; is_msg_unfurl?: boolean; text?: string; fallback?: string;
+  author_name?: string; author_id?: string; channel_id?: string; ts?: string; from_url?: string;
+};
+
+/** Messages the owner forwarded or quoted into this one (Slack puts them in
+ *  `attachments`, not `text`), as quoted lines for the agent. */
+export function sharedText(m: SlackMsg): string {
+  const out: string[] = [];
+  for (const a of m.attachments ?? []) {
+    if (!a.is_share && !a.is_msg_unfurl) continue;
+    const who = a.author_name ? `@${a.author_name}` : a.author_id ?? "someone";
+    const where = a.from_url ?? [a.channel_id, a.ts].filter(Boolean).join(" ");
+    const body = (a.text ?? a.fallback ?? "").split("\n").map((l) => `> ${l}`).join("\n");
+    out.push(`[forwarded message from ${who}${where ? `, ${where}` : ""}]\n${body}`);
+  }
+  return out.join("\n\n");
+}
 
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
 
@@ -56,7 +75,8 @@ export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<st
   // An agent's upload under the owner's account (see agentUploads.ts) is not the owner speaking.
   if (m.files?.length && m.files.every((f) => agentFiles.has(f.id))) return false;
   const text = (m.text ?? "").trim();
-  return text !== "" && !text.startsWith(RELAY_MARK);
+  if (text.startsWith(RELAY_MARK)) return false;
+  return text !== "" || sharedText(m) !== "";
 }
 
 /** Split a leading `@name` route off a message. Slack user mentions (<@U…>)
@@ -569,7 +589,8 @@ export async function main(argv: string[]): Promise<void> {
       return;
     }
     await react(m.ts, "eyes");
-    const msg = forwardText(route ? body : text.trim(), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
+    const shared = sharedText(m);
+    const msg = forwardText([route ? body : text.trim(), shared].filter(Boolean).join("\n\n"), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
     // `ay send` exit 4 = QUEUED: accepted while the agent is busy, delivered when its
     // input box frees up. That is a delivery, and resending it would duplicate.
     let queued = false;
