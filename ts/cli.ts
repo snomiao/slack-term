@@ -43,6 +43,7 @@ import {
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
 import { recordAgentUpload } from "./agentUploads.ts";
+import { messageExtras } from "./msgExtras.ts";
 import { attributionEnabled, attributionMetadata, captureAttribution, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
@@ -256,15 +257,8 @@ async function formatMsgLine(
     })
     .filter(Boolean)
     .join(" ");
-  const attachTail = asArray(m.files)
-    .map(asRecord)
-    .map((f) => {
-      const name = typeof f.name === "string" ? f.name : typeof f.title === "string" ? f.title : "(file)";
-      const sz = typeof f.size === "number" ? `  (${fmtSize(f.size)})` : "";
-      const id = typeof f.id === "string" ? `  [${f.id}]` : "";
-      return `\n   📎 ${name}${sz}${id}`;
-    })
-    .join("");
+  // Files, forwarded messages, link previews, other blocks: named, never dropped.
+  const attachTail = messageExtras(m).map((l) => `\n   ${l}`).join("");
   // Thread parents carry reply_count; surface it inline so a reader of
   // top-level history can see there is more to read without opening each ts.
   const replyCount = Number(m.reply_count ?? 0);
@@ -325,6 +319,11 @@ function slimMsg(m: Record<string, Json>): Record<string, Json> {
     // Present only when the message carries attachments, so scripts can reliably
     // detect files without the key adding noise to every plain-text line.
     ...(files.length > 0 ? { files } : {}),
+    // Forwarded messages and link previews live in `attachments`, and buttons,
+    // images and sections in `blocks` — passed through whole, so --json never
+    // shows less than the message holds.
+    ...(Array.isArray(m.attachments) && m.attachments.length ? { attachments: m.attachments } : {}),
+    ...(Array.isArray(m.blocks) && m.blocks.some((b) => asRecord(b).type !== "rich_text") ? { blocks: m.blocks } : {}),
   };
 }
 

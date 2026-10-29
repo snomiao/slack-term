@@ -1,4 +1,5 @@
 import { history, replies, resolveChannel, parseSlackPermalink, userInfoPair, authTest, conversationInfo, RateLimitError, type Json } from "./slack.ts";
+import { messageExtras } from "./msgExtras.ts";
 import { resolveDateMarkup, resolveMentions } from "./format.ts";
 import { tailRTMImpl } from "./rtm.ts";
 
@@ -85,7 +86,8 @@ async function formatTailLine(
   // Annotate thread replies so a merged channel+thread stream stays readable.
   const mark = isThreadReply(m) ? "↳ " : "";
   const who = chLabel ? `${chLabel}  @${handle}` : `@${handle}`;
-  return `${stamp}  ${mark}${who}:  ${body}`;
+  const extras = messageExtras(m as Parameters<typeof messageExtras>[0]).map((l) => `\n   ${l}`).join("");
+  return `${stamp}  ${mark}${who}:  ${body}${extras}`;
 }
 
 type PollOpts = {

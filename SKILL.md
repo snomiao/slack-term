@@ -66,6 +66,9 @@ slack read @username
 # read inside the thread (`slack thread "#general" <ts>`); top-level output alone
 # never shows thread replies. --json carries reply_count/reply_users_count/latest_reply.
 slack read "#general" --unreplied   # only what's still awaiting your answer
+# What a message carries beyond its text is listed under it: 📎 files (name, type,
+# size, id), ↪ forwarded messages (author, link, quoted text), 🔗 link previews,
+# ▦ other blocks. --json passes `attachments` (and non-text `blocks`) through whole.
 
 # Send a message (two-step confirm)
 slack send "#general" "Hello team"

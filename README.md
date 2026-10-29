@@ -82,6 +82,9 @@ slack msgs
 # --json adds reply_count / reply_users_count / latest_reply.
 slack read "#general"
 slack read "#general" --unreplied   # only threads/posts whose last word isn't yours
+# What a message carries beyond its text is listed under it: 📎 files (name, type,
+# size, id), ↪ forwarded messages (author, link, quoted text), 🔗 link previews,
+# ▦ other blocks. --json passes `attachments` (and non-text `blocks`) through whole.
 
 # Search messages
 slack search "deploy"
