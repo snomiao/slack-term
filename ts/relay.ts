@@ -734,7 +734,9 @@ export async function main(argv: string[]): Promise<void> {
       if (now === "needs_input") await post(`*${who}* needs input — reply in this thread to answer`, threadTs);
       else if (now === "idle" && !st.replied[pidStr]) await post(`*${who}* went idle without a reply`, threadTs);
       if (!live.has(pid)) {
-        await post(`*${who}* exited`, threadTs);
+        // An agent already stopped that merely drops out of the registry (e.g.
+        // `ay restart` compacting it) did not exit just now: say nothing.
+        if (prev !== "stopped" && prev !== "exited") await post(`*${who}* exited`, threadTs);
         delete st.agentThread[pidStr];
       }
       if (now === "idle") st.replied[pidStr] = true; // one idle note per forward
