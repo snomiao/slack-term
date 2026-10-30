@@ -45,4 +45,13 @@ describe("URL boundaries", () => {
     expect(wrapAdjacentUrls("https://example.com/a\n<https://example.com/b|説明>（x）")).toBe("https://example.com/a\n<https://example.com/b|説明>（x）");
     expect(adjacentUrls(wrapAdjacentUrls("（站）https://example.com/a，好"))).toEqual([]);
   });
+
+  test("scheme-less host/path glued to CJK is wrapped, plain words are not", () => {
+    expect(wrapAdjacentUrls("已建 github.com/snomiao/.env.payments.enc，把文件搬过去"))
+      .toBe("已建 <https://github.com/snomiao/.env.payments.enc|github.com/snomiao/.env.payments.enc>，把文件搬过去");
+    expect(adjacentUrls("仓库github.com/a/b里")).toEqual(["github.com/a/b里"]);
+    expect(wrapAdjacentUrls("see github.com/a/b for details, e.g. v1.2")).toBe("see github.com/a/b for details, e.g. v1.2");
+    expect(wrapAdjacentUrls("<https://github.com/a/b|github.com/a/b>，好")).toBe("<https://github.com/a/b|github.com/a/b>，好");
+    expect(wrapAdjacentUrls("mail me at a@b.com/x，好")).toBe("mail me at a@b.com/x，好");
+  });
 });
