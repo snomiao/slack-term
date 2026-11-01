@@ -248,3 +248,21 @@ describe("splitOutbox", () => {
   });
   test("a dash rule inside a reply is just text", () => expect(splitOutbox("a\n---\nb").threads).toEqual([]));
 });
+
+describe("deliverable (ay send's length cap)", () => {
+  test("a short forward goes as is", async () => {
+    const { deliverable } = await import("../ts/relay.ts");
+    const msg = forwardText("ping", { from: "@alice", agentPid: 103, outbox: "/tmp/ob" });
+    expect(deliverable(msg, { from: "@alice", file: "/tmp/in/1.md" })).toEqual({ text: msg, spill: false });
+  });
+  test("a long forward becomes a short pointer to the file and the thread", async () => {
+    const { deliverable, AY_BODY_MAX } = await import("../ts/relay.ts");
+    const msg = forwardText("長".repeat(2000), { from: "@alice", agentPid: 103, outbox: "/tmp/ob" });
+    const d = deliverable(msg, { from: "@alice", file: "/tmp/in/1.md", readCmd: "slack thread -w ws 'C1' 1.2" });
+    expect(d.spill).toBe(true);
+    expect(d.text.length).toBeLessThanOrEqual(AY_BODY_MAX);
+    expect(d.text).toContain("cat /tmp/in/1.md");
+    expect(d.text).toContain("slack thread -w ws 'C1' 1.2");
+    expect(d.text.startsWith(FORWARD_PREFIX)).toBe(true);
+  });
+});

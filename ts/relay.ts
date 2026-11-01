@@ -224,6 +224,24 @@ export function forwardText(body: string, opts: { from: string; agentPid: number
   ].join("\n");
 }
 
+/** `ay send` refuses more than 1024 chars, its own <ay-msg …> envelope included (about 134),
+ *  so a forward longer than this goes to a file and the agent gets a short pointer instead. */
+export const AY_BODY_MAX = 850;
+
+/** The text to `ay send`: `msg` itself when it fits, else a pointer to `file` (where the caller
+ *  writes `msg`) and to the thread, so a long Slack message still reaches the agent in full. */
+export function deliverable(msg: string, opts: { from: string; file: string; readCmd?: string }): { text: string; spill: boolean } {
+  if (msg.length <= AY_BODY_MAX) return { text: msg, spill: false };
+  return {
+    spill: true,
+    text: [
+      `${FORWARD_PREFIX} long message from ${opts.from} via Slack (${msg.length} chars, over ay send's limit).`,
+      `Read it in full, reply instructions included: cat ${opts.file}`,
+      ...(opts.readCmd ? [`Or read the thread itself: ${opts.readCmd}`] : []),
+    ].join("\n"),
+  };
+}
+
 export const NEW_THREAD = "--- new thread ---";
 
 /** An outbox chunk: text for the agent's current thread, then one new top-level thread per
@@ -590,7 +608,19 @@ export async function main(argv: string[]): Promise<void> {
     }
     await react(m.ts, "eyes");
     const shared = sharedText(m);
-    const msg = forwardText([route ? body : text.trim(), shared].filter(Boolean).join("\n\n"), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
+    const full = forwardText([route ? body : text.trim(), shared].filter(Boolean).join("\n\n"), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
+    // Too long for `ay send`: the agent gets a pointer, and the whole message waits in a
+    // private file (the same text, reply instructions included).
+    const inboxFile = join(stateDir, "inbox", `${m.ts}.md`);
+    const { text: msg, spill } = deliverable(full, {
+      from: `@${creds!.ownerName}`,
+      file: inboxFile,
+      readCmd: `slack thread -w ${cfg.workspace ?? "<ws>"} '${CHANNEL}' ${threadTs}`,
+    });
+    if (spill) {
+      mkdirSync(join(stateDir, "inbox"), { recursive: true, mode: 0o700 });
+      writeFileSync(inboxFile, `${full}\n`, { mode: 0o600 });
+    }
     // `ay send` exit 4 = QUEUED: accepted while the agent is busy, delivered when its
     // input box frees up. That is a delivery, and resending it would duplicate.
     let queued = false;
