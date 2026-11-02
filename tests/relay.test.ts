@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -264,5 +264,31 @@ describe("deliverable (ay send's length cap)", () => {
     expect(d.text).toContain("cat /tmp/in/1.md");
     expect(d.text).toContain("slack thread -w ws 'C1' 1.2");
     expect(d.text.startsWith(FORWARD_PREFIX)).toBe(true);
+  });
+});
+
+describe("lane wake (no running agent takes a message)", () => {
+  test("target: the exited agent's checkout, else the route, else the default", () => {
+    expect(wakeTarget({ boundCwd: "/w/acme/tree/main", route: "otoji", defaultAgent: "slack-term" })).toBe("/w/acme/tree/main");
+    expect(wakeTarget({ route: "otoji", defaultAgent: "slack-term" })).toBe("otoji");
+    expect(wakeTarget({ defaultAgent: "slack-term" })).toBe("slack-term");
+  });
+  test("a pid or repo/branch names no checkout; nothing usable → no target", () => {
+    expect(wakeTarget({ route: "12345", defaultAgent: "slack-term" })).toBe("slack-term");
+    expect(wakeTarget({ route: "acme/feat-x" })).toBeUndefined();
+    expect(wakeTarget({ defaultAgent: "4242" })).toBeUndefined();
+    expect(wakeTarget({})).toBeUndefined();
+  });
+  test("parseWake reads the last JSON line; errors and junk are not ok", () => {
+    expect(parseWake('log line\n{"ok":true,"action":"resumed","lane":"acme","pid":77,"agentId":"a1","note":"session s1"}\n'))
+      .toEqual({ ok: true, action: "resumed", lane: "acme", pid: 77, note: "session s1" });
+    expect(parseWake('{"ok":false,"error":"no checkout for nope"}')).toEqual({ ok: false, error: "no checkout for nope" });
+    expect(parseWake("").ok).toBe(false);
+    expect(parseWake("bun: command not found")).toEqual({ ok: false, error: "lane wake printed no result: bun: command not found" });
+  });
+  test("a note for resumed / started / revived, none when it was already running", () => {
+    expect(wakeNote({ ok: true, action: "resumed", lane: "acme", pid: 77, note: "session s1" })).toBe("▶ resumed lane acme (pid 77, session s1)");
+    expect(wakeNote({ ok: true, action: "started", lane: "acme", pid: 78 })).toBe("▶ started a fresh lane acme (pid 78)");
+    expect(wakeNote({ ok: true, action: "running", lane: "acme", pid: 79 })).toBeUndefined();
   });
 });

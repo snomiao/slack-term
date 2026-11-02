@@ -27,7 +27,7 @@ import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { authTest, conversationsJoin, history, memberChannels, reactionAdd, replies, send } from "./slack.ts";
 import { resolveCookie, resolveToken } from "./profiles.ts";
 import { connectRelayStream, wakeableSleep } from "./relayStream.ts";
@@ -215,7 +215,40 @@ export function matchAgent(route: string, agents: Agent[], defaultPid?: number):
   return { candidates: [] };
 }
 
-export function forwardText(body: string, opts: { from: string; agentPid: number; outbox: string; permalink?: string }): string {
+/** What `lane wake` should bring up when no running agent takes a message: the exited
+ *  agent's checkout for a bound thread, else the route, else the default. A pid names
+ *  no checkout, and "repo/branch" would read as owner/repo, so neither is a target. */
+export function wakeTarget(o: { boundCwd?: string | undefined; route?: string | undefined; defaultAgent?: string | undefined }): string | undefined {
+  const usable = (r?: string): string | undefined => (r && !/^\d+$/.test(r) && !r.includes("/") ? r : undefined);
+  return o.boundCwd || usable(o.route) || usable(o.defaultAgent);
+}
+
+export type WakeResult =
+  | { ok: true; action: string; lane?: string; pid: number; note?: string }
+  | { ok: false; error: string };
+
+/** `lane wake` prints one JSON line on stdout (exit 1 when not ok). */
+export function parseWake(stdout: string): WakeResult {
+  const line = stdout.trim().split("\n").filter(Boolean).pop() ?? "";
+  try {
+    const o = JSON.parse(line) as Record<string, unknown>;
+    if (o.ok === true && typeof o.pid === "number") {
+      return { ok: true, action: String(o.action ?? ""), pid: o.pid, ...(typeof o.lane === "string" ? { lane: o.lane } : {}), ...(typeof o.note === "string" && o.note ? { note: o.note } : {}) };
+    }
+    return { ok: false, error: typeof o.error === "string" ? o.error : "lane wake failed" };
+  } catch {
+    return { ok: false, error: `lane wake printed no result${line ? `: ${line.slice(0, 200)}` : ""}` };
+  }
+}
+
+/** The thread note for a wake; none when the lane was already running. */
+export function wakeNote(r: Extract<WakeResult, { ok: true }>): string | undefined {
+  const what = r.action === "resumed" ? "resumed" : r.action === "started" ? "started a fresh" : r.action === "revived" ? "revived" : undefined;
+  if (!what) return undefined;
+  return `▶ ${what} lane ${r.lane ?? "?"} (pid ${r.pid}${r.note ? `, ${r.note}` : ""})`;
+}
+
+export function forwardText(body: string, opts:{ from: string; agentPid: number; outbox: string; permalink?: string }): string {
   const file = join(opts.outbox, `${opts.agentPid}.md`);
   return [
     `${FORWARD_PREFIX} message from ${opts.from} via Slack${opts.permalink ? ` (${opts.permalink})` : ""}:`,
@@ -281,7 +314,7 @@ export function splitForSlack(text: string, maxChars = 3500): string[] {
 
 type State = {
   cursor: string;                         // newest top-level ts seen
-  threads: Record<string, { pid: number; seen: string; touched: number }>; // thread_ts → agent
+  threads: Record<string, { pid: number; seen: string; touched: number; cwd?: string }>; // thread_ts → agent (cwd: to wake its lane after it exits)
   agentThread: Record<string, string>;    // pid → latest thread_ts
   ownTs: string[];                        // ts the relay posted (loop guard)
   outboxOffset: Record<string, number>;   // pid → bytes consumed
@@ -324,6 +357,8 @@ type Config = {
   team?: string;         // expected team id — a bot token for another workspace is refused
   owner?: string;        // the user whose messages are instructions (default: the user token's owner)
   defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
+  wake?: boolean;        // false: never `lane wake` a lane for a message no running agent takes (default on)
+  laneCmd?: string;      // the `lane` CLI (default ~/.local/bin/lane, else `lane` on PATH)
   warnChannel?: string;  // the instance watching this channel posts realtime-degraded warnings there (others only log)
   agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
   channelDefaults?: Record<string, string>;
@@ -537,7 +572,8 @@ export async function main(argv: string[]): Promise<void> {
     }
     if (ts) ownTs.add(ts);
     if (ts && !threadTs && pid !== undefined) {
-      st.threads[ts] = { pid, seen: ts, touched: Date.now() };
+      const cwd = agents.find((a) => a.pid === pid)?.cwd;
+      st.threads[ts] = { pid, seen: ts, touched: Date.now(), ...(cwd ? { cwd } : {}) };
       st.agentThread[String(pid)] = ts;
       st.replySeen[ts] = ts;
     }
@@ -552,6 +588,23 @@ export async function main(argv: string[]): Promise<void> {
   const lastStatus = new Map<number, string>();
 
   const defaultAgent = (): Agent | undefined => (cfg.defaultAgent ? matchAgent(cfg.defaultAgent, agents).agent : undefined);
+
+  const wakeable = (route: string): boolean => cfg.wake !== false && wakeTarget({ route }) !== undefined;
+  const laneCmd = cfg.laneCmd ?? (existsSync(join(homedir(), ".local", "bin", "lane")) ? join(homedir(), ".local", "bin", "lane") : "lane");
+  /** `lane wake <target>`: makes sure a lane is up in that checkout and returns its pid.
+   *  Awaited without blocking the event loop; it can take up to the supervisor's register timeout. */
+  const wakeLane = async (target: string): Promise<WakeResult> => {
+    // `lane` is a shell wrapper around `bun …`: under a process manager PATH may lack bun.
+    const env = { ...process.env, PATH: `${dirname(process.execPath)}:${process.env.PATH ?? ""}` };
+    try {
+      const { stdout } = await run(laneCmd, ["wake", target, `--from=slack:#${CHANNEL}`], { timeout: 200_000, env });
+      return parseWake(stdout);
+    } catch (e: unknown) {
+      const err = e as { stdout?: string; code?: number | string; message?: string };
+      if (err.stdout?.trim()) return parseWake(err.stdout);
+      return { ok: false, error: `lane wake failed (${err.code ?? err.message ?? "?"})` };
+    }
+  };
 
   // Latency trace, per message: Slack post → seen (wake/poll) → ay send done → the agent's
   // outbox write → reply posted. Logged as `trace …` lines (seconds, relative to the post).
@@ -589,7 +642,8 @@ export async function main(argv: string[]): Promise<void> {
     if (route) {
       const r = matchAgent(route, agents, defaultAgent()?.pid);
       agent = r.agent;
-      if (!agent) {
+      // Nothing by that name is running: wake its lane below. Several are: ask which.
+      if (!agent && (r.candidates.length || !wakeable(route))) {
         markDelivered(st.delivered, m.ts); save();
         const names = (r.candidates.length ? r.candidates : agents).map((a) => `\`@${a.pid}\` ${agentLabel(a)}`).join(", ");
         await post(`no unique agent for \`@${route}\` — try one of: ${names}`, threadTs);
@@ -602,9 +656,38 @@ export async function main(argv: string[]): Promise<void> {
       agent = defaultAgent();
     }
     if (!agent) {
-      markDelivered(st.delivered, m.ts); save();
-      await post(`agent ${bound?.pid ?? cfg.defaultAgent ?? "?"} is not running — address one with \`@name …\``, threadTs);
-      return;
+      // No running agent takes it: wake the lane (resume its newest session, or start one),
+      // then deliver as usual — the outbox and envelope are keyed by the new pid.
+      const boundGone = bound && !agents.some((a) => a.pid === bound.pid);
+      const target = cfg.wake === false ? undefined
+        : wakeTarget({ boundCwd: !route && boundGone ? bound.cwd : undefined, route, defaultAgent: cfg.defaultAgent });
+      if (!target) {
+        markDelivered(st.delivered, m.ts); save();
+        await post(`agent ${bound?.pid ?? cfg.defaultAgent ?? "?"} is not running — address one with \`@name …\``, threadTs);
+        return;
+      }
+      await react(m.ts, "eyes");
+      const shown = target.replace(homedir(), "~");
+      log(`wake ${shown} for ts=${m.ts}`);
+      const w = await wakeLane(target);
+      if (!w.ok) {
+        markDelivered(st.delivered, m.ts); save();
+        await post(`could not wake a lane for \`${shown}\`: ${w.error}`, threadTs);
+        return;
+      }
+      // A lane that just registered can take a moment to show up in `ay ls`.
+      for (let i = 0; i < 5 && !agent; i++) {
+        if (i) await new Promise((r) => setTimeout(r, 2000));
+        agents = await listAgents().catch((e: unknown) => { log("ay ls failed", String(e)); return agents; });
+        agent = agents.find((a) => a.pid === w.pid);
+      }
+      if (!agent) {
+        markDelivered(st.delivered, m.ts); save();
+        await post(`woke lane ${w.lane ?? shown} (pid ${w.pid}), but it is not in \`ay ls\` yet — resend in a moment`, threadTs);
+        return;
+      }
+      const note = wakeNote(w);
+      if (note) await post(note, threadTs);
     }
     await react(m.ts, "eyes");
     const shared = sharedText(m);
@@ -640,6 +723,7 @@ export async function main(argv: string[]): Promise<void> {
     // Mutate in place: the replies loop holds this same object and advances its `seen`.
     const th = (st.threads[threadTs] ??= { pid: agent.pid, seen: threadTs, touched: Date.now() });
     th.pid = agent.pid;
+    th.cwd = agent.cwd;
     th.touched = Date.now();
     st.agentThread[String(agent.pid)] = threadTs;
     st.replied[String(agent.pid)] = false;
