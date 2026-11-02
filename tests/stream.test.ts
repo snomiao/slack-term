@@ -756,6 +756,44 @@ describe("webClient (against the mock Slack API)", () => {
   });
 });
 
+describe("webClient: what a bot without every *:read scope can still stream", () => {
+  let mock: MockHandle;
+  afterAll(async () => {
+    await mock.stop();
+    delete process.env.SLACK_API_BASE;
+  });
+
+  test("explicit --channel ids: conversations.info only, never users.conversations", async () => {
+    mock = await startMock({
+      inline: {
+        "users.conversations": { ok: false, error: "missing_scope" },
+        "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: "U00000001" } },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+    const c = webClient("xoxb-fake");
+    expect(await c.listChannels(["D00000001"])).toEqual([{ id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" }]);
+    expect(mock.requests.some((q) => q.method === "users.conversations")).toBe(false);
+    await mock.stop();
+  });
+
+  test("no --channel and a missing scope: lists type by type, keeping what it may read", async () => {
+    mock = await startMock({
+      inline: {
+        "users.conversations__exclude_archived=true&limit=200&types=public_channel_private_channel_im_mpim": { ok: false, error: "missing_scope" },
+        "users.conversations__exclude_archived=true&limit=200&types=public_channel": { ok: false, error: "missing_scope" },
+        "users.conversations__exclude_archived=true&limit=200&types=private_channel": { ok: false, error: "missing_scope" },
+        "users.conversations__exclude_archived=true&limit=200&types=im": { ok: true, channels: [{ id: "D00000001", is_im: true, user: "U00000001" }], response_metadata: { next_cursor: "" } },
+        "users.conversations__exclude_archived=true&limit=200&types=mpim": { ok: false, error: "missing_scope" },
+      },
+    });
+    process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
+    const c = webClient("xoxb-fake");
+    expect((await c.listChannels()).map((x) => x.id)).toEqual(["D00000001"]);
+    expect(err.some((l) => l.includes("no scope to list public_channel, private_channel, mpim"))).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Relay: doorbells from the Cloudflare Worker (worker/).
 
