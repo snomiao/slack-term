@@ -98,6 +98,30 @@ describe("redact: shape of the output", () => {
   test("a 6-digit number without a code word stays", () => expect(redact("order 482913 shipped").kinds).toEqual([]));
 });
 
+describe("spans come from the match's own group (rechrome #55)", () => {
+  test("a value equal to the param name: the VALUE is masked, the name kept", () => {
+    expect(redact("see https://example.com/x?secret=secret&y=1").text).toBe("see https://example.com/x?secret=[redacted:url-secret-param]&y=1");
+  });
+});
+
+describe("known values (the 4th rule)", () => {
+  test("an exact value the caller handled is masked wherever it appears", () => {
+    const v = rnd(12);
+    expect(redact(`a ${v} b ${v}`, { known: [v] }).text).toBe("a [redacted:known-secret] b [redacted:known-secret]");
+  });
+  test("its JSON-string spelling too", () => {
+    const v = `pa"ss\\${rnd(8)}`;
+    const json = JSON.stringify({ p: v });
+    expect(redact(json, { known: [v] }).text).toBe('{"p":"[redacted:known-secret]"}');
+  });
+  test("longest first, so a value inside another is not cut in two", () => {
+    const short = rnd(8);
+    const long = `${short}${rnd(8)}`;
+    expect(redact(`x ${long} y`, { known: [short, long] }).text).toBe("x [redacted:known-secret] y");
+  });
+  test("values under 6 chars are ignored", () => expect(redact("abc abc", { known: ["abc"] }).kinds).toEqual([]));
+});
+
 describe("the 1,000-message bench set (synthetic)", () => {
   test("catches every planted secret, flags no clean message, ~0.1 ms/msg", () => {
     seed = 0x5eed;

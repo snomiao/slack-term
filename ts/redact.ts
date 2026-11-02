@@ -84,7 +84,7 @@ export function loadGitleaksRules(toml: string): SecretRule[] {
     }
     const j = goToJs(r.regex);
     rules.push({
-      id: r.id, re: new RegExp(j.source, j.flags + "g"), keywords: (r.keywords ?? []).map((k) => k.toLowerCase()),
+      id: r.id, re: new RegExp(j.source, j.flags + "gd"), keywords: (r.keywords ?? []).map((k) => k.toLowerCase()),
       ...(r.entropy ? { entropy: r.entropy } : {}), ...(r.secretGroup ? { group: r.secretGroup } : {}), allow, stop,
     });
   }
@@ -94,12 +94,12 @@ export function loadGitleaksRules(toml: string): SecretRule[] {
 /** Ours, for what gitleaks' set leaves out. */
 export const OWN_RULES: SecretRule[] = [
   // ?token=… / &sig=… in a URL; `<your token>` and xxx-style placeholders are not secrets.
-  { id: "url-secret-param", re: /[?&](?:access_token|token|key|api_key|apikey|secret|client_secret|password|passwd|pwd|sig|signature)=([^&\s#<>"'|]{6,})/gi, keywords: ["="], allow: [/^(?:x+|\*+|\.\.\.|your[-_]?\w*|xxx\w*)$/i], stop: [] },
+  { id: "url-secret-param", re: /[?&](?:access_token|token|key|api_key|apikey|secret|client_secret|password|passwd|pwd|sig|signature)=([^&\s#<>"'|]{6,})/gid, keywords: ["="], allow: [/^(?:x+|\*+|\.\.\.|your[-_]?\w*|xxx\w*)$/i], stop: [] },
   // OpenAI / Anthropic / OpenRouter style keys, whatever their exact layout.
-  { id: "sk-key", re: /\b(sk-(?:proj-|ant-|or-v1-|svcacct-)?[A-Za-z0-9_-]{20,})/g, keywords: ["sk-"], entropy: 3.5, allow: [], stop: [] },
+  { id: "sk-key", re: /\b(sk-(?:proj-|ant-|or-v1-|svcacct-)?[A-Za-z0-9_-]{20,})/gd, keywords: ["sk-"], entropy: 3.5, allow: [], stop: [] },
   // A 6-digit code only right after a word that says it is one: a bare
   // 6-digit number is far more often an amount, an order or a build.
-  { id: "otp-code", re: /(?:code|コード|otp|pin|passcode|認証|確認番号|ワンタイム)[^\d\n]{0,20}(?<![\d.])(\d{6})(?![\d.])/gi, keywords: [], allow: [], stop: [] },
+  { id: "otp-code", re: /(?:code|コード|otp|pin|passcode|認証|確認番号|ワンタイム)[^\d\n]{0,20}(?<![\d.])(\d{6})(?![\d.])/gid, keywords: [], allow: [], stop: [] },
 ];
 
 let cached: SecretRule[] | undefined;
@@ -119,20 +119,47 @@ function shannon(s: string): number {
 
 export type SecretHit = { id: string; start: number; end: number };
 
-/** Every secret span in `text`. */
-export function findSecrets(text: string, rules = secretRules()): SecretHit[] {
-  const lower = text.toLowerCase();
+/** Every span of an exact value the caller knows is secret (its own token, a
+ *  value it filled in), longest first, plus the value's JSON-string spelling
+ *  (a `"` or `\\` in it is escaped there). The 4th rule, after rechrome's
+ *  fill-secret scrub; values shorter than 6 are ignored as unsafe to match. */
+function findKnown(text: string, known: readonly string[]): SecretHit[] {
+  const forms = new Set<string>();
+  for (const v of known) {
+    if (v.length < 6) continue;
+    forms.add(v);
+    forms.add(JSON.stringify(v).slice(1, -1));
+  }
   const out: SecretHit[] = [];
+  for (const f of [...forms].sort((a, b) => b.length - a.length)) {
+    for (let i = text.indexOf(f); i >= 0; i = text.indexOf(f, i + f.length)) out.push({ id: "known-secret", start: i, end: i + f.length });
+  }
+  return out;
+}
+
+export type RedactOptions = { rules?: SecretRule[]; known?: readonly string[] };
+
+/** Every secret span in `text`. */
+export function findSecrets(text: string, opts: RedactOptions = {}): SecretHit[] {
+  const rules = opts.rules ?? secretRules();
+  const lower = text.toLowerCase();
+  const out: SecretHit[] = opts.known?.length ? findKnown(text, opts.known) : [];
   for (const r of rules) {
     if (r.keywords.length && !r.keywords.some((k) => lower.includes(k))) continue;
     for (const m of text.matchAll(r.re)) {
-      const secret = (r.group ? m[r.group] : m.slice(1).find((g) => g)) ?? m[0];
+      // The secret's group: the configured one, else the first that matched.
+      // Its span comes from the match's own indices (the `d` flag): looking
+      // the value up in m[0] finds an EARLIER copy — `token=token…` masked
+      // the name and left the value (rechrome #55).
+      const gi = r.group ?? m.findIndex((g, i) => i > 0 && !!g);
+      const secret = gi > 0 ? m[gi] : m[0];
       if (!secret) continue;
       if (r.entropy && shannon(secret) < r.entropy) continue;
       if (r.allow.some((a) => a.test(secret))) continue;
       const sl = secret.toLowerCase();
       if (r.stop.some((s) => sl.includes(s))) continue;
-      const start = m.index + m[0].indexOf(secret);
+      const span = gi > 0 ? m.indices?.[gi] : undefined;
+      const start = span ? span[0] : m.index;
       out.push({ id: r.id, start, end: start + secret.length });
     }
   }
@@ -141,8 +168,8 @@ export function findSecrets(text: string, rules = secretRules()): SecretHit[] {
 
 /** `text` with every secret replaced by `[redacted:<rule id>]`. Overlapping
  *  hits merge into one span, named by the longest. */
-export function redact(text: string, rules = secretRules()): { text: string; kinds: string[] } {
-  const hits = findSecrets(text, rules).sort((a, b) => a.start - b.start || b.end - a.end);
+export function redact(text: string, opts: RedactOptions = {}): { text: string; kinds: string[] } {
+  const hits = findSecrets(text, opts).sort((a, b) => a.start - b.start || b.end - a.end);
   if (!hits.length) return { text, kinds: [] };
   const spans: SecretHit[] = [];
   for (const h of hits) {
