@@ -99,7 +99,7 @@ async function confirmed(m: MockHandle, args: string[], env: Record<string, stri
 const WRITES = new Set(["chat.postMessage", "chat.update", "pins.add", "chat.delete"]);
 
 async function withMock<T>(extra: InlineFixtures, fn: (m: MockHandle) => Promise<T>): Promise<T> {
-  const m = await startMock({ inline: { ...base, ...extra } });
+  const m = await startMock({ inline: { ...base, ...extra }, rememberEdits: true });
   try {
     return await fn(m);
   } finally {
@@ -352,6 +352,25 @@ describe("pinlog update", { timeout: 60_000 }, () => {
       expect(log).toMatchObject({ channel: CH, thread_ts: HEAD_TS, text: "契約: 法務確認待ちを追加" });
       expect(r.stdout).toContain("✓ HEAD updated");
       expect(r.stdout).toContain("✓ Logged");
+    });
+  });
+
+  test("an edit Slack did not apply (read back differs): exit 3, NO log line", async () => {
+    // ok: true from an override is not stored by the mock, so the read-back
+    // still sees the old text — as when an edit is silently lost.
+    await withMock({ "chat.update": { ok: true } }, async (m) => {
+      const { r, writes } = await confirmed(m, args);
+      expect(r.exitCode).toBe(3);
+      expect(writes).toEqual(["chat.update"]);
+      expect(r.stderr).toContain("Slack does not show what was sent");
+      expect(r.stderr).toContain("The log reply was NOT posted");
+    });
+  });
+
+  test("the read-back matching prints so", async () => {
+    await withMock({}, async (m) => {
+      const { r } = await confirmed(m, args);
+      expect(r.stdout).toContain("✓ HEAD updated (read back: matches)");
     });
   });
 

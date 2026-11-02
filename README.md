@@ -323,6 +323,7 @@ slack reply board 'on it' --to <permalink>     # exit 2 when that message is in 
 slack send '#chan:<ts>' 'x' --to <permalink>   # the same check on send
 slack alias unset board
 slack tick <permalink> 2                       # ⬜ 2. → ✅ 2. in a posted checklist, nothing else changed
+slack thread C00000001 <ts> --since <ts> --format tsv   # <ts> TAB <user|bot id> TAB <escaped text> [files: N], every page
 slack edit <permalink> 'new text'              # in a [lane] scope the lane tag the message was posted with is kept
 ```
 
@@ -338,7 +339,7 @@ slack edit <permalink> 'new text'              # in a [lane] scope the lane tag 
 - **Handled:** `slack done <file|ts>` moves an entry to `archived/`. So does a reply sent with `outbox add … --in-reply-to <ts>` and then `outbox flush`, which records each sent reply's ts and permalink in `sent/`.
 
 ```sh
-slack inbox listen --timeout 3600              # one JSON line per new message
+slack inbox listen --timeout 3600 --thread <ts> --from U00000001   # one JSON line per new message, filtered
 slack outbox add board 'fixed' --in-reply-to <ts> && slack outbox flush   # then flush again with its --code
 slack alias who D00000001 <thread_ts> --json   # for a relay: which lane dir owns a thread
 slack alias set t-<ts> <permalink> --shared --dir <lane tree>              # the owner adds to a lane's allowlist

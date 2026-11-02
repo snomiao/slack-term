@@ -29,6 +29,15 @@ const fixtures = {
   [`conversations.replies__channel=C00000001&limit=1&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
   [`conversations.replies__channel=C00000001&limit=100&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
   "conversations.replies__channel=C00000001&limit=1&ts=1700000000.000400": { ok: true, messages: [{ type: "message", user: "U00000001", text: "[design] plan\n⬜ 1. build\n⬜ 2. test", ts: "1700000000.000400" }] },
+  [`conversations.replies__channel=C00000001&limit=200&ts=${ROOT_TS}`]: {
+    ok: true,
+    messages: [
+      { type: "message", user: "U00000002", text: "the question", ts: ROOT_TS, thread_ts: ROOT_TS },
+      { type: "message", user: "U00000002", text: "line1\nline2\twith tab \\ slash", ts: REPLY_TS, thread_ts: ROOT_TS, files: [{ id: "F00000001" }] },
+      { type: "message", bot_id: "B00000001", text: "bot reply", ts: "1700000000.000300", thread_ts: ROOT_TS },
+    ],
+    response_metadata: { next_cursor: "" },
+  },
   "users.info__user=U00000002": { ok: true, user: { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } } },
   "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
   "chat.getPermalink__channel=C00000001&message_ts=1700000000.000100": { ok: true, channel: "C00000001", permalink: "https://acme.slack.com/archives/C00000001/p1700000000000100" },
@@ -41,7 +50,7 @@ beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), "slack-reply-"));
   lane = join(tmpHome, "tree", "design");
   mkdirSync(lane, { recursive: true });
-  mock = await startMock({ inline: fixtures });
+  mock = await startMock({ inline: fixtures, rememberEdits: true });
 });
 afterAll(async () => {
   await mock.stop();
@@ -230,6 +239,11 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
 
 describe("tick / edit keep the lane (CLI)", { timeout: 90_000 }, () => {
   const LIST = "https://acme.slack.com/archives/C00000001/p1700000000000400";
+  test("tick without n and two open items: exit 2, names them (before any tick lands)", async () => {
+    const r = await run(["tick", LIST]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("several open items (1, 2)");
+  });
   test("tick 2: gate shows the ticked text, then chat.update changes only that item", async () => {
     const dry = await run(["tick", LIST, "2"]);
     expect(dry.exitCode).toBe(1);
@@ -239,11 +253,6 @@ describe("tick / edit keep the lane (CLI)", { timeout: 90_000 }, () => {
     expect(r.exitCode).toBe(0);
     const upd = mock.requests.slice(before).find((q) => q.method === "chat.update")!;
     expect((JSON.parse(upd.body) as { text: string }).text).toBe("[design] plan\n⬜ 1. build\n✅ 2. test");
-  });
-  test("tick without n and two open items: exit 2, names them", async () => {
-    const r = await run(["tick", LIST]);
-    expect(r.exitCode).toBe(2);
-    expect(r.stderr).toContain("several open items (1, 2)");
   });
   test("edit in a [design] scope keeps the tag", async () => {
     const dry = await run(["edit", LIST, "rewritten"]);
@@ -262,5 +271,35 @@ describe("choice-question hint (CLI)", { timeout: 60_000 }, () => {
   test("a plain question gets no hint", async () => {
     const r = await run(["reply", `C00000001:${ROOT_TS}`, "can you check the build?"], join(tmpHome, "tree", "other"));
     expect(r.stderr).not.toContain("hint:");
+  });
+});
+
+describe("thread --since --format tsv, inbox listen filters (CLI)", { timeout: 90_000 }, () => {
+  test("tsv: one escaped line per message, files counted, bots by id", async () => {
+    const r = await run(["thread", "C00000001", ROOT_TS, "--format", "tsv"]);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.split("\n").filter(Boolean)).toEqual([
+      `${ROOT_TS}\tU00000002\tthe question`,
+      `${REPLY_TS}\tU00000002\tline1\\nline2\\twith tab \\\\ slash [files: 1]`,
+      "1700000000.000300\tB00000001\tbot reply",
+    ]);
+  });
+  test("--since drops what is not newer", async () => {
+    const r = await run(["thread", "C00000001", ROOT_TS, "--format", "tsv", "--since", REPLY_TS]);
+    expect(r.stdout.split("\n").filter(Boolean)).toEqual(["1700000000.000300\tB00000001\tbot reply"]);
+  });
+  test("inbox listen --thread / --from / --alias", async () => {
+    const d = join(tmpHome, "tree", "listen");
+    mkdirSync(d, { recursive: true });
+    await run(["init"], d);
+    const put = (ts: string, thread: string, user: string, alias: string) => writeFileSync(join(d, ".slack-term", "inbox", `C00000001-${ts}.yml`),
+      `ts: "${ts}"\nchannel: C00000001\nthread_ts: "${thread}"\nuser: ${user}\ntext: hi\npermalink: x\nalias: ${alias}\nreceived_at: 2026-11-02T00:00:00Z\n`);
+    put("1700000000.000201", ROOT_TS, "U00000002", "a");
+    put("1700000000.000202", ROOT_TS, "U00000003", "a");
+    put("1700000000.000203", OTHER_ROOT, "U00000002", "b");
+    const ts = (o: string) => o.split("\n").filter(Boolean).map((l) => (JSON.parse(l) as { ts: string }).ts);
+    expect(ts((await run(["inbox", "listen", "--timeout", "0", "--thread", ROOT_TS], d)).stdout)).toEqual(["1700000000.000201", "1700000000.000202"]);
+    expect(ts((await run(["inbox", "listen", "--timeout", "0", "--thread", ROOT_TS, "--from", "U00000002"], d)).stdout)).toEqual(["1700000000.000201"]);
+    expect(ts((await run(["inbox", "listen", "--timeout", "0", "--alias", "b"], d)).stdout)).toEqual(["1700000000.000203"]);
   });
 });

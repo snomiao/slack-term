@@ -51,6 +51,7 @@ import {
 } from "./ask.ts";
 import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
 import { keepLanePrefix, tickText } from "./tick.ts";
+import { emojiMap, firstDifference, normText, storedAsSent } from "./readback.ts";
 import { choiceHint, choiceQuestionLang } from "./choiceHint.ts";
 import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
@@ -443,10 +444,41 @@ async function cmdMsgsTarget(token: string, target: string, limit: number, forma
 }
 
 // --- thread ---
-async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" = "text", cookie?: string): Promise<void> {
+/** One message as `<ts> TAB <author> TAB <text>`: the author is the user or
+ *  bot id, the text Slack's stored form with `\` newline CR TAB escaped, and
+ *  attachments counted as ` [files: N]` (symphr-thread's read format). */
+function tsvLine(m: Record<string, Json>): string {
+  const esc = (t: string): string => t.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+  const author = typeof m.user === "string" ? m.user : typeof m.bot_id === "string" ? m.bot_id : "";
+  const files = Array.isArray(m.files) && m.files.length ? ` [files: ${m.files.length}]` : "";
+  return `${String(m.ts)}\t${author}\t${esc(typeof m.text === "string" ? m.text : "")}${files}`;
+}
+
+/** Every message of a thread, every page — or an error: a thread that cannot
+ *  be read whole is never returned as if it were complete. */
+async function wholeThread(token: string, channelId: string, ts: string, cookie?: string): Promise<Record<string, Json>[]> {
+  const out: Record<string, Json>[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 200; page++) {
+    const r = asRecord((await repliesPage(token, channelId, ts, cursor ? { cursor } : {}, cookie)) as Json);
+    for (const m of asArray(r.messages).map(asRecord)) if (!out.some((o) => o.ts === m.ts)) out.push(m);
+    cursor = String(asRecord(r.response_metadata).next_cursor ?? "") || undefined;
+    if (!cursor) return out;
+  }
+  throw new Error("thread has more than 200 pages: refusing to return it partially");
+}
+
+async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" | "tsv" = "text", cookie?: string, since?: string): Promise<void> {
   const channelId = await resolveChannel(token, target, cookie);
-  const resp = (await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>;
-  const msgs = asArray(resp.messages).map(asRecord);
+  const all = since !== undefined || format === "tsv";
+  let msgs = all
+    ? await wholeThread(token, channelId, parseInputTs(ts), cookie)
+    : asArray(((await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>).messages).map(asRecord);
+  if (since !== undefined) msgs = msgs.filter((m) => Number(m.ts) > Number(since));
+  if (format === "tsv") {
+    for (const m of msgs) console.log(tsvLine(m));
+    return;
+  }
   if (format === "jsonl") {
     for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
     return;
@@ -2114,7 +2146,25 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
       process.exit(1);
     }
     attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
-    console.log(`✓ HEAD updated: ${id}`);
+    // Read it back: Slack rewrites text when it stores it, so compare the
+    // normalised forms (ts/readback.ts). A board that does not show what was
+    // sent gets no log line — exit 3, like symphr-thread's `state`.
+    let stored: Record<string, Json> | undefined;
+    try {
+      const back = asArray(asRecord((await replies(token, channel, ts, 1, args.cookie)) as Json).messages).map(asRecord);
+      stored = back.find((m) => m.ts === ts);
+    } catch (e: unknown) {
+      console.error(`⚠ HEAD updated, but it could not be read back to check: ${friendlySlackError(e)}`);
+    }
+    if (stored && !storedAsSent(newHead, stored)) {
+      const names = emojiMap(stored.blocks);
+      console.error(
+        `✗ HEAD was edited, but Slack does not show what was sent (${firstDifference(normText(newHead, names), normText(typeof stored.text === "string" ? stored.text : "", names))}).\n` +
+        `  The log reply was NOT posted. Check it:  slack pinlog get ${id}${bot}`,
+      );
+      process.exit(3);
+    }
+    console.log(`✓ HEAD updated${stored ? " (read back: matches)" : ""}: ${id}`);
   }
 
   const attrLog = sentAttribution("send");
@@ -5862,11 +5912,12 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true })
         .positional("ts", { type: "string", demandOption: true })
         .option("limit", { alias: "n", type: "number", default: 100 })
-        .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
-        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+        .option("format", { type: "string", choices: ["text", "jsonl", "tsv"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs); tsv: <ts> TAB <user|bot id> TAB <text, \\ \\n \\r \\t escaped> [files: N], every page" })
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
+        .option("since", { type: "string", describe: "Only messages after this ts (reads every page)" }),
       async (argv) => {
-        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
-        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format, ck(argv as W));
+        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl" | "tsv");
+        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format, ck(argv as W), argv.since);
       },
     )
     .command(
@@ -6490,9 +6541,15 @@ async function main(): Promise<void> {
           "Print each message as it arrives in inbox/ (one JSON line each); pending ones first. Exits 0 at --timeout",
           (yy) => yy
             .option("timeout", { type: "number", default: 3600, describe: "Seconds" })
-            .option("new-only", { type: "boolean", default: false, describe: "Skip what is already pending" }),
+            .option("new-only", { type: "boolean", default: false, describe: "Skip what is already pending" })
+            .option("thread", { type: "string", describe: "Only messages in this thread (its root ts)" })
+            .option("alias", { type: "string", describe: "Only messages routed by this alias" })
+            .option("from", { type: "array", string: true, describe: "Only messages from these user ids; repeatable" }),
           async (argv) => {
             const scope = findScope();
+            const from = argv.from?.length ? new Set(argv.from.map(String)) : undefined;
+            const wanted = (e: { ts: string; thread_ts?: string; alias: string; user: string }): boolean =>
+              (!argv.thread || (e.thread_ts ?? e.ts) === argv.thread) && (!argv.alias || e.alias === argv.alias) && (!from || from.has(e.user));
             const seen = new Set<string>();
             if (argv["new-only"]) for (const i of listInbox(scope)) seen.add(i.file);
             const until = Date.now() + argv.timeout * 1000;
@@ -6500,7 +6557,7 @@ async function main(): Promise<void> {
               for (const i of listInbox(scope)) {
                 if (seen.has(i.file)) continue;
                 seen.add(i.file);
-                console.log(JSON.stringify({ file: i.file, ...i.entry }));
+                if (wanted(i.entry)) console.log(JSON.stringify({ file: i.file, ...i.entry }));
               }
               if (Date.now() >= until) break;
               // Files land by rename, so a short poll is enough and survives

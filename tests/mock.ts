@@ -73,15 +73,38 @@ export type MockHandle = {
 export type InlineFixtures = Record<string, unknown>;
 
 export async function startMock(
-  opts: { port?: number; inline?: InlineFixtures } = {},
+  opts: {
+    port?: number; inline?: InlineFixtures;
+    /** A successful chat.update is remembered and later reads of that message
+     *  return the new text — for read-back checks (pinlog set). Off by
+     *  default: tests that re-read a fixture expect it unchanged. */
+    rememberEdits?: boolean;
+  } = {},
 ): Promise<MockHandle> {
-  const { port = 0, inline } = opts;
+  const { port = 0, inline, rememberEdits = false } = opts;
   const fixtures: Fixtures = inline
     ? new Map(Object.entries(inline))
     : await loadFixtures();
 
   const requests: RecordedRequest[] = [];
   const sequenceCalls = new Map<string, number>();
+  // What a successful chat.update stored, so a later read of that message
+  // returns the edited text — as Slack does, and as a read-back check needs.
+  const edited = new Map<string, string>();
+  const bodyFields = (body: string): Record<string, unknown> => {
+    try { return JSON.parse(body) as Record<string, unknown>; } catch { return Object.fromEntries(new URLSearchParams(body)); }
+  };
+  const withEdits = (body: unknown, channel: string | undefined): unknown => {
+    if (!edited.size || !channel || !body || typeof body !== "object") return body;
+    const b = body as { messages?: Record<string, unknown>[] };
+    if (!Array.isArray(b.messages)) return body;
+    return { ...b, messages: b.messages.map((m) => {
+      const text = edited.get(`${channel}:${String(m.ts)}`);
+      if (text === undefined) return m;
+      const { blocks: _b, ...rest } = m;
+      return { ...rest, text };
+    }) };
+  };
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -147,6 +170,8 @@ export async function startMock(
           return;
         }
         if (method === "chat.update") {
+          const f = bodyFields(body);
+          if (rememberEdits && typeof f.channel === "string" && typeof f.ts === "string" && typeof f.text === "string") edited.set(`${f.channel}:${f.ts}`, f.text);
           respond({ ok: true, ts: "1700000000.000100", channel: "C00000001" });
           return;
         }
@@ -202,14 +227,14 @@ export async function startMock(
     const key = safeName(fixtureKey(method, params));
     const fx = fixtures.get(key);
     if (fx) {
-      respond(resolveByAuth(fx, req));
+      respond(withEdits(resolveByAuth(fx, req), params.channel));
       return;
     }
     // Fall back: ignore params (so minor param drift still returns something).
     const looseKey = safeName(method);
     const loose = fixtures.get(looseKey);
     if (loose) {
-      respond(resolveByAuth(loose, req));
+      respond(withEdits(resolveByAuth(loose, req), params.channel));
       return;
     }
     respond({ ok: false, error: `no_fixture:${key}` }, 200);
