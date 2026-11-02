@@ -1,3 +1,5 @@
+import { askString } from "./locales.ts";
+
 // The `ask` message format — builder and parser in one place, on purpose.
 //
 // `ask` keeps no local record of a question, so `--waitFor` recovers everything
@@ -47,7 +49,7 @@ export const ASK_MARKER_PREFIX = `:${ASK_MARKER}: `;
 
 /** The "other" pill — "none of these fit, my answer follows as a reply" —
  *  seeded after the numbered pills and listed under them in the body. ➕, not
- *  ❓ (taku 2026-10-14): ❓ read as "I have a question", not "add my own answer".
+ *  ❓ (2026-10-14): ❓ read as "I have a question", not "add my own answer".
  *
  *  ❓ stays the HEAD marker (`ASK_MARKER_PREFIX` on the first line): that is the
  *  wire format that identifies an ask, and every reader keys on it. Only the
@@ -101,8 +103,8 @@ export type AskLangSource = "flag" | "env" | "readers" | "content" | "system" | 
  *     in a different language from the question they sit under read as noise.
  *  4. The system locale (`LC_ALL` → `LC_MESSAGES` → `LANG`), for content with no
  *     letters at all (emoji, numbers).
- *  5. `ja`, the copy `ask` has always posted — so a machine nobody configured,
- *     asking someone whose locale cannot be read, keeps doing what it did. */
+ *  5. `en` (11-02: English is the default; the readers' language, then
+ *     the content, win over it). */
 export function askResolveLang(
   opts: { flag?: string | undefined; readerLocales?: (string | undefined)[]; content?: string[] },
   env: NodeJS.ProcessEnv = process.env,
@@ -118,7 +120,7 @@ export function askResolveLang(
   if (fromContent) return { lang: fromContent, source: "content" };
   const sys = askLangOfLocale(env.LC_ALL || env.LC_MESSAGES || env.LANG);
   if (sys) return { lang: sys, source: "system" };
-  return { lang: "ja", source: "default" };
+  return { lang: "en", source: "default" };
 }
 
 /** `ja-JP` (Slack), `ja_JP.UTF-8` (POSIX), `en` → the language we have copy
@@ -178,49 +180,33 @@ interface AskCopy {
  *
  *  The invalid-ballot prefix is shared with `poll`, which posts it in Japanese. */
 export const ASK_COPY: Record<AskLang, AskCopy> = {
-  ja: {
-    instructionReactionThread:
-      "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_",
-    instructionReactionHere:
-      "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージに返信してください。_",
-    instructionTextThread:
-      "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_",
-    instructionTextHere: "_このメッセージに返信してください。本文がそのまま回答になります。_",
-    overflowNote: "_11 番目以降はリアクションがないので、返信で答えてください。_",
-    otherThread: `${ASK_OTHER_PREFIX}その他 — スレッドで返信してください`,
-    otherHere: `${ASK_OTHER_PREFIX}その他 — このメッセージに返信してください`,
-    explainLine: `${ASK_EXPLAIN_PREFIX}説明して — 押すと質問者に説明を頼みます (回答にはなりません)`,
-    explainNote: `${ASK_EXPLAIN_PREFIX}説明のリクエストを受け付けました — このスレッドで説明します。質問はまだ開いているので、回答はそのあとで大丈夫です。`,
-    invalidPrefix: "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ",
-    answeredVia: (how, who) => `_${how}で回答済み${who ? ` (${who})` : ""}_`,
-    howReaction: (glyph) => `リアクション ${glyph}`,
-    howReply: "返信",
-    howReplyN: (n) => `返信 (${n})`,
-    voidStamp: (reason) => `_無効${reason ? `: ${reason}` : ""} — この質問への回答は受け付けません。_`,
-    supersededBy: (link) => `↪ 新しい質問: ${link}`,
-  },
-  en: {
-    instructionReactionThread:
-      "_Press one of the reactions below to answer. If none fits, reply in this message's *thread* (ordinary channel posts are not picked up as answers)._",
-    instructionReactionHere:
-      "_Press one of the reactions below to answer. If none fits, reply to this message._",
-    instructionTextThread:
-      "_Reply in this message's *thread* — your reply is the answer (ordinary channel posts are not picked up as answers)._",
-    instructionTextHere: "_Reply to this message — your reply is the answer._",
-    overflowNote: "_Choices 11 and up have no reaction — answer them with a reply._",
-    otherThread: `${ASK_OTHER_PREFIX}Other — reply in the thread`,
-    otherHere: `${ASK_OTHER_PREFIX}Other — reply to this message`,
-    explainLine: `${ASK_EXPLAIN_PREFIX}Explain — press to ask the asker for more detail (not an answer)`,
-    explainNote: `${ASK_EXPLAIN_PREFIX}Explanation requested — it will follow in this thread. The question stays open; answer it after that.`,
-    invalidPrefix: "_:warning: Several choices are selected, so this is not counted as an answer — keep only one: ",
-    answeredVia: (how, who) => `_Answered by ${how}${who ? ` (${who})` : ""}_`,
-    howReaction: (glyph) => `reaction ${glyph}`,
-    howReply: "reply",
-    howReplyN: (n) => `reply (${n})`,
-    voidStamp: (reason) => `_Void${reason ? `: ${reason}` : ""} — this question no longer takes answers._`,
-    supersededBy: (link) => `↪ Replaced by: ${link}`,
-  },
+  get ja() { return askCopyOf("ja"); },
+  get en() { return askCopyOf("en"); },
 };
+
+/** One language's copy, from its pack (locales/<lang>.json) at access time —
+ *  the words live there, the structure (markers, which piece goes where) here. */
+function askCopyOf(lang: AskLang): AskCopy {
+  const s = (key: string, vars?: Record<string, string | number>): string => askString(lang, key, vars);
+  return {
+    instructionReactionThread: s("instructionReactionThread"),
+    instructionReactionHere: s("instructionReactionHere"),
+    instructionTextThread: s("instructionTextThread"),
+    instructionTextHere: s("instructionTextHere"),
+    overflowNote: s("overflowNote"),
+    otherThread: `${ASK_OTHER_PREFIX}${s("otherThread")}`,
+    otherHere: `${ASK_OTHER_PREFIX}${s("otherHere")}`,
+    explainLine: `${ASK_EXPLAIN_PREFIX}${s("explainLine")}`,
+    explainNote: `${ASK_EXPLAIN_PREFIX}${s("explainNote")}`,
+    invalidPrefix: s("invalidPrefix"),
+    answeredVia: (how, who) => s("answeredVia", { how, who: who ? ` (${who})` : "" }),
+    howReaction: (glyph) => s("howReaction", { glyph }),
+    howReply: s("howReply"),
+    howReplyN: (n) => s("howReplyN", { n }),
+    voidStamp: (reason) => s("voidStamp", { reason: reason ? `: ${reason}` : "" }),
+    supersededBy: (link) => s("supersededBy", { link }),
+  };
+}
 
 /** The "other" copy pills posted before ➕ carried — the same words under ❓.
  *  Kept so `askSalvageUnreadable` can still strip it from an old flattened body. */

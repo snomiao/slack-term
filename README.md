@@ -308,6 +308,60 @@ Notes:
   are **never** cached — they are exactly the values that change, and Slack's search index
   already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
+### .slack-term/ — aliases and settings per directory
+
+`slack init` makes a `.slack-term/` in the current directory. `slack` uses the nearest one walking up from where it runs, like `.git`. So each repo, or each agent lane's `tree/<lane>`, has its own aliases and reply prefix, with no pid or env var needed. Without one, it uses `~/.config/slack-term/`. The dir holds a `.gitignore` of `*`, so nothing in it is committed.
+
+```sh
+slack init --prefix "[design]"                 # .slack-term/{README.md,.gitignore,settings.yml,inbox,outbox,sent,archived}
+slack alias set board <permalink>              # a reply's permalink names its thread ROOT
+slack alias ls                                 # name  channel  thread_ts  file
+slack read board                               # the thread
+slack reply board 'done'                       # posts "[design] done" in it, behind the --code gate
+slack reply --to <permalink> 'on it'           # replies in the thread where that message is
+slack reply board 'on it' --to <permalink>     # exit 2 when that message is in another thread (--any-thread overrides)
+slack send '#chan:<ts>' 'x' --to <permalink>   # the same check on send
+slack alias unset board
+slack tick <permalink> 2                       # ⬜ 2. → ✅ 2. in a posted checklist, nothing else changed
+slack thread C00000001 <ts> --since <ts> --format tsv   # <ts> TAB <user|bot id> TAB <escaped text> [files: N], every page
+slack edit <permalink> 'new text'              # in a [lane] scope the lane tag the message was posted with is kept
+```
+
+- **`settings.yml`** is for people to edit. It holds `prefix`, `channel` (used for a bare `<ts>` destination), `as_bot` and `subscriptions`.
+- **`settings.local.yml`** is written by `slack alias set/unset`, under a lock and with an atomic rename. It has the same keys and overrides `settings.yml`.
+- **The prefix is never doubled.** A text that already starts with `[design] ` (or `[design@host] `) keeps only one.
+- `reply` only posts in threads. Use `send` for a top-level post.
+
+**Inbox and outbox.** These are files, one per message, written atomically:
+
+- **Inbox:** `slack stream --inbox` writes each match into `inbox/` of every registered `.slack-term/` that subscribes its thread. `slack init` registers the dir in `~/.config/slack-term/scopes`. An entry is text only: who, where, the text, the permalink, and a count of files (attachments are never downloaded).
+- **Redaction:** secrets in the text are replaced with `[redacted:<rule>]` before the entry is written (gitleaks' rules plus ours, `ts/redact.ts`). `slack read <permalink>` fetches the original live.
+- **Handled:** `slack done <file|ts>` moves an entry to `archived/`. So does a reply sent with `outbox add … --in-reply-to <ts>` and then `outbox flush`, which records each sent reply's ts and permalink in `sent/`.
+
+```sh
+slack inbox listen --timeout 3600 --thread <ts> --from U00000001   # one JSON line per new message, filtered
+slack outbox add board 'fixed' --in-reply-to <ts> && slack outbox flush   # then flush again with its --code
+slack alias who D00000001 <thread_ts> --json   # for a relay: which lane dir owns a thread
+slack alias set t-<ts> <permalink> --shared --dir <lane tree>              # the owner adds to a lane's allowlist
+slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tree/design
+```
+
+**Settings only `settings.yml` can hold:** `restrict_to_subscriptions: true`, `auto_subscribe: [<channel>]` and `nudge_after_min` (see `slack inbox nudge`).
+
+- With `restrict_to_subscriptions`, only the `settings.yml` subscriptions count. `alias set` without `--shared` refuses, and `reply` and `outbox flush` refuse any other thread.
+  - Who the lane posts as (`prefix`, `as_bot`, `channel`) also comes from `settings.yml` only. `--prefix` and a differing `--as-bot` are refused.
+  - `owner: <dir>` names the allowlist's owner. `--shared` writes run only from under that directory, and are refused for everyone when no owner is named. Every lane runs as the same uid, so only the CLI can tell them apart.
+- `auto_subscribe` subscribes a new top-level message in that channel to this dir as `t-<ts>`.
+
+### Language packs (locales/*.json)
+
+slack-term's own text (help, errors, logs, hints) is English. Language packs hold only two things: text it posts to **people**, and patterns it looks for in **their** messages.
+
+- `ask`'s copy is `ask.*`. It follows the readers' Slack locale, then the question's language, then the system locale, and finally `en`. Keys marked `(WIRE)` are matched back on questions already posted, so never reword them.
+- `choice_patterns` are regexes (flags `iu`). Every pack's patterns are applied, so a "(yes/no)?" question is spotted in any language. `send`/`reply` then print a hint to use `slack ask` instead (a hint only, never a block).
+- Packs are read at call time and cached by mtime, so an edit takes effect on the next command with no rebuild.
+- A `.slack-term/locales/<lang>.json` overrides the package's keys. A new file there adds a language.
+
 ### pinlog — a pinned status board that keeps a log
 
 A **pinlog** is one pinned top-level message that always holds the *current* state
@@ -614,6 +668,8 @@ A write-up of the design decisions behind the confirm gate lives on the agent-ye
   tools (official, `slack-term`, `wee-slack`, `slackcat`, `slackdump`, …).
 
 ## License
+
+`ts/vendor/gitleaks.toml` is gitleaks' default rule set (v8.30.1, MIT, © 2019 Zachary Rice, `ts/vendor/gitleaks.LICENSE`). slack-term runs it in-process (`ts/redact.ts`) to redact secrets from anything it writes to disk.
 
 MIT
 

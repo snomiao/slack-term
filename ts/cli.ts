@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -13,7 +13,7 @@ import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveTok
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
-import { runStream, webClient } from "./stream.ts";
+import { runStream, webClient, type StreamMatch } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
@@ -51,6 +51,11 @@ import {
   ASK_POLL,
   askNextPollDelay,
 } from "./ask.ts";
+import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
+import { keepLanePrefix, tickText } from "./tick.ts";
+import { emojiMap, firstDifference, normText, storedAsSent } from "./readback.ts";
+import { choiceHint, choiceQuestionLang } from "./choiceHint.ts";
+import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
   POLL_KEYCAPS,
   POLL_MARKER,
@@ -442,10 +447,41 @@ async function cmdMsgsTarget(token: string, target: string, limit: number, forma
 }
 
 // --- thread ---
-async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" = "text", cookie?: string): Promise<void> {
+/** One message as `<ts> TAB <author> TAB <text>`: the author is the user or
+ *  bot id, the text Slack's stored form with `\` newline CR TAB escaped, and
+ *  attachments counted as ` [files: N]` (the earlier thread tool's read format). */
+function tsvLine(m: Record<string, Json>): string {
+  const esc = (t: string): string => t.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
+  const author = typeof m.user === "string" ? m.user : typeof m.bot_id === "string" ? m.bot_id : "";
+  const files = Array.isArray(m.files) && m.files.length ? ` [files: ${m.files.length}]` : "";
+  return `${String(m.ts)}\t${author}\t${esc(typeof m.text === "string" ? m.text : "")}${files}`;
+}
+
+/** Every message of a thread, every page — or an error: a thread that cannot
+ *  be read whole is never returned as if it were complete. */
+async function wholeThread(token: string, channelId: string, ts: string, cookie?: string): Promise<Record<string, Json>[]> {
+  const out: Record<string, Json>[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < 200; page++) {
+    const r = asRecord((await repliesPage(token, channelId, ts, cursor ? { cursor } : {}, cookie)) as Json);
+    for (const m of asArray(r.messages).map(asRecord)) if (!out.some((o) => o.ts === m.ts)) out.push(m);
+    cursor = String(asRecord(r.response_metadata).next_cursor ?? "") || undefined;
+    if (!cursor) return out;
+  }
+  throw new Error("thread has more than 200 pages: refusing to return it partially");
+}
+
+async function cmdThread(token: string, target: string, ts: string, limit: number, format: "text" | "jsonl" | "tsv" = "text", cookie?: string, since?: string): Promise<void> {
   const channelId = await resolveChannel(token, target, cookie);
-  const resp = (await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>;
-  const msgs = asArray(resp.messages).map(asRecord);
+  const all = since !== undefined || format === "tsv";
+  let msgs = all
+    ? await wholeThread(token, channelId, parseInputTs(ts), cookie)
+    : asArray(((await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>).messages).map(asRecord);
+  if (since !== undefined) msgs = msgs.filter((m) => Number(m.ts) > Number(since));
+  if (format === "tsv") {
+    for (const m of msgs) console.log(tsvLine(m));
+    return;
+  }
   if (format === "jsonl") {
     for (const m of msgs) console.log(JSON.stringify(slimMsg(m)));
     return;
@@ -1290,7 +1326,87 @@ function parseTargetThread(s: string, permalinkThreads = true): { ref: string; t
     if (/^\d{10}\.\d{6}$/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: maybeTs };
     if (/^\d{4}-\d{2}-\d{2}T/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: isoToSlackTs(maybeTs) };
   }
+  // A bare name (no #, @ or :) that is an alias in the nearest .slack-term/.
+  const alias = lookupAlias(s);
+  if (alias) return alias.thread_ts ? { ref: alias.channel, threadTs: alias.thread_ts } : { ref: alias.channel };
   return { ref: s };
+}
+
+/** Where `slack reply` (and `outbox flush`) posts: the destination — alias,
+ *  permalink (its root), `#chan:<ts>` or a bare ts in settings' channel —
+ *  and/or `--to`'s message, which must agree with it unless `anyThread`. A
+ *  restricted scope also requires the thread to be one of its subscriptions.
+ *  `{ error }` is a refusal (exit 2): nothing was sent. */
+async function resolveReplyTarget(
+  token: string, cookie: string | undefined, scope: Scope, dest: string | undefined, to: string | undefined, anyThread = false,
+): Promise<{ channel: string; threadTs: string } | { error: string }> {
+  const settings = readSettings(scope);
+  let channel: string | undefined;
+  let threadTs: string | undefined;
+  if (dest) {
+    if (parseSlackPermalink(dest)) {
+      const place = await messagePlace(token, dest, cookie);
+      channel = place.channel;
+      threadTs = place.root;
+    } else {
+      let p = parseTargetThread(dest);
+      if (!p.threadTs && /^\d{10}\.\d{6}$/.test(dest)) {
+        if (!settings.channel) return { error: `a bare ts needs a channel: set \`channel\` in .slack-term/settings.yml, or pass #chan:${dest}` };
+        p = { ref: settings.channel, threadTs: dest };
+      }
+      if (!p.threadTs) return { error: `"${dest}" is not a thread — reply only posts in threads. For a top-level post use \`slack send\`.` };
+      channel = await resolveChannel(token, p.ref, cookie);
+      threadTs = p.threadTs;
+    }
+  }
+  if (to) {
+    const answered = await messagePlace(token, to, cookie);
+    if (channel === undefined) {
+      channel = answered.channel;
+      threadTs = answered.root;
+    } else if (!anyThread) {
+      const why = threadMismatch({ channel, ...(threadTs ? { threadTs } : {}) }, answered);
+      if (why) return { error: why };
+    }
+  }
+  if (!channel || !threadTs) return { error: "reply needs a destination (alias, permalink, #chan:<ts>) or --to <permalink>" };
+  if (isRestricted(scope) && !listAliases(scope).some((a) => a.channel === channel && (a.thread_ts === undefined || a.thread_ts === threadTs))) {
+    return { error: `${channel} thread ${threadTs} is not one of ${scope.dir}'s subscriptions (restrict_to_subscriptions)` };
+  }
+  return { channel, threadTs };
+}
+
+/** Where the message a permalink (or `#chan:<ts>`) names really sits: its
+ *  channel and thread root. A permalink's `?thread_ts=` settles it; otherwise
+ *  the thread is read, since a reply's bare permalink looks like a root's. */
+async function messagePlace(token: string, target: string, cookie?: string): Promise<MessagePlace> {
+  const url = parseSlackPermalink(target);
+  let ref: string;
+  let ts: string | undefined;
+  let root: string | undefined;
+  if (url) {
+    ref = url.channel;
+    ts = url.ts;
+    root = url.threadTs;
+  } else {
+    const p = parseTargetThread(target);
+    ref = p.ref;
+    ts = p.threadTs;
+  }
+  if (!ts) throw new Error(`--to needs a message permalink (or #chan:<ts>), got "${target}"`);
+  const channel = await resolveChannel(token, ref, cookie);
+  if (!root) {
+    try {
+      const msgs = (asRecord((await replies(token, channel, ts, 1, cookie)) as Json).messages ?? []) as Json[];
+      const own = msgs.map(asRecord).find((m) => m.ts === ts) ?? asRecord(msgs[0]);
+      root = typeof own.thread_ts === "string" ? own.thread_ts : ts;
+    } catch (e) {
+      // A top-level message nobody answered has no thread to read.
+      if (!/thread_not_found/.test(e instanceof Error ? e.message : String(e))) throw e;
+      root = ts;
+    }
+  }
+  return { channel, ts, root };
 }
 
 /** Human-readable destination label for confirm gates, e.g. "#general (C0123456789)".
@@ -1492,6 +1608,12 @@ interface EditArgs {
    *  `send --as-bot`. */
   mentionToken?: string;
   mentionCookie?: string;
+  /** `slack tick`: the new text is the original with item `n` (or the one open
+   *  item) ticked — computed from what is stored, so nothing else changes. */
+  tick?: { n?: number };
+  /** The scope's `[lane]` prefix: an edit keeps the lane tag the original
+   *  was posted with. */
+  lanePrefix?: string;
 }
 /** The bot token, plus the bot↔user DM when the target names an `@handle`.
  *
@@ -1562,11 +1684,24 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
   const originalText = typeof original.text === "string" ? original.text : "";
 
+  let wanted = args.newText;
+  if (args.tick) {
+    const r = tickText(originalText, args.tick.n);
+    if (r.kind === "already") { console.log(`already ticked (${r.n}.)`); process.exit(0); }
+    if (r.kind === "none") { console.error("Error: the message has no ⬜ <n>. item"); process.exit(2); }
+    if (r.kind === "missing") { console.error(`Error: the message has no ⬜ ${r.n}. item`); process.exit(2); }
+    if (r.kind === "ambiguous") { console.error(`Error: several open items (${r.open.join(", ")}): name one, e.g. slack tick <target> ${r.open[0]}`); process.exit(2); }
+    wanted = r.text;
+  } else {
+    wanted = keepLanePrefix(originalText, wanted, args.lanePrefix);
+  }
+
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
+  // A tick rewrites stored text, whose mentions are encoded already.
   const mentionCookie = args.mentionCookie ?? args.cookie;
-  const newText = args.mentions
-    ? await encodeMentions(args.mentionToken ?? token, args.newText, channelId, mentionCookie ? { cookie: mentionCookie } : {})
-    : args.newText;
+  const newText = args.mentions && !args.tick
+    ? await encodeMentions(args.mentionToken ?? token, wanted, channelId, mentionCookie ? { cookie: mentionCookie } : {})
+    : wanted;
 
   guardUrlBoundaries(newText, args.allowUrlAdjacent);
 
@@ -2014,7 +2149,25 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
       process.exit(1);
     }
     attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
-    console.log(`✓ HEAD updated: ${id}`);
+    // Read it back: Slack rewrites text when it stores it, so compare the
+    // normalised forms (ts/readback.ts). A board that does not show what was
+    // sent gets no log line — exit 3, like the earlier thread tool's `state`.
+    let stored: Record<string, Json> | undefined;
+    try {
+      const back = asArray(asRecord((await replies(token, channel, ts, 1, args.cookie)) as Json).messages).map(asRecord);
+      stored = back.find((m) => m.ts === ts);
+    } catch (e: unknown) {
+      console.error(`⚠ HEAD updated, but it could not be read back to check: ${friendlySlackError(e)}`);
+    }
+    if (stored && !storedAsSent(newHead, stored)) {
+      const names = emojiMap(stored.blocks);
+      console.error(
+        `✗ HEAD was edited, but Slack does not show what was sent (${firstDifference(normText(newHead, names), normText(typeof stored.text === "string" ? stored.text : "", names))}).\n` +
+        `  The log reply was NOT posted. Check it:  slack pinlog get ${id}${bot}`,
+      );
+      process.exit(3);
+    }
+    console.log(`✓ HEAD updated${stored ? " (read back: matches)" : ""}: ${id}`);
   }
 
   const attrLog = sentAttribution("send");
@@ -2304,6 +2457,9 @@ async function dmCounterparty(token: string, channelId: string, cookie?: string)
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
   const cookie = args.cookie;
+
+  // Hint only, on the preview: a choice asked in prose makes the reader type.
+  if (!args.code && choiceQuestionLang(args.message)) console.error(choiceHint(args.target));
 
   // Identity of the token that will actually post — the bot token under
   // --as-bot, the user token otherwise.
@@ -5511,6 +5667,145 @@ async function main(): Promise<void> {
   const tok = (a: W) => resolveToken(a.workspace);
   const ck = (a: W) => resolveCookie(a.workspace);
 
+  /** The `send` handler, shared with `reply` (which resolves its own target,
+   *  prefix and thread check first). */
+  type SendCli = {
+    workspace?: string | undefined; target?: string | undefined; message?: string | undefined; code?: string | undefined;
+    "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined; "user-id"?: string | undefined;
+    "as-bot"?: boolean | undefined; broadcast?: boolean | undefined; mentions?: boolean | undefined;
+  };
+  /** The `edit` handler, shared with `tick`. In a .slack-term/ scope the
+   *  lane's tag is kept; in a restricted one the message must sit in one of
+   *  its subscriptions. */
+  type EditCli = {
+    workspace?: string | undefined; target?: string | undefined; newText?: string | undefined; code?: string | undefined;
+    force?: boolean | undefined; "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined;
+    mentions?: boolean | undefined; "as-bot"?: boolean | undefined; tick?: { n?: number } | undefined;
+  };
+  const runEdit = async (argv: EditCli): Promise<void> => {
+    const scope = findScope();
+    const settings = readSettings(scope);
+    if (isRestricted(scope)) {
+      try {
+        const place = await messagePlace(tok(argv as W), argv.target!, ck(argv as W));
+        if (!listAliases(scope).some((a) => a.channel === place.channel && (a.thread_ts === undefined || a.thread_ts === place.root))) {
+          console.error(`Error: that message is not in one of ${scope.dir}'s subscriptions (restrict_to_subscriptions)`);
+          process.exit(2);
+        }
+      } catch (e: unknown) {
+        console.error(friendlySlackError(e));
+        process.exit(1);
+      }
+    }
+    const args: EditArgs = { target: argv.target!, newText: argv.newText ?? "", allowUrlAdjacent: argv["allow-url-adjacent"] === true };
+    if (argv.tick) args.tick = argv.tick;
+    if (settings.prefix) args.lanePrefix = settings.prefix;
+    if (argv.force) args.force = true;
+    if (argv.code) args.code = argv.code;
+    if (argv["channel-id"]) args.channelId = argv["channel-id"];
+    if (argv.mentions !== false) args.mentions = true;
+    let editToken: string;
+    if (argv["as-bot"]) {
+      // --as-bot is not a switch on chat.update. It selects a DIFFERENT
+      // resolved token, and until now `edit` never wired one — so every
+      // message the bot posted was uncorrectable, and the workaround people
+      // reached for was RESENDING, which this repo's own etiquette forbids.
+      // Bot identity is what makes a DM notify at all, so "uncorrectable"
+      // applied to exactly the messages that matter most.
+      const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
+      editToken = resolved.botToken;
+      if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
+      args.asBot = true;
+      // Mentions still resolve on the USER token: the bot has no users:read,
+      // and a silently unresolved @handle in a CORRECTION is the same defect
+      // twice.
+      args.mentionToken = tok(argv as W);
+      const mc = ck(argv as W);
+      if (mc) args.mentionCookie = mc;
+    } else {
+      editToken = tok(argv as W);
+      // Not set under --as-bot: a bot token needs no session cookie, and
+      // attaching one is how a working call starts failing.
+      const cookie = ck(argv as W);
+      if (cookie) args.cookie = cookie;
+    }
+    await cmdEdit(editToken, args);
+  };
+
+  const runSend = async (argv: SendCli): Promise<void> => {
+    // An empty body is never a meaningful send. `ask` already refuses one
+    // ("Error: question is empty"); `send` did not, so an empty draft
+    // staged a confirm code and posting it produced a blank message.
+    // Verification cannot catch this: an empty publish reads back as an
+    // exact match, so refusing here is the only mechanism.
+    if (!String(argv.message ?? "").trim()) {
+      console.error("Error: message is empty");
+      process.exit(1);
+    }
+    const args: SendArgs = { target: argv.target!, message: argv.message!, allowUrlAdjacent: argv["allow-url-adjacent"] === true };
+    if (argv.code) args.code = argv.code;
+    if (argv["channel-id"]) args.channelId = argv["channel-id"];
+    if (argv["user-id"]) args.userId = argv["user-id"];
+    if (argv.broadcast) args.broadcast = true;
+    // Mentions on by default; `--no-mentions` (yargs negation) sets it false.
+    // A message with no `@token` short-circuits inside encodeMentions, so the
+    // common case pays no extra API call.
+    if (argv.mentions !== false) {
+      args.mentions = true;
+      // Resolve mentions with the user token (has users:read) even when the
+      // message itself is sent via the bot token. Pass its cookie too so an
+      // xoxc- desktop token can reach users.list (rejected without the cookie).
+      args.mentionToken = tok(argv as W);
+      const mc = ck(argv as W);
+      if (mc) args.mentionCookie = mc;
+    }
+    let sendToken: string;
+    if (argv["as-bot"]) {
+      const botToken = resolveBotToken();
+      if (!botToken) {
+        console.error(
+          "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
+          "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
+        );
+        process.exit(1);
+      }
+      // Resolve @user → user_id with the *user* token (has users:read), then
+      // let cmdSend open the DM with the bot token (im:write). This avoids
+      // requiring users:read on the bot and guarantees the DM is bot↔user
+      // (not the user's own self-DM).
+      if (!args.channelId && !args.userId && args.target.startsWith("@")) {
+        try {
+          args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
+        } catch (e: unknown) {
+          console.error(
+            `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
+            `  ${e instanceof Error ? e.message : String(e)}\n` +
+            `  Tip: pass --user-id <Uxxxx> to skip the lookup.`,
+          );
+          process.exit(1);
+        }
+      }
+      sendToken = botToken;
+      args.asBot = true;
+    } else {
+      sendToken = tok(argv as W);
+      // Session cookie for `sendToken` itself — needed for an xoxc- desktop
+      // token to be accepted by the public API at all. Not applicable to the
+      // bot token above (bot tokens need no cookie).
+      const sc = ck(argv as W);
+      if (sc) args.cookie = sc;
+    }
+    // Print a clean error instead of yargs' usage dump when a send fails at
+    // runtime (e.g. missing scope, channel not found). The confirm gate
+    // exits via process.exit, so it is unaffected.
+    try {
+      await cmdSend(sendToken, args);
+    } catch (e: unknown) {
+      console.error(friendlySlackError(e));
+      process.exit(1);
+    }
+  };
+
   // `todo ls` and `mytodo ls` are the same listing over two different search
   // scopes — `has:` (anyone's reactions) vs `hasmy:` (only this token's). They
   // share one definition so the flags can never drift apart; `mine` is the only
@@ -5604,7 +5899,7 @@ async function main(): Promise<void> {
       ["read [target]", "msgs [target]"],
       "Browse messages",
       (y) => y
-        .positional("target", { type: "string", describe: "#channel, @user, or URL" })
+        .positional("target", { type: "string", describe: "#channel, @user, URL, or an alias (slack alias ls)" })
         .option("limit", { alias: "n", type: "number", default: 20, describe: "Number of messages" })
         .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
         .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
@@ -5612,7 +5907,11 @@ async function main(): Promise<void> {
       async (argv) => {
         const token = tok(argv as W);
         const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
-        if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format, argv.unreplied, ck(argv as W));
+        // `slack read <alias>`: the thread (or channel) it names.
+        const alias = argv.target ? lookupAlias(argv.target) : undefined;
+        if (alias?.thread_ts) await cmdThread(token, alias.channel, alias.thread_ts, Math.max(argv.limit, 100), format, ck(argv as W));
+        else if (alias) await cmdMsgsTarget(token, alias.channel, argv.limit, format, argv.unreplied, ck(argv as W));
+        else if (argv.target) await cmdMsgsTarget(token, argv.target, argv.limit, format, argv.unreplied, ck(argv as W));
         else await cmdMsgs(token);
       },
     )
@@ -5623,11 +5922,12 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", demandOption: true })
         .positional("ts", { type: "string", demandOption: true })
         .option("limit", { alias: "n", type: "number", default: 100 })
-        .option("format", { type: "string", choices: ["text", "jsonl"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs)" })
-        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" }),
+        .option("format", { type: "string", choices: ["text", "jsonl", "tsv"] as const, default: "text", describe: "jsonl exposes raw ts/user/text (incl. external-guest user IDs); tsv: <ts> TAB <user|bot id> TAB <text, \\ \\n \\r \\t escaped> [files: N], every page" })
+        .option("json", { type: "boolean", default: false, describe: "Alias for --format=jsonl" })
+        .option("since", { type: "string", describe: "Only messages after this ts (reads every page)" }),
       async (argv) => {
-        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl");
-        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format, ck(argv as W));
+        const format = argv.json ? "jsonl" : (argv.format as "text" | "jsonl" | "tsv");
+        await cmdThread(tok(argv as W), argv.target!, argv.ts!, argv.limit, format, ck(argv as W), argv.since);
       },
     )
     .command(
@@ -6021,80 +6321,381 @@ async function main(): Promise<void> {
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
-        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." }),
+        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." })
+        .option("to", { type: "string", describe: "Permalink of the message you are answering: refuses when it is not in the target's thread (see also `slack reply --to`)" })
+        .option("any-thread", { type: "boolean", default: false, describe: "With --to: send even when the message is in another thread" }),
       async (argv) => {
-        // An empty body is never a meaningful send. `ask` already refuses one
-        // ("Error: question is empty"); `send` did not, so an empty draft
-        // staged a confirm code and posting it produced a blank message.
-        // Verification cannot catch this: an empty publish reads back as an
-        // exact match, so refusing here is the only mechanism.
-        if (!String(argv.message ?? "").trim()) {
-          console.error("Error: message is empty");
-          process.exit(1);
-        }
-        const args: SendArgs = { target: argv.target!, message: argv.message!, allowUrlAdjacent: argv["allow-url-adjacent"] };
-        if (argv.code) args.code = argv.code;
-        if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        if (argv["user-id"]) args.userId = argv["user-id"];
-        if (argv.broadcast) args.broadcast = true;
-        // Mentions on by default; `--no-mentions` (yargs negation) sets it false.
-        // A message with no `@token` short-circuits inside encodeMentions, so the
-        // common case pays no extra API call.
-        if (argv.mentions !== false) {
-          args.mentions = true;
-          // Resolve mentions with the user token (has users:read) even when the
-          // message itself is sent via the bot token. Pass its cookie too so an
-          // xoxc- desktop token can reach users.list (rejected without the cookie).
-          args.mentionToken = tok(argv as W);
-          const mc = ck(argv as W);
-          if (mc) args.mentionCookie = mc;
-        }
-        let sendToken: string;
-        if (argv["as-bot"]) {
-          const botToken = resolveBotToken();
-          if (!botToken) {
-            console.error(
-              "Error: --as-bot needs a bot token, but no xoxb- token was found.\n" +
-              "  Set SLACK_BOT_TOKEN=xoxb-... in ~/.config/slack-cli/.env (or your shell).",
-            );
+        if (argv.to && !argv["any-thread"]) {
+          try {
+            const t = tok(argv as W);
+            const c = ck(argv as W);
+            const answered = await messagePlace(t, argv.to, c);
+            const p = parseSlackPermalink(argv.target) ? await messagePlace(t, argv.target, c) : undefined;
+            const dest = p ? { channel: p.channel, threadTs: p.root } : (() => { const q = parseTargetThread(argv.target); return { ref: q.ref, ...(q.threadTs ? { threadTs: q.threadTs } : {}) }; })();
+            const channel = "channel" in dest ? dest.channel : await resolveChannel(t, dest.ref, c);
+            const why = threadMismatch({ channel, ...(dest.threadTs ? { threadTs: dest.threadTs } : {}) }, answered);
+            if (why) { console.error(`Error: ${why}`); process.exit(2); }
+          } catch (e: unknown) {
+            console.error(friendlySlackError(e));
             process.exit(1);
           }
-          // Resolve @user → user_id with the *user* token (has users:read), then
-          // let cmdSend open the DM with the bot token (im:write). This avoids
-          // requiring users:read on the bot and guarantees the DM is bot↔user
-          // (not the user's own self-DM).
-          if (!args.channelId && !args.userId && args.target.startsWith("@")) {
-            try {
-              args.userId = await resolveUserId(tok(argv as W), args.target, ck(argv as W));
-            } catch (e: unknown) {
-              console.error(
-                `Error: could not resolve ${args.target} to a user for the bot DM.\n` +
-                `  ${e instanceof Error ? e.message : String(e)}\n` +
-                `  Tip: pass --user-id <Uxxxx> to skip the lookup.`,
-              );
-              process.exit(1);
-            }
-          }
-          sendToken = botToken;
-          args.asBot = true;
-        } else {
-          sendToken = tok(argv as W);
-          // Session cookie for `sendToken` itself — needed for an xoxc- desktop
-          // token to be accepted by the public API at all. Not applicable to the
-          // bot token above (bot tokens need no cookie).
-          const sc = ck(argv as W);
-          if (sc) args.cookie = sc;
         }
-        // Print a clean error instead of yargs' usage dump when a send fails at
-        // runtime (e.g. missing scope, channel not found). The confirm gate
-        // exits via process.exit, so it is unaffected.
+        await runSend(argv);
+      },
+    )
+    .command(
+      "init [dir]",
+      "Create .slack-term/ in a directory: aliases, settings, inbox/outbox (never committed)",
+      (y) => y
+        .positional("dir", { type: "string", default: ".", describe: "Directory to put .slack-term/ in" })
+        .option("prefix", { type: "string", describe: "Put in front of every `slack reply`, e.g. \"[design]\"" })
+        .option("channel", { type: "string", describe: "Default channel (id)" })
+        .option("as-bot", { type: "boolean", describe: "Reply as the bot by default" }),
+      (argv) => {
+        const { dir, created } = initScope(argv.dir, {
+          ...(argv.prefix ? { prefix: argv.prefix } : {}),
+          ...(argv.channel ? { channel: argv.channel } : {}),
+          ...(argv["as-bot"] !== undefined ? { as_bot: argv["as-bot"] } : {}),
+        });
+        console.log(created.length ? `${dir}: created ${created.join(", ")}` : `${dir}: already set up`);
+      },
+    )
+    .command(
+      "alias",
+      "Name channels and threads for this directory (the nearest .slack-term/)",
+      (y) => y
+        .command(
+          ["ls", "list"],
+          "List aliases: name, channel, thread, file",
+          (yy) => yy.option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const scope = findScope();
+            const all = listAliases(scope);
+            if (argv.json) {
+              console.log(JSON.stringify(all.map(({ scope: _, ...a }) => a)));
+              return;
+            }
+            for (const a of all) console.log(`${a.name}\t${a.channel}\t${a.thread_ts ?? "-"}\t${a.file}${a.note ? `\t${a.note}` : ""}`);
+            if (!all.length) console.error(`no aliases in ${scope.dir}${scope.global ? " (no .slack-term/ above here: `slack init` makes one)" : ""}`);
+          },
+        )
+        .command(
+          "set <name> <target>",
+          "Name a channel or thread: a permalink (a reply's names its thread root), #chan:<ts>, or #chan",
+          (yy) => yy
+            .positional("name", { type: "string", demandOption: true })
+            .positional("target", { type: "string", demandOption: true })
+            .option("note", { type: "string", describe: "Free text shown by `alias ls`" })
+            .option("shared", { type: "boolean", default: false, describe: "Write settings.yml (the allowlist owner's file) instead of settings.local.yml" })
+            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory instead of the cwd's (with --shared: a lane's dir)" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            const cookie = ck(argv as W);
+            const scope = findScope(argv.dir);
+            const threaded = parseSlackPermalink(argv.target)?.ts !== undefined || parseTargetThread(argv.target).threadTs !== undefined;
+            let channel: string;
+            let thread: string | undefined;
+            let note = "";
+            if (threaded) {
+              const place = await messagePlace(token, argv.target, cookie);
+              channel = place.channel;
+              thread = place.root;
+              if (place.root !== place.ts) note = ` (${place.ts} is a reply: named its thread root)`;
+            } else {
+              channel = await resolveChannel(token, parseTargetThread(argv.target).ref, cookie);
+            }
+            let before;
+            try {
+              before = setAlias(scope, argv.name, { channel, ...(thread ? { thread_ts: thread } : {}), ...(argv.note ? { note: argv.note } : {}) }, argv.shared);
+            } catch (e: unknown) {
+              if (e instanceof RestrictedError) { console.error(`Error: ${e.message}`); process.exit(2); }
+              throw e;
+            }
+            const was = before && (before.channel !== channel || before.thread_ts !== thread) ? ` (was ${before.channel} ${before.thread_ts ?? "-"})` : "";
+            console.log(`${argv.name} → ${channel} ${thread ?? "-"}${note}${was}  [${scope.dir}]`);
+          },
+        )
+        .command(
+          ["unset <name>", "rm <name>"],
+          "Remove an alias (from settings.local.yml; --shared: also from settings.yml)",
+          (yy) => yy
+            .positional("name", { type: "string", demandOption: true })
+            .option("shared", { type: "boolean", default: false, describe: "Allow removing one defined in settings.yml" })
+            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory" }),
+          (argv) => {
+            const scope = findScope(argv.dir);
+            let r;
+            try {
+              r = unsetAlias(scope, argv.name, argv.shared);
+            } catch (e: unknown) {
+              if (e instanceof RestrictedError) { console.error(`Error: ${e.message}`); process.exit(2); }
+              throw e;
+            }
+            if (r === "removed") console.log(`${argv.name} removed  [${scope.dir}]`);
+            else if (r === "absent") { console.error(`no alias "${argv.name}" in ${scope.dir}`); process.exit(2); }
+            else { console.error(`"${argv.name}" is defined in ${scope.dir}/settings.yml: edit that file to remove it`); process.exit(2); }
+          },
+        )
+        .command(
+          "who <channel> <ts>",
+          "Which registered .slack-term/ dirs subscribe this thread (or message): dir, alias",
+          (yy) => yy
+            .positional("channel", { type: "string", demandOption: true, describe: "Channel id" })
+            .positional("ts", { type: "string", demandOption: true, describe: "Thread root ts (a reply's own ts is not its thread)" })
+            .option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const hits = whoSubscribes(argv.channel, argv.ts).map((a) => ({ dir: dirname(a.scope.dir), scope: a.scope.dir, alias: a.name, file: a.file }));
+            if (argv.json) console.log(JSON.stringify(hits));
+            else for (const h of hits) console.log(`${h.dir}\t${h.alias}`);
+            if (!hits.length) process.exitCode = 2;
+          },
+        )
+        .command(
+          "import <tsv>",
+          "One-shot: import a legacy allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
+          (yy) => yy
+            .positional("tsv", { type: "string", demandOption: true })
+            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (for a DM: the DM id)" })
+            .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-term/, made if missing); repeatable" }),
+          (argv) => {
+            const dirs = new Map<string, string>();
+            for (const kv of argv["lane-dir"] ?? []) {
+              const eq = String(kv).indexOf("=");
+              if (eq <= 0) { console.error(`Error: --lane-dir ${kv}: want <lane>=<dir>`); process.exit(2); }
+              dirs.set(String(kv).slice(0, eq), String(kv).slice(eq + 1));
+            }
+            let added = 0;
+            const skipped = new Map<string, number>();
+            for (const line of readFileSync(argv.tsv, "utf8").split("\n")) {
+              const [ts, lane] = line.trim().split("\t");
+              if (!ts || line.startsWith("#") || !lane) continue;
+              const dir = dirs.get(lane);
+              if (!dir || !/^\d{10}\.\d{6}$/.test(ts)) { skipped.set(lane, (skipped.get(lane) ?? 0) + 1); continue; }
+              const scope = { dir: initScope(dir).dir, global: false };
+              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from legacy allowlist" }, true);
+              added++;
+            }
+            console.log(`imported ${added} subscription(s)`);
+            for (const [lane, n] of skipped) console.error(`skipped ${n} line(s) for lane "${lane}" (no --lane-dir, or not a ts)`);
+          },
+        )
+        .demandCommand(1, "alias needs a subcommand: ls, set, unset, who, import"),
+    )
+    .command(
+      "reply [dest] [message]",
+      "Reply in a thread — an alias, a permalink or #chan:<ts> — with the directory's prefix (confirm-hash gate, like send)",
+      (y) => y
+        .positional("dest", { type: "string", describe: "alias | permalink | #chan:<ts> | <ts> (in settings' channel). Omit with --to" })
+        .positional("message", { type: "string", describe: "Text, or - for stdin" })
+        .option("to", { type: "string", describe: "Permalink of the message you are answering: replies in ITS thread; with a dest, refuses when they differ" })
+        .option("any-thread", { type: "boolean", default: false, describe: "With --to and a dest: post to dest even when the message is in another thread" })
+        .option("prefix", { type: "string", describe: "Override settings' prefix (\"\" for none)" })
+        .option("code", { type: "string", describe: "Safety hash to confirm send" })
+        .option("as-bot", { type: "boolean", describe: "Send via the bot token (default: settings' as_bot)" })
+        .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+        .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel" })
+        .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real mentions (--no-mentions for literal text)" }),
+      async (argv) => {
+        let dest = argv.dest;
+        let message = argv.message;
+        // `slack reply --to <link> 'text'`: the one positional is the text.
+        if (argv.to && message === undefined) { message = dest; dest = undefined; }
+        if (message === "-") message = await Bun.stdin.text();
+        if (message === undefined || !message.trim()) { console.error("Error: message is empty"); process.exit(1); }
+        if (!dest && !argv.to) { console.error("Error: reply needs a destination (alias, permalink, #chan:<ts>) or --to <permalink>"); process.exit(2); }
+        const token = tok(argv as W);
+        const cookie = ck(argv as W);
+        const scope = findScope();
+        const settings = readSettings(scope);
+        let where: { channel: string; threadTs: string };
         try {
-          await cmdSend(sendToken, args);
+          const r = await resolveReplyTarget(token, cookie, scope, dest, argv.to, argv["any-thread"]);
+          if ("error" in r) { console.error(`Error: ${r.error}`); process.exit(2); }
+          where = r;
         } catch (e: unknown) {
           console.error(friendlySlackError(e));
           process.exit(1);
         }
+        const { channel, threadTs } = where;
+        // A restricted scope's prefix is its owner's: overriding it would let a
+        // lane post as another.
+        if (isRestricted(scope) && (argv.prefix !== undefined || (argv["as-bot"] !== undefined && argv["as-bot"] !== (settings.as_bot ?? false)))) {
+          console.error(`Error: ${scope.dir} is restricted: who it posts as (prefix, as_bot) comes from settings.yml; --prefix / --as-bot are refused`);
+          process.exit(2);
+        }
+        const text = applyPrefix(message, argv.prefix ?? settings.prefix);
+        if (!text.trim()) { console.error("Error: message is empty (only the prefix)"); process.exit(1); }
+        await runSend({
+          workspace: (argv as W).workspace, target: `${channel}:${threadTs}`, message: text, code: argv.code,
+          "allow-url-adjacent": argv["allow-url-adjacent"], "as-bot": argv["as-bot"] ?? settings.as_bot ?? false,
+          broadcast: argv.broadcast, mentions: argv.mentions,
+        });
       },
+    )
+    .command(
+      "inbox",
+      "This directory's .slack-term/inbox/: messages routed here by `slack stream --inbox`",
+      (y) => y
+        .command(
+          ["ls", "list"],
+          "Pending messages: ts, from, alias, text (redacted)",
+          (yy) => yy.option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const items = listInbox(findScope());
+            if (argv.json) { console.log(JSON.stringify(items.map((i) => ({ file: i.file, ...i.entry })))); return; }
+            for (const i of items) console.log(`${i.entry.ts}\t${i.entry.user_name ?? i.entry.user}\t${i.entry.alias}\t${i.entry.text.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}${i.entry.files ? `\t[files: ${i.entry.files}]` : ""}`);
+          },
+        )
+        .command(
+          "listen",
+          "Print each message as it arrives in inbox/ (one JSON line each); pending ones first. Exits 0 at --timeout",
+          (yy) => yy
+            .option("timeout", { type: "number", default: 3600, describe: "Seconds" })
+            .option("new-only", { type: "boolean", default: false, describe: "Skip what is already pending" })
+            .option("thread", { type: "string", describe: "Only messages in this thread (its root ts)" })
+            .option("alias", { type: "string", describe: "Only messages routed by this alias" })
+            .option("from", { type: "array", string: true, describe: "Only messages from these user ids; repeatable" }),
+          async (argv) => {
+            const scope = findScope();
+            const from = argv.from?.length ? new Set(argv.from.map(String)) : undefined;
+            const wanted = (e: { ts: string; thread_ts?: string; alias: string; user: string }): boolean =>
+              (!argv.thread || (e.thread_ts ?? e.ts) === argv.thread) && (!argv.alias || e.alias === argv.alias) && (!from || from.has(e.user));
+            const seen = new Set<string>();
+            if (argv["new-only"]) for (const i of listInbox(scope)) seen.add(i.file);
+            const until = Date.now() + argv.timeout * 1000;
+            for (;;) {
+              for (const i of listInbox(scope)) {
+                if (seen.has(i.file)) continue;
+                seen.add(i.file);
+                if (wanted(i.entry)) console.log(JSON.stringify({ file: i.file, ...i.entry }));
+              }
+              if (Date.now() >= until) break;
+              // Files land by rename, so a short poll is enough and survives
+              // every filesystem (fs.watch does not, on network mounts).
+              await new Promise((r) => setTimeout(r, Math.min(500, Math.max(0, until - Date.now()))));
+            }
+          },
+        )
+        .command(
+          "nudge",
+          "Pending messages older than settings' nudge_after_min (default 30): exit 1 when there are any",
+          (yy) => yy.option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const items = overdue(findScope());
+            if (argv.json) console.log(JSON.stringify(items.map((i) => ({ file: i.file, ts: i.entry.ts, channel: i.entry.channel, permalink: i.entry.permalink, waiting_min: Math.round((Date.now() - i.mtimeMs) / 60_000) }))));
+            else for (const i of items) console.log(`${i.entry.ts}\t${Math.round((Date.now() - i.mtimeMs) / 60_000)} min\t${i.entry.permalink}`);
+            if (items.length) process.exitCode = 1;
+          },
+        )
+        .demandCommand(1, "inbox needs a subcommand: ls, listen, nudge"),
+    )
+    .command(
+      "done <ref..>",
+      "Mark inbox messages handled (moved to archived/) without replying: a file name, path or message ts",
+      (y) => y.positional("ref", { type: "string", array: true, demandOption: true }),
+      (argv) => {
+        const scope = findScope();
+        let missing = 0;
+        for (const ref of argv.ref as string[]) {
+          const to = markDone(scope, ref);
+          if (to) console.log(`archived ${to}`);
+          else { console.error(`not in ${scope.dir}/inbox: ${ref}`); missing++; }
+        }
+        if (missing) process.exit(2);
+      },
+    )
+    .command(
+      "outbox",
+      "This directory's .slack-term/outbox/: replies queued as files, sent by `outbox flush`",
+      (y) => y
+        .command(
+          "add <dest> <message>",
+          "Queue a reply (text redacted before it is written; - reads stdin)",
+          (yy) => yy
+            .positional("dest", { type: "string", demandOption: true, describe: "alias | permalink | #chan:<ts>" })
+            .positional("message", { type: "string", demandOption: true })
+            .option("in-reply-to", { type: "string", describe: "ts of the inbox message this answers: archived once sent" }),
+          async (argv) => {
+            const text = argv.message === "-" ? await Bun.stdin.text() : argv.message;
+            if (!text.trim()) { console.error("Error: message is empty"); process.exit(1); }
+            const r = addOutbox(findScope(), { to: argv.dest, text, ...(argv["in-reply-to"] ? { in_reply_to: argv["in-reply-to"] } : {}) });
+            if (r.redacted.length) console.error(`⚠ redacted before queueing: ${r.redacted.join(", ")}`);
+            console.log(r.file);
+          },
+        )
+        .command(
+          ["ls", "list"],
+          "Queued replies: file, dest, attempts, error",
+          (yy) => yy,
+          () => {
+            for (const i of listOutbox(findScope())) console.log(`${i.file}\t${i.entry.to}${i.entry.attempts ? `\tattempts=${i.entry.attempts}\t${i.entry.error ?? ""}` : ""}`);
+          },
+        )
+        .command(
+          "flush",
+          "Send every queued reply (prefix, thread and restrict checks as `reply`); a --code covers the whole batch",
+          (yy) => yy
+            .option("code", { type: "string", describe: "Safety hash to confirm the batch" })
+            .option("as-bot", { type: "boolean", describe: "Send via the bot token (default: settings' as_bot)" }),
+          async (argv) => {
+            const scope = findScope();
+            const settings = readSettings(scope);
+            const items = listOutbox(scope);
+            if (!items.length) { console.error(`nothing in ${scope.dir}/outbox`); return; }
+            if (isRestricted(scope) && argv["as-bot"] !== undefined && argv["as-bot"] !== (settings.as_bot ?? false)) {
+              console.error(`Error: ${scope.dir} is restricted: as_bot comes from settings.yml; --as-bot is refused`);
+              process.exit(2);
+            }
+            const asBot = argv["as-bot"] ?? settings.as_bot ?? false;
+            const lookTok = tok(argv as W);
+            const lookCk = ck(argv as W);
+            let sendTok: string;
+            let sendCk: string | undefined;
+            if (asBot) {
+              const b = resolveBotToken();
+              if (!b) { console.error("Error: as_bot needs a bot token (SLACK_BOT_TOKEN)"); process.exit(1); }
+              sendTok = b;
+            } else {
+              sendTok = lookTok;
+              sendCk = lookCk;
+            }
+            const plan: { item: (typeof items)[number]; channel: string; threadTs: string; text: string }[] = [];
+            const refused: string[] = [];
+            for (const item of items) {
+              try {
+                const r = await resolveReplyTarget(lookTok, lookCk, scope, item.entry.to, undefined);
+                if ("error" in r) { refused.push(`${item.file}: ${r.error}`); continue; }
+                const text = applyPrefix(item.entry.text, settings.prefix);
+                if (!text.trim()) { refused.push(`${item.file}: empty`); continue; }
+                plan.push({ item, ...r, text });
+              } catch (e: unknown) {
+                refused.push(`${item.file}: ${friendlySlackError(e)}`);
+              }
+            }
+            for (const r of refused) console.error(`refused (stays queued): ${r}`);
+            if (!plan.length) process.exit(2);
+            const lines = [`OUTBOX — ${plan.length} repl${plan.length === 1 ? "y" : "ies"}${asBot ? " as the bot" : ""}:`];
+            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}`);
+            const expected = safetyCode("outbox", asBot ? "bot" : "user", ...plan.map((p) => `${p.channel}:${p.threadTs}:${p.text}`));
+            if (argv.code !== expected) requireCode(argv.code, expected, lines);
+            let failed = 0;
+            for (const p of plan) {
+              try {
+                const ts = await slackSend(sendTok, p.channel, p.text, p.threadTs, false, sendCk);
+                let link = "";
+                try { link = await getPermalink(sendTok, p.channel, ts, sendCk); } catch { /* the ts is what matters */ }
+                const to = recordOutboxSent(scope, p.item, { ts, permalink: link, channel: p.channel, thread_ts: p.threadTs });
+                console.log(`✓ ${link || ts}  (${to})`);
+              } catch (e: unknown) {
+                recordFailure(p.item, friendlySlackError(e));
+                console.error(`✗ ${p.item.file}: ${friendlySlackError(e)}`);
+                failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          },
+        )
+        .demandCommand(1, "outbox needs a subcommand: add, ls, flush"),
     )
     .command(
       "ask [target] [question] [choices..]",
@@ -6755,39 +7356,18 @@ async function main(): Promise<void> {
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
         .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),
-      async (argv) => {
-        const args: EditArgs = { target: argv.target!, newText: argv.newText!, allowUrlAdjacent: argv["allow-url-adjacent"] };
-        if (argv.force) args.force = true;
-        if (argv.code) args.code = argv.code;
-        if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        if (argv.mentions !== false) args.mentions = true;
-        let editToken: string;
-        if (argv["as-bot"]) {
-          // --as-bot is not a switch on chat.update. It selects a DIFFERENT
-          // resolved token, and until now `edit` never wired one — so every
-          // message the bot posted was uncorrectable, and the workaround people
-          // reached for was RESENDING, which this repo's own etiquette forbids.
-          // Bot identity is what makes a DM notify at all, so "uncorrectable"
-          // applied to exactly the messages that matter most.
-          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
-          editToken = resolved.botToken;
-          if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
-          args.asBot = true;
-          // Mentions still resolve on the USER token: the bot has no users:read,
-          // and a silently unresolved @handle in a CORRECTION is the same defect
-          // twice.
-          args.mentionToken = tok(argv as W);
-          const mc = ck(argv as W);
-          if (mc) args.mentionCookie = mc;
-        } else {
-          editToken = tok(argv as W);
-          // Not set under --as-bot: a bot token needs no session cookie, and
-          // attaching one is how a working call starts failing.
-          const cookie = ck(argv as W);
-          if (cookie) args.cookie = cookie;
-        }
-        await cmdEdit(editToken, args);
-      },
+      async (argv) => runEdit(argv),
+    )
+    .command(
+      "tick <target> [n]",
+      "Tick item n of a posted checklist (⬜ n. → ✅ n.), nothing else changed; without n, the one open item (confirm-hash gate, like edit)",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
+        .positional("n", { type: "number", describe: "Item number" })
+        .option("code", { type: "string", describe: "Safety hash to confirm the edit" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (needed for a message the bot posted)" }),
+      async (argv) => runEdit({ ...argv, tick: argv.n !== undefined ? { n: argv.n } : {}, mentions: false }),
     )
     .command(
       "delete <target>",
@@ -7708,7 +8288,8 @@ async function main(): Promise<void> {
         .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
         .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (`slack relay init`) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
-        .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" }),
+        .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" })
+        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-term/ that subscribes its thread (redacted, text-only)" }),
       async (argv) => {
         let re: RegExp;
         let reconcileMs: number;
@@ -7824,6 +8405,18 @@ async function main(): Promise<void> {
           selfUsers,
           selfBots,
           json: argv.json,
+          ...(argv.inbox ? {
+            onMatch: (rec: StreamMatch, files: number) => {
+              try {
+                // Our own credentials, masked by exact value on top of the rules.
+                const known = [token, cookie, process.env.SLACK_RELAY_TOKEN].filter((v): v is string => !!v);
+                const dirs = deliver({ ...rec, ...(files ? { files } : {}) }, undefined, new Date(), known);
+                if (dirs.length) console.error(`slack stream: delivered ${rec.channel.id}:${rec.ts} to ${dirs.length} inbox(es)`);
+              } catch (e: unknown) {
+                console.error(`slack stream: inbox delivery failed: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            },
+          } : {}),
           once: argv.once,
           ...(sinceSec !== undefined ? { sinceSec } : {}),
           intervalMs,

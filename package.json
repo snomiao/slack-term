@@ -35,6 +35,7 @@
   },
   "files": [
     "ts/",
+    "locales/",
     "dist/",
     "worker/src/",
     "README.md",

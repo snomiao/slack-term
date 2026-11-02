@@ -1,0 +1,32 @@
+{
+  "$comment": "slack-term language pack. Strings slack ask posts into Slack, and the patterns the choice-question hint looks for. Loaded at call time: edit and rerun, no rebuild. A .slack-term/locales/<lang>.json overrides keys here. ask.* marked WIRE are matched back exactly on questions already posted: never reword them.",
+  "lang": "en",
+  "locale_prefixes": [
+    "en"
+  ],
+  "ask": {
+    "instructionReactionThread": "_Press one of the reactions below to answer. If none fits, reply in this message's *thread* (ordinary channel posts are not picked up as answers)._",
+    "instructionReactionHere": "_Press one of the reactions below to answer. If none fits, reply to this message._",
+    "instructionTextThread": "_Reply in this message's *thread* — your reply is the answer (ordinary channel posts are not picked up as answers)._",
+    "instructionTextHere": "_Reply to this message — your reply is the answer._",
+    "overflowNote": "_Choices 11 and up have no reaction — answer them with a reply._",
+    "otherThread": "Other — reply in the thread",
+    "otherHere": "Other — reply to this message",
+    "explainLine (WIRE)": "Explain — press to ask the asker for more detail (not an answer)",
+    "explainNote (WIRE)": "Explanation requested — it will follow in this thread. The question stays open; answer it after that.",
+    "invalidPrefix (WIRE)": "_:warning: Several choices are selected, so this is not counted as an answer — keep only one: ",
+    "answeredVia": "_Answered by {how}{who}_",
+    "howReaction": "reaction {glyph}",
+    "howReply": "reply",
+    "howReplyN": "reply ({n})",
+    "voidStamp": "_Void{reason} — this question no longer takes answers._",
+    "supersededBy": "↪ Replaced by: {link}"
+  },
+  "choice_patterns": [
+    "\\((?:\\s*(?:yes|no)\\s*/){1,}\\s*(?:yes|no)\\s*\\)",
+    "\\(\\s*y\\s*/\\s*n\\s*\\)",
+    "\\(\\s*(?:true|false)\\s*/\\s*(?:true|false)\\s*\\)",
+    "(?:^|\\s)\\(?a\\)\\s.*\\(?b\\)\\s.*\\?\\s*$",
+    "(?:^|\\s)(?:option|choice)\\s*a\\b.*\\b(?:option|choice)?\\s*b\\b.*\\?\\s*$"
+  ]
+}

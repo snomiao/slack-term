@@ -1,0 +1,31 @@
+{
+  "$comment": "slack-term language pack. Strings slack ask posts into Slack, and the patterns the choice-question hint looks for. Loaded at call time: edit and rerun, no rebuild. A .slack-term/locales/<lang>.json overrides keys here. ask.* marked WIRE are matched back exactly on questions already posted: never reword them.",
+  "lang": "ja",
+  "locale_prefixes": [
+    "ja"
+  ],
+  "ask": {
+    "instructionReactionThread": "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージの *スレッド* で返信してください (チャンネルへの通常投稿は回答として拾いません)。_",
+    "instructionReactionHere": "_下のリアクションを 1 つ押すと回答になります。当てはまるものがなければ、このメッセージに返信してください。_",
+    "instructionTextThread": "_このメッセージの *スレッド* で返信してください。本文がそのまま回答になります (チャンネルへの通常投稿は回答として拾いません)。_",
+    "instructionTextHere": "_このメッセージに返信してください。本文がそのまま回答になります。_",
+    "overflowNote": "_11 番目以降はリアクションがないので、返信で答えてください。_",
+    "otherThread": "その他 — スレッドで返信してください",
+    "otherHere": "その他 — このメッセージに返信してください",
+    "explainLine (WIRE)": "説明して — 押すと質問者に説明を頼みます (回答にはなりません)",
+    "explainNote (WIRE)": "説明のリクエストを受け付けました — このスレッドで説明します。質問はまだ開いているので、回答はそのあとで大丈夫です。",
+    "invalidPrefix (WIRE)": "_:warning: 同時に複数選ばれているため回答として数えていません — どれか 1 つだけ残してください: ",
+    "answeredVia": "_{how}で回答済み{who}_",
+    "howReaction": "リアクション {glyph}",
+    "howReply": "返信",
+    "howReplyN": "返信 ({n})",
+    "voidStamp": "_無効{reason} — この質問への回答は受け付けません。_",
+    "supersededBy": "↪ 新しい質問: {link}"
+  },
+  "choice_patterns": [
+    "[（(]\\s*(?:是|はい|する|あり|可)\\s*[／/・|]\\s*(?:否|いいえ|しない|なし|不可)\\s*[）)]",
+    "「[^」\\n]+?[／/][^」\\n]+」.*[？?]",
+    "(?:^|\\s)[（(]?[aａAＡ1１①][）)]\\s.*[（(]?[bｂBＢ2２②][）)]\\s.*[？?]\\s*$",
+    "(?:どちら|どれ)に(?:します|しましょう)か[？?]?"
+  ]
+}

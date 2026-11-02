@@ -34,6 +34,10 @@ MODE="staged"
 # Lockfiles are excluded from both modes: their base64 integrity hashes contain
 # random runs that read as Slack IDs, and they hold no workspace data.
 LOCKFILES='(^|/)(bun\.lock|bun\.lockb|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock)$'
+# ts/vendor/ is third-party data shipped verbatim (gitleaks' rules TOML): its
+# token prefixes (GitLab's runner-token prefix, …) read as Slack IDs, and it holds no
+# workspace data. Excluded the same way.
+LOCKFILES="$LOCKFILES|^ts/vendor/"
 
 if [ "$MODE" = "all" ]; then
   files=$(git ls-files | grep -vE "$LOCKFILES")
