@@ -4,7 +4,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
@@ -13,7 +13,7 @@ import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveTok
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
-import { runStream, webClient } from "./stream.ts";
+import { runStream, webClient, type StreamMatch } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
@@ -49,7 +49,8 @@ import {
   type AskFound,
   type AskLang,
 } from "./ask.ts";
-import { applyPrefix, findScope, initScope, listAliases, lookupAlias, readSettings, setAlias, threadMismatch, unsetAlias, type MessagePlace } from "./scope.ts";
+import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
+import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
   POLL_KEYCAPS,
   POLL_MARKER,
@@ -1292,6 +1293,50 @@ function parseTargetThread(s: string, permalinkThreads = true): { ref: string; t
   const alias = lookupAlias(s);
   if (alias) return alias.thread_ts ? { ref: alias.channel, threadTs: alias.thread_ts } : { ref: alias.channel };
   return { ref: s };
+}
+
+/** Where `slack reply` (and `outbox flush`) posts: the destination — alias,
+ *  permalink (its root), `#chan:<ts>` or a bare ts in settings' channel —
+ *  and/or `--to`'s message, which must agree with it unless `anyThread`. A
+ *  restricted scope also requires the thread to be one of its subscriptions.
+ *  `{ error }` is a refusal (exit 2): nothing was sent. */
+async function resolveReplyTarget(
+  token: string, cookie: string | undefined, scope: Scope, dest: string | undefined, to: string | undefined, anyThread = false,
+): Promise<{ channel: string; threadTs: string } | { error: string }> {
+  const settings = readSettings(scope);
+  let channel: string | undefined;
+  let threadTs: string | undefined;
+  if (dest) {
+    if (parseSlackPermalink(dest)) {
+      const place = await messagePlace(token, dest, cookie);
+      channel = place.channel;
+      threadTs = place.root;
+    } else {
+      let p = parseTargetThread(dest);
+      if (!p.threadTs && /^\d{10}\.\d{6}$/.test(dest)) {
+        if (!settings.channel) return { error: `a bare ts needs a channel: set \`channel\` in .slack-term/settings.yml, or pass #chan:${dest}` };
+        p = { ref: settings.channel, threadTs: dest };
+      }
+      if (!p.threadTs) return { error: `"${dest}" is not a thread — reply only posts in threads. For a top-level post use \`slack send\`.` };
+      channel = await resolveChannel(token, p.ref, cookie);
+      threadTs = p.threadTs;
+    }
+  }
+  if (to) {
+    const answered = await messagePlace(token, to, cookie);
+    if (channel === undefined) {
+      channel = answered.channel;
+      threadTs = answered.root;
+    } else if (!anyThread) {
+      const why = threadMismatch({ channel, ...(threadTs ? { threadTs } : {}) }, answered);
+      if (why) return { error: why };
+    }
+  }
+  if (!channel || !threadTs) return { error: "reply needs a destination (alias, permalink, #chan:<ts>) or --to <permalink>" };
+  if (isRestricted(scope) && !listAliases(scope).some((a) => a.channel === channel && (a.thread_ts === undefined || a.thread_ts === threadTs))) {
+    return { error: `${channel} thread ${threadTs} is not one of ${scope.dir}'s subscriptions (restrict_to_subscriptions)` };
+  }
+  return { channel, threadTs };
 }
 
 /** Where the message a permalink (or `#chan:<ts>`) names really sits: its
@@ -6197,11 +6242,13 @@ async function main(): Promise<void> {
           (yy) => yy
             .positional("name", { type: "string", demandOption: true })
             .positional("target", { type: "string", demandOption: true })
-            .option("note", { type: "string", describe: "Free text shown by `alias ls`" }),
+            .option("note", { type: "string", describe: "Free text shown by `alias ls`" })
+            .option("shared", { type: "boolean", default: false, describe: "Write settings.yml (the allowlist owner's file) instead of settings.local.yml" })
+            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory instead of the cwd's (with --shared: a lane's dir)" }),
           async (argv) => {
             const token = tok(argv as W);
             const cookie = ck(argv as W);
-            const scope = findScope();
+            const scope = findScope(argv.dir);
             const threaded = parseSlackPermalink(argv.target)?.ts !== undefined || parseTargetThread(argv.target).threadTs !== undefined;
             let channel: string;
             let thread: string | undefined;
@@ -6214,24 +6261,76 @@ async function main(): Promise<void> {
             } else {
               channel = await resolveChannel(token, parseTargetThread(argv.target).ref, cookie);
             }
-            const before = setAlias(scope, argv.name, { channel, ...(thread ? { thread_ts: thread } : {}), ...(argv.note ? { note: argv.note } : {}) });
+            let before;
+            try {
+              before = setAlias(scope, argv.name, { channel, ...(thread ? { thread_ts: thread } : {}), ...(argv.note ? { note: argv.note } : {}) }, argv.shared);
+            } catch (e: unknown) {
+              if (e instanceof RestrictedError) { console.error(`Error: ${e.message}`); process.exit(2); }
+              throw e;
+            }
             const was = before && (before.channel !== channel || before.thread_ts !== thread) ? ` (was ${before.channel} ${before.thread_ts ?? "-"})` : "";
             console.log(`${argv.name} → ${channel} ${thread ?? "-"}${note}${was}  [${scope.dir}]`);
           },
         )
         .command(
           ["unset <name>", "rm <name>"],
-          "Remove an alias (from settings.local.yml)",
-          (yy) => yy.positional("name", { type: "string", demandOption: true }),
+          "Remove an alias (from settings.local.yml; --shared: also from settings.yml)",
+          (yy) => yy
+            .positional("name", { type: "string", demandOption: true })
+            .option("shared", { type: "boolean", default: false, describe: "Allow removing one defined in settings.yml" })
+            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory" }),
           (argv) => {
-            const scope = findScope();
-            const r = unsetAlias(scope, argv.name);
+            const scope = findScope(argv.dir);
+            const r = unsetAlias(scope, argv.name, argv.shared);
             if (r === "removed") console.log(`${argv.name} removed  [${scope.dir}]`);
             else if (r === "absent") { console.error(`no alias "${argv.name}" in ${scope.dir}`); process.exit(2); }
             else { console.error(`"${argv.name}" is defined in ${scope.dir}/settings.yml: edit that file to remove it`); process.exit(2); }
           },
         )
-        .demandCommand(1, "alias needs a subcommand: ls, set, unset"),
+        .command(
+          "who <channel> <ts>",
+          "Which registered .slack-term/ dirs subscribe this thread (or message): dir, alias",
+          (yy) => yy
+            .positional("channel", { type: "string", demandOption: true, describe: "Channel id" })
+            .positional("ts", { type: "string", demandOption: true, describe: "Thread root ts (a reply's own ts is not its thread)" })
+            .option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const hits = whoSubscribes(argv.channel, argv.ts).map((a) => ({ dir: dirname(a.scope.dir), scope: a.scope.dir, alias: a.name, file: a.file }));
+            if (argv.json) console.log(JSON.stringify(hits));
+            else for (const h of hits) console.log(`${h.dir}\t${h.alias}`);
+            if (!hits.length) process.exitCode = 2;
+          },
+        )
+        .command(
+          "import <tsv>",
+          "One-shot: import a symphr-thread allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
+          (yy) => yy
+            .positional("tsv", { type: "string", demandOption: true })
+            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (symphr-thread: the DM id)" })
+            .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-term/, made if missing); repeatable" }),
+          (argv) => {
+            const dirs = new Map<string, string>();
+            for (const kv of argv["lane-dir"] ?? []) {
+              const eq = String(kv).indexOf("=");
+              if (eq <= 0) { console.error(`Error: --lane-dir ${kv}: want <lane>=<dir>`); process.exit(2); }
+              dirs.set(String(kv).slice(0, eq), String(kv).slice(eq + 1));
+            }
+            let added = 0;
+            const skipped = new Map<string, number>();
+            for (const line of readFileSync(argv.tsv, "utf8").split("\n")) {
+              const [ts, lane] = line.trim().split("\t");
+              if (!ts || line.startsWith("#") || !lane) continue;
+              const dir = dirs.get(lane);
+              if (!dir || !/^\d{10}\.\d{6}$/.test(ts)) { skipped.set(lane, (skipped.get(lane) ?? 0) + 1); continue; }
+              const scope = { dir: initScope(dir).dir, global: false };
+              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from symphr-thread allowlist" }, true);
+              added++;
+            }
+            console.log(`imported ${added} subscription(s)`);
+            for (const [lane, n] of skipped) console.error(`skipped ${n} line(s) for lane "${lane}" (no --lane-dir, or not a ts)`);
+          },
+        )
+        .demandCommand(1, "alias needs a subcommand: ls, set, unset, who, import"),
     )
     .command(
       "reply [dest] [message]",
@@ -6257,47 +6356,18 @@ async function main(): Promise<void> {
         if (!dest && !argv.to) { console.error("Error: reply needs a destination (alias, permalink, #chan:<ts>) or --to <permalink>"); process.exit(2); }
         const token = tok(argv as W);
         const cookie = ck(argv as W);
-        const settings = readSettings(findScope());
-        let channel: string | undefined;
-        let threadTs: string | undefined;
+        const scope = findScope();
+        const settings = readSettings(scope);
+        let where: { channel: string; threadTs: string };
         try {
-          if (dest) {
-            if (parseSlackPermalink(dest)) {
-              const place = await messagePlace(token, dest, cookie);
-              channel = place.channel;
-              threadTs = place.root;
-            } else {
-              let p = parseTargetThread(dest);
-              if (!p.threadTs && /^\d{10}\.\d{6}$/.test(dest)) {
-                if (!settings.channel) { console.error(`Error: a bare ts needs a channel: set \`channel\` in .slack-term/settings.yml, or pass #chan:${dest}`); process.exit(2); }
-                p = { ref: settings.channel, threadTs: dest };
-              }
-              if (!p.threadTs) {
-                console.error(`Error: "${dest}" is not a thread — reply only posts in threads. For a top-level post use \`slack send\`.`);
-                process.exit(2);
-              }
-              channel = await resolveChannel(token, p.ref, cookie);
-              threadTs = p.threadTs;
-            }
-          }
-          if (argv.to) {
-            const answered = await messagePlace(token, argv.to, cookie);
-            if (channel === undefined) {
-              channel = answered.channel;
-              threadTs = answered.root;
-            } else if (!argv["any-thread"]) {
-              const why = threadMismatch({ channel, ...(threadTs ? { threadTs } : {}) }, answered);
-              if (why) { console.error(`Error: ${why}`); process.exit(2); }
-            }
-          }
+          const r = await resolveReplyTarget(token, cookie, scope, dest, argv.to, argv["any-thread"]);
+          if ("error" in r) { console.error(`Error: ${r.error}`); process.exit(2); }
+          where = r;
         } catch (e: unknown) {
           console.error(friendlySlackError(e));
           process.exit(1);
         }
-        if (!threadTs) {
-          console.error(`Error: "${dest}" is not a thread — reply only posts in threads. For a top-level post use \`slack send\`.`);
-          process.exit(2);
-        }
+        const { channel, threadTs } = where;
         const text = applyPrefix(message, argv.prefix ?? settings.prefix);
         if (!text.trim()) { console.error("Error: message is empty (only the prefix)"); process.exit(1); }
         await runSend({
@@ -6306,6 +6376,161 @@ async function main(): Promise<void> {
           broadcast: argv.broadcast, mentions: argv.mentions,
         });
       },
+    )
+    .command(
+      "inbox",
+      "This directory's .slack-term/inbox/: messages routed here by `slack stream --inbox`",
+      (y) => y
+        .command(
+          ["ls", "list"],
+          "Pending messages: ts, from, alias, text (redacted)",
+          (yy) => yy.option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const items = listInbox(findScope());
+            if (argv.json) { console.log(JSON.stringify(items.map((i) => ({ file: i.file, ...i.entry })))); return; }
+            for (const i of items) console.log(`${i.entry.ts}\t${i.entry.user_name ?? i.entry.user}\t${i.entry.alias}\t${i.entry.text.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\t/g, "\\t")}${i.entry.files ? `\t[files: ${i.entry.files}]` : ""}`);
+          },
+        )
+        .command(
+          "listen",
+          "Print each message as it arrives in inbox/ (one JSON line each); pending ones first. Exits 0 at --timeout",
+          (yy) => yy
+            .option("timeout", { type: "number", default: 3600, describe: "Seconds" })
+            .option("new-only", { type: "boolean", default: false, describe: "Skip what is already pending" }),
+          async (argv) => {
+            const scope = findScope();
+            const seen = new Set<string>();
+            if (argv["new-only"]) for (const i of listInbox(scope)) seen.add(i.file);
+            const until = Date.now() + argv.timeout * 1000;
+            for (;;) {
+              for (const i of listInbox(scope)) {
+                if (seen.has(i.file)) continue;
+                seen.add(i.file);
+                console.log(JSON.stringify({ file: i.file, ...i.entry }));
+              }
+              if (Date.now() >= until) break;
+              // Files land by rename, so a short poll is enough and survives
+              // every filesystem (fs.watch does not, on network mounts).
+              await new Promise((r) => setTimeout(r, Math.min(500, Math.max(0, until - Date.now()))));
+            }
+          },
+        )
+        .command(
+          "nudge",
+          "Pending messages older than settings' nudge_after_min (default 30): exit 1 when there are any",
+          (yy) => yy.option("json", { type: "boolean", default: false }),
+          (argv) => {
+            const items = overdue(findScope());
+            if (argv.json) console.log(JSON.stringify(items.map((i) => ({ file: i.file, ts: i.entry.ts, channel: i.entry.channel, permalink: i.entry.permalink, waiting_min: Math.round((Date.now() - i.mtimeMs) / 60_000) }))));
+            else for (const i of items) console.log(`${i.entry.ts}\t${Math.round((Date.now() - i.mtimeMs) / 60_000)} min\t${i.entry.permalink}`);
+            if (items.length) process.exitCode = 1;
+          },
+        )
+        .demandCommand(1, "inbox needs a subcommand: ls, listen, nudge"),
+    )
+    .command(
+      "done <ref..>",
+      "Mark inbox messages handled (moved to archived/) without replying: a file name, path or message ts",
+      (y) => y.positional("ref", { type: "string", array: true, demandOption: true }),
+      (argv) => {
+        const scope = findScope();
+        let missing = 0;
+        for (const ref of argv.ref as string[]) {
+          const to = markDone(scope, ref);
+          if (to) console.log(`archived ${to}`);
+          else { console.error(`not in ${scope.dir}/inbox: ${ref}`); missing++; }
+        }
+        if (missing) process.exit(2);
+      },
+    )
+    .command(
+      "outbox",
+      "This directory's .slack-term/outbox/: replies queued as files, sent by `outbox flush`",
+      (y) => y
+        .command(
+          "add <dest> <message>",
+          "Queue a reply (text redacted before it is written; - reads stdin)",
+          (yy) => yy
+            .positional("dest", { type: "string", demandOption: true, describe: "alias | permalink | #chan:<ts>" })
+            .positional("message", { type: "string", demandOption: true })
+            .option("in-reply-to", { type: "string", describe: "ts of the inbox message this answers: archived once sent" }),
+          async (argv) => {
+            const text = argv.message === "-" ? await Bun.stdin.text() : argv.message;
+            if (!text.trim()) { console.error("Error: message is empty"); process.exit(1); }
+            const r = addOutbox(findScope(), { to: argv.dest, text, ...(argv["in-reply-to"] ? { in_reply_to: argv["in-reply-to"] } : {}) });
+            if (r.redacted.length) console.error(`⚠ redacted before queueing: ${r.redacted.join(", ")}`);
+            console.log(r.file);
+          },
+        )
+        .command(
+          ["ls", "list"],
+          "Queued replies: file, dest, attempts, error",
+          (yy) => yy,
+          () => {
+            for (const i of listOutbox(findScope())) console.log(`${i.file}\t${i.entry.to}${i.entry.attempts ? `\tattempts=${i.entry.attempts}\t${i.entry.error ?? ""}` : ""}`);
+          },
+        )
+        .command(
+          "flush",
+          "Send every queued reply (prefix, thread and restrict checks as `reply`); a --code covers the whole batch",
+          (yy) => yy
+            .option("code", { type: "string", describe: "Safety hash to confirm the batch" })
+            .option("as-bot", { type: "boolean", describe: "Send via the bot token (default: settings' as_bot)" }),
+          async (argv) => {
+            const scope = findScope();
+            const settings = readSettings(scope);
+            const items = listOutbox(scope);
+            if (!items.length) { console.error(`nothing in ${scope.dir}/outbox`); return; }
+            const asBot = argv["as-bot"] ?? settings.as_bot ?? false;
+            const lookTok = tok(argv as W);
+            const lookCk = ck(argv as W);
+            let sendTok: string;
+            let sendCk: string | undefined;
+            if (asBot) {
+              const b = resolveBotToken();
+              if (!b) { console.error("Error: as_bot needs a bot token (SLACK_BOT_TOKEN)"); process.exit(1); }
+              sendTok = b;
+            } else {
+              sendTok = lookTok;
+              sendCk = lookCk;
+            }
+            const plan: { item: (typeof items)[number]; channel: string; threadTs: string; text: string }[] = [];
+            const refused: string[] = [];
+            for (const item of items) {
+              try {
+                const r = await resolveReplyTarget(lookTok, lookCk, scope, item.entry.to, undefined);
+                if ("error" in r) { refused.push(`${item.file}: ${r.error}`); continue; }
+                const text = applyPrefix(item.entry.text, settings.prefix);
+                if (!text.trim()) { refused.push(`${item.file}: empty`); continue; }
+                plan.push({ item, ...r, text });
+              } catch (e: unknown) {
+                refused.push(`${item.file}: ${friendlySlackError(e)}`);
+              }
+            }
+            for (const r of refused) console.error(`refused (stays queued): ${r}`);
+            if (!plan.length) process.exit(2);
+            const lines = [`OUTBOX — ${plan.length} repl${plan.length === 1 ? "y" : "ies"}${asBot ? " as the bot" : ""}:`];
+            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}`);
+            const expected = safetyCode("outbox", asBot ? "bot" : "user", ...plan.map((p) => `${p.channel}:${p.threadTs}:${p.text}`));
+            if (argv.code !== expected) requireCode(argv.code, expected, lines);
+            let failed = 0;
+            for (const p of plan) {
+              try {
+                const ts = await slackSend(sendTok, p.channel, p.text, p.threadTs, false, sendCk);
+                let link = "";
+                try { link = await getPermalink(sendTok, p.channel, ts, sendCk); } catch { /* the ts is what matters */ }
+                const to = recordOutboxSent(scope, p.item, { ts, permalink: link, channel: p.channel, thread_ts: p.threadTs });
+                console.log(`✓ ${link || ts}  (${to})`);
+              } catch (e: unknown) {
+                recordFailure(p.item, friendlySlackError(e));
+                console.error(`✗ ${p.item.file}: ${friendlySlackError(e)}`);
+                failed++;
+              }
+            }
+            if (failed) process.exit(1);
+          },
+        )
+        .demandCommand(1, "outbox needs a subcommand: add, ls, flush"),
     )
     .command(
       "ask [target] [question] [choices..]",
@@ -7919,7 +8144,8 @@ async function main(): Promise<void> {
         .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
         .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (`slack relay init`) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
-        .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" }),
+        .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" })
+        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-term/ that subscribes its thread (redacted, text-only)" }),
       async (argv) => {
         let re: RegExp;
         let reconcileMs: number;
@@ -8032,6 +8258,18 @@ async function main(): Promise<void> {
           selfUsers,
           selfBots,
           json: argv.json,
+          ...(argv.inbox ? {
+            onMatch: (rec: StreamMatch, files: number) => {
+              try {
+                // Our own credentials, masked by exact value on top of the rules.
+                const known = [token, cookie, process.env.SLACK_RELAY_TOKEN].filter((v): v is string => !!v);
+                const dirs = deliver({ ...rec, ...(files ? { files } : {}) }, undefined, new Date(), known);
+                if (dirs.length) console.error(`slack stream: delivered ${rec.channel.id}:${rec.ts} to ${dirs.length} inbox(es)`);
+              } catch (e: unknown) {
+                console.error(`slack stream: inbox delivery failed: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            },
+          } : {}),
           once: argv.once,
           ...(sinceSec !== undefined ? { sinceSec } : {}),
           intervalMs,

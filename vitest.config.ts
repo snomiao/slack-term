@@ -39,6 +39,7 @@ export default defineConfig({
       "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
       "tests/reply.test.ts",
       "tests/scope.test.ts", // Bun-only: ts/scope.ts reads YAML with Bun.YAML
+      "tests/inbox.test.ts", // Bun-only, as scope.test.ts
       "tests/redact.test.ts", // Bun-only: ts/redact.ts parses the vendored rules with Bun.TOML
       // Bun-only: imports `bun:sqlite` at top level, which node cannot resolve —
       // the unresolved import fails the whole vitest run, not just this file.

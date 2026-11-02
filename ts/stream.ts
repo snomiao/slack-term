@@ -136,6 +136,8 @@ export type StreamOpts = {
   selfUsers: Set<string>;
   selfBots: Set<string>;
   json: boolean;
+  /** Also called with every emitted match and its attachment count (`slack stream --inbox`). */
+  onMatch?: (rec: StreamMatch, files: number) => void;
   once: boolean;
   /** Seconds back to (re)start every channel from, overriding the saved cursor. */
   sinceSec?: number;
@@ -371,6 +373,7 @@ async function consider(
     match,
   };
   ctx.opts.json ? _internals.out(JSON.stringify(rec)) : _internals.out(humanLine(rec));
+  ctx.opts.onMatch?.(rec, Array.isArray(m.files) ? m.files.length : 0);
   ctx.matches++;
   return true;
 }

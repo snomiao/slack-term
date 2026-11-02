@@ -2,7 +2,7 @@
 // the mock server, from a directory holding its own .slack-term/.
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +25,8 @@ const fixtures = {
   "conversations.history__channel=C00000001&limit=1": { ok: true, messages: [] },
   [`conversations.replies__channel=C00000001&limit=1&ts=${REPLY_TS}`]: thread(ROOT_TS),
   [`conversations.replies__channel=C00000001&limit=100&ts=${ROOT_TS}`]: thread(ROOT_TS),
+  [`conversations.replies__channel=C00000001&limit=1&ts=${ROOT_TS}`]: thread(ROOT_TS),
+  [`conversations.replies__channel=C00000001&limit=1&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
   [`conversations.replies__channel=C00000001&limit=100&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
   "users.info__user=U00000002": { ok: true, user: { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } } },
   "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
@@ -152,5 +154,67 @@ describe("slack init / alias / reply (CLI)", { timeout: 90_000 }, () => {
   test("alias unset", async () => {
     expect((await run(["alias", "unset", "board"])).exitCode).toBe(0);
     expect((await run(["alias", "unset", "board"])).exitCode).toBe(2);
+  });
+});
+
+describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
+  const ib = (): string => join(tmpHome, "tree", "ib");
+  test("setup: a lane dir with an alias and one inbox entry", async () => {
+    mkdirSync(ib(), { recursive: true });
+    expect((await run(["init", "--prefix", "[ib]"], ib())).exitCode).toBe(0);
+    expect((await run(["alias", "set", "board", `C00000001:${ROOT_TS}`], ib())).exitCode).toBe(0);
+    writeFileSync(join(ib(), ".slack-term", "inbox", `C00000001-${REPLY_TS}.yml`),
+      `ts: "${REPLY_TS}"\nchannel: C00000001\nthread_ts: "${ROOT_TS}"\nuser: U00000002\nuser_name: bob\ntext: a follow-up\npermalink: ${REPLY_LINK}\nalias: board\nreceived_at: 2026-11-02T00:00:00Z\n`);
+    const ls = await run(["inbox", "ls"], ib());
+    expect(ls.stdout).toBe(`${REPLY_TS}\tbob\tboard\ta follow-up\n`);
+  });
+
+  test("alias who finds the lane dir for a thread", async () => {
+    const r = await run(["alias", "who", "C00000001", ROOT_TS, "--json"], ib());
+    expect(JSON.parse(r.stdout)).toEqual(expect.arrayContaining([expect.objectContaining({ dir: ib(), alias: "board" })]));
+  });
+
+  test("outbox: add, flush shows the batch behind a code, then sends, records sent/, archives the answered entry", async () => {
+    expect((await run(["outbox", "add", "board", "fixed", "--in-reply-to", REPLY_TS], ib())).exitCode).toBe(0);
+    const dry = await run(["outbox", "flush"], ib());
+    expect(dry.exitCode).toBe(1);
+    expect(dry.stdout).toContain(`→ C00000001 thread ${ROOT_TS}: [ib] fixed`);
+    const before = mock.requests.length;
+    const r = await run(["outbox", "flush", `--code=${code(dry.stderr)}`], ib());
+    expect(r.exitCode).toBe(0);
+    expect(posts(before)).toEqual([expect.objectContaining({ channel: "C00000001", thread_ts: ROOT_TS, text: "[ib] fixed" })]);
+    expect(readdirSync(join(ib(), ".slack-term", "outbox"))).toEqual([]);
+    expect(readdirSync(join(ib(), ".slack-term", "sent")).length).toBe(1);
+    expect(readdirSync(join(ib(), ".slack-term", "archived"))).toEqual([`C00000001-${REPLY_TS}.yml`]);
+  });
+
+  test("done: a missing ref exits 2", async () => {
+    expect((await run(["done", REPLY_TS], ib())).exitCode).toBe(2);
+  });
+
+  test("restricted: lane alias set refuses, --shared works, reply elsewhere refuses", async () => {
+    writeFileSync(join(ib(), ".slack-term", "settings.yml"), `prefix: "[ib]"\nrestrict_to_subscriptions: true\n`);
+    const set = await run(["alias", "set", "x", `C00000001:${OTHER_ROOT}`], ib());
+    expect(set.exitCode).toBe(2);
+    expect(set.stderr).toContain("restricted");
+    // settings.local.yml's board no longer counts
+    const r = await run(["reply", `C00000001:${ROOT_TS}`, "hi"], ib());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("restrict_to_subscriptions");
+    expect((await run(["alias", "set", "board", `C00000001:${ROOT_TS}`, "--shared"], ib())).exitCode).toBe(0);
+    const ok = await run(["reply", `C00000001:${ROOT_TS}`, "hi"], ib());
+    expect(ok.exitCode).toBe(1); // reached the --code gate
+    expect(ok.stderr).toMatch(/--code=[0-9a-f]{4}/);
+  });
+
+  test("alias import: allowlist.tsv → each lane's settings.yml", async () => {
+    const tsv = join(tmpHome, "allowlist.tsv");
+    writeFileSync(tsv, `# comment\n${ROOT_TS}\tguide\n${OTHER_ROOT}\tguide\n1700000000.000999\tnobody\n`);
+    const guide = join(tmpHome, "tree", "guide");
+    const r = await run(["alias", "import", tsv, "--channel", "D00000001", "--lane-dir", `guide=${guide}`], tmpHome);
+    expect(r.stdout).toContain("imported 2 subscription(s)");
+    expect(r.stderr).toContain(`skipped 1 line(s) for lane "nobody"`);
+    expect(existsSync(join(guide, ".slack-term", ".gitignore"))).toBe(true);
+    expect(readFileSync(join(guide, ".slack-term", "settings.yml"), "utf8")).toContain(`t-${OTHER_ROOT}`);
   });
 });

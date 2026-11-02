@@ -329,6 +329,25 @@ slack alias unset board
 - **The prefix is never doubled.** A text that already starts with `[design] ` (or `[design@host] `) keeps only one.
 - `reply` only posts in threads. Use `send` for a top-level post.
 
+**Inbox and outbox.** These are files, one per message, written atomically:
+
+- **Inbox:** `slack stream --inbox` writes each match into `inbox/` of every registered `.slack-term/` that subscribes its thread. `slack init` registers the dir in `~/.config/slack-term/scopes`. An entry is text only: who, where, the text, the permalink, and a count of files (attachments are never downloaded).
+- **Redaction:** secrets in the text are replaced with `[redacted:<rule>]` before the entry is written (gitleaks' rules plus ours, `ts/redact.ts`). `slack read <permalink>` fetches the original live.
+- **Handled:** `slack done <file|ts>` moves an entry to `archived/`. So does a reply sent with `outbox add … --in-reply-to <ts>` and then `outbox flush`, which records each sent reply's ts and permalink in `sent/`.
+
+```sh
+slack inbox listen --timeout 3600              # one JSON line per new message
+slack outbox add board 'fixed' --in-reply-to <ts> && slack outbox flush   # then flush again with its --code
+slack alias who D00000001 <thread_ts> --json   # for a relay: which lane dir owns a thread
+slack alias set t-<ts> <permalink> --shared --dir <lane tree>              # the owner adds to a lane's allowlist
+slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tree/design
+```
+
+**Settings only `settings.yml` can hold:** `restrict_to_subscriptions: true`, `auto_subscribe: [<channel>]` and `nudge_after_min` (see `slack inbox nudge`).
+
+- With `restrict_to_subscriptions`, only the `settings.yml` subscriptions count. `alias set` without `--shared` refuses, and `reply` and `outbox flush` refuse any other thread.
+- `auto_subscribe` subscribes a new top-level message in that channel to this dir as `t-<ts>`.
+
 ### pinlog — a pinned status board that keeps a log
 
 A **pinlog** is one pinned top-level message that always holds the *current* state
