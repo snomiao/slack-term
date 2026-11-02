@@ -54,6 +54,16 @@ describe("goToJs", () => {
     expect(re.test("aBc")).toBe(true);
     expect(re.test("abC")).toBe(false);
   });
+  test("a mid-pattern (?i) keeps alternatives apart", () => {
+    const { source, flags } = goToJs(`(?:"(?i)a|'(?i)b)`);
+    const re = new RegExp(source, flags);
+    expect(re.test(`"A`)).toBe(true);
+    expect(re.test("'B")).toBe(true); // the buggy form needed a leading " here too
+    expect(re.test(`"B`)).toBe(false);
+  });
+  test("curl -H 'Authorization: Bearer …' is caught", () => {
+    expect(redact(`curl -H 'Authorization: Bearer ${rnd(40)}' https://example.com`).kinds.length).toBeGreaterThan(0);
+  });
   test("(?P<name> and POSIX classes", () => {
     expect(goToJs("(?P<x>[[:alnum:]]+)").source).toBe("(?<x>[A-Za-z0-9]+)");
   });
