@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { isSlackFileUrl, audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -23,6 +23,13 @@ describe("voice messages", () => {
     expect(slackTranscript({ ...clip, transcription: { status: "complete", preview: { content: "你好", has_more: true } } })).toBeUndefined();
     expect(slackTranscript({ ...clip, transcription: { status: "processing" } })).toBeUndefined();
     expect(slackTranscript(clip)).toBeUndefined();
+  });
+  test("a token is only ever sent to https://files.slack.com", () => {
+    expect(isSlackFileUrl("https://files.slack.com/files-pri/T00000001-F00000001/download/clip.m4a")).toBe(true);
+    expect(isSlackFileUrl("http://files.slack.com/x")).toBe(false);
+    expect(isSlackFileUrl("https://files.slack.com.evil.example/x")).toBe(false);
+    expect(isSlackFileUrl("https://evil.example/files.slack.com/x")).toBe(false);
+    expect(isSlackFileUrl("not a url")).toBe(false);
   });
   test("voiceText quotes each transcript and names failures", () => {
     expect(voiceText([{ text: "line1\nline2" }, { error: "no speech recognised" }]))

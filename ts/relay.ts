@@ -25,7 +25,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { authTest, conversationsJoin, history, memberChannels, reactionAdd, replies, send } from "./slack.ts";
@@ -82,6 +82,14 @@ export function slackTranscript(f: SlackFile): string | undefined {
   const t = f.transcription;
   const text = t?.status === "complete" && !t.preview?.has_more ? t.preview?.content?.trim() : undefined;
   return text || undefined;
+}
+
+/** Only Slack's own file host may receive a token: a message's file URL is data, not trusted. */
+export function isSlackFileUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && u.hostname === "files.slack.com";
+  } catch { return false; }
 }
 
 /** How transcribed voice messages read to the agent (and in the thread note). */
@@ -641,12 +649,14 @@ export async function main(argv: string[]): Promise<void> {
     if (own) return { text: own };
     const url = f.url_private_download ?? f.url_private;
     if (!url) return { error: "no download URL" };
+    if (!isSlackFileUrl(url)) return { error: "download URL is not on files.slack.com" };
     const c = creds!;
     let buf: Buffer | undefined;
     for (const k of [{ token: c.token, cookie: c.cookie }, ...(c.files ? [c.files] : [])]) {
       const headers: Record<string, string> = { Authorization: `Bearer ${k.token}` };
       if (k.cookie) headers.Cookie = `d=${k.cookie}`;
-      const res = await fetch(url, { headers }).catch(() => undefined);
+      // No redirects: the token must not follow the request to another host.
+      const res = await fetch(url, { headers, redirect: "manual" }).catch(() => undefined);
       // A token without files:read gets Slack's HTML login page, not the bytes.
       if (res?.ok && !(res.headers.get("content-type") ?? "").includes("text/html")) { buf = Buffer.from(await res.arrayBuffer()); break; }
     }
@@ -664,6 +674,8 @@ export async function main(argv: string[]): Promise<void> {
       const err = e as { code?: number | string; stderr?: string };
       log("transcribe failed", f.id, `exit=${err.code}`, (err.stderr ?? String(e)).trim().slice(-500));
       return { error: `speech-to-text exit ${err.code ?? "?"}` };
+    } finally {
+      rmSync(file, { force: true }); // the owner's voice is not kept once it is text
     }
   };
 
