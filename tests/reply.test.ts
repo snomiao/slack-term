@@ -58,9 +58,9 @@ afterAll(async () => {
 });
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
-function run(args: string[], cwd = lane): Promise<RunResult> {
+function run(args: string[], cwd = lane, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_TERM_HOME: _g, ...rest } = process.env as Record<string, string>;
-  const env = { ...rest, HOME: tmpHome, SLACK_TERM_HOME: join(tmpHome, "global"), SLACK_API_BASE: `${mock.baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake" };
+  const env = { ...rest, HOME: tmpHome, SLACK_TERM_HOME: join(tmpHome, "global"), SLACK_API_BASE: `${mock.baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", ...extraEnv };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -301,5 +301,49 @@ describe("thread --since --format tsv, inbox listen filters (CLI)", { timeout: 9
     expect(ts((await run(["inbox", "listen", "--timeout", "0", "--thread", ROOT_TS], d)).stdout)).toEqual(["1700000000.000201", "1700000000.000202"]);
     expect(ts((await run(["inbox", "listen", "--timeout", "0", "--thread", ROOT_TS, "--from", "U00000002"], d)).stdout)).toEqual(["1700000000.000201"]);
     expect(ts((await run(["inbox", "listen", "--timeout", "0", "--alias", "b"], d)).stdout)).toEqual(["1700000000.000203"]);
+  });
+});
+
+describe("slack @<who>, and the agent trap (CLI)", { timeout: 90_000 }, () => {
+  const fakeBot = ["xox", "b-", "0000000000-0000000000000-", "faketokenfaketokenfake00"].join("");
+  const idDir = (): string => join(tmpHome, "tree", "ident");
+  test("setup", async () => {
+    mkdirSync(idDir(), { recursive: true });
+    await run(["init"], idDir());
+    writeFileSync(join(tmpHome, "sybot.env"), `SLACK_BOT_TOKEN=${fakeBot}\n`);
+    writeFileSync(join(idDir(), ".slack-term", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n`);
+  });
+  test("inside an agent, send without who/--as-bot/--as-user is refused (nothing sent)", async () => {
+    const before = mock.requests.length;
+    const r = await run(["send", `C00000001:${ROOT_TS}`, "hi"], idDir(), { AY_AGENT_ID: "x" });
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("refusing to post as the user session from inside an agent (AY_AGENT_ID is set)");
+    expect(r.stderr).toContain("slack @sybot send");
+    expect(mock.requests.slice(before).filter((q) => q.method.startsWith("chat."))).toEqual([]);
+  });
+  test("--as-user lets it through to the gate", async () => {
+    const r = await run(["send", `C00000001:${ROOT_TS}`, "hi", "--as-user"], idDir(), { AY_AGENT_ID: "x" });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/--code=[0-9a-f]{4}/);
+  });
+  test("slack @sybot send: acts with the bot's token (as --as-bot)", async () => {
+    const before = mock.requests.length;
+    const r = await run(["@sybot", "send", `C00000001:${ROOT_TS}`, "hi"], idDir(), { AY_AGENT_ID: "x" });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/--code=[0-9a-f]{4}/);
+    const auths = mock.requests.slice(before).map((q) => String(q.headers.authorization ?? ""));
+    expect(auths.some((a) => a === `Bearer ${fakeBot}`)).toBe(true);
+    expect(r.stdout + r.stderr).not.toContain(fakeBot);
+  });
+  test("an unknown @who lists the known ones", async () => {
+    const r = await run(["@nobody", "send", "x", "y"], idDir());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("unknown identity @nobody. Known: @sybot");
+  });
+  test("two identities, no @who, outside an agent: refused, listing them", async () => {
+    writeFileSync(join(idDir(), ".slack-term", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n  alice:\n    kind: user\n    profile: acme\n`);
+    const r = await run(["send", `C00000001:${ROOT_TS}`, "hi"], idDir());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("several identities are configured (@alice | @sybot)");
   });
 });

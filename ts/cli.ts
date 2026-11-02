@@ -53,6 +53,7 @@ import {
 } from "./ask.ts";
 import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
 import { keepLanePrefix, tickText } from "./tick.ts";
+import { applyIdentity, inAgent, listIdentities, splitWho, userSessionRefusal } from "./identity.ts";
 import { emojiMap, firstDifference, normText, storedAsSent } from "./readback.ts";
 import { choiceHint, choiceQuestionLang } from "./choiceHint.ts";
 import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
@@ -151,7 +152,7 @@ import {
 import { setCacheEnabled } from "./cache.ts";
 import { escapeArg, unescapeArg } from "./escapes.ts";
 import { attachmentLines, parseAttachments } from "./attachments.ts";
-import { botIntentRefusal } from "./botIntent.ts";
+import { botIntentRefusal, isReadMode, isWriteCommand } from "./botIntent.ts";
 import { dayLabel, encodeMentions, encodeMentionsDetailed, findUntaggedMentions, formatYmdHm, maskSecrets, mentionWarnings, resolveDateMarkup, resolveMentions, type MentionEncodeResult, type UnresolvedMention } from "./format.ts";
 import { quietHoursNotice } from "./quietHours.ts";
 import { installSyncConsole } from "./stdout.ts";
@@ -5844,7 +5845,19 @@ async function main(): Promise<void> {
     await cmdTodoLs(tok(argv), opts);
   };
 
-  await yargs(hideBin(process.argv))
+  // `slack @<who> <command> …`: act as a named identity (ts/identity.ts).
+  const { who, rest: cliArgs } = splitWho(hideBin(process.argv));
+  let whoKind: "bot" | "user" | undefined;
+  if (who) {
+    const r = applyIdentity(who);
+    if ("error" in r) {
+      console.error(`Error: ${r.error}`);
+      process.exit(2);
+    }
+    whoKind = r.kind;
+  }
+
+  await yargs(cliArgs)
     .scriptName("slack")
     // A thrown handler error (e.g. a Slack API failure) is a runtime error, not a usage
     // mistake — print just the clean one-line message, never the command's --help block or a
@@ -5862,8 +5875,15 @@ async function main(): Promise<void> {
       process.exit(1);
     })
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
+    .option("as-user", { type: "boolean", describe: "Act as the user session on purpose (needed for writes from inside an agent, or when several identities exist)" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
+      // `@bot`: commands that have --as-bot act as the bot; `@user`: never.
+      if (whoKind === "bot" && "as-bot" in argv) { argv["as-bot"] = true; (argv as Record<string, unknown>).asBot = true; }
+      if (whoKind === "user" && argv["as-bot"] === true) {
+        console.error(`Error: @${who} is a user identity, but --as-bot was given`);
+        process.exit(2);
+      }
       // `sent` reads only the local log — no token, no network. `relay` writes
       // local files (init) or talks to the user's own relay (health): no Slack token.
       if (!cmd || cmd === "auth" || cmd === "login" || cmd === "agent" || cmd === "sent" || cmd === "relay") return;
@@ -5882,6 +5902,17 @@ async function main(): Promise<void> {
         });
         if (refusal) {
           console.error(refusal);
+          process.exit(2);
+        }
+        const user = userSessionRefusal({
+          isWrite: isWriteCommand(argv._ ?? []) && !isReadMode(argv._ ?? [], argv as Record<string, unknown>),
+          who, asBot: argv["as-bot"] === true, asUser: argv["as-user"] === true,
+          activeIsBot: active.startsWith("xoxb-"),
+          agent: inAgent(), identities: [...listIdentities().keys()].sort(),
+          cmd: (argv._ ?? []).slice(0, 2).join(" "),
+        });
+        if (user) {
+          console.error(user);
           process.exit(2);
         }
       } catch (e) {

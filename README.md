@@ -353,6 +353,32 @@ slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tr
   - `owner: <dir>` names the allowlist's owner. `--shared` writes run only from under that directory, and are refused for everyone when no owner is named. Every lane runs as the same uid, so only the CLI can tell them apart.
 - `auto_subscribe` subscribes a new top-level message in that channel to this dir as `t-<ts>`.
 
+### Identities — `slack @<who> <command>`
+
+When several identities exist (bots and people), name the one a command acts as:
+
+```sh
+slack @sytaku send '#chan:<ts>' 'deployed'     # as the SyTaku bot (like --as-bot, with its own token)
+slack @syform ask @alice "ship?" yes no
+slack @taku read '#general'                    # as a person's session
+```
+
+The names live in `identities:` in `.slack-term/settings.yml` or `~/.config/slack-term/settings.yml`. Each name points to **where** a token lives (an env var, optionally in an env file, or a `slack auth` profile), never the token itself:
+
+```yaml
+identities:
+  sytaku:     { kind: bot,  env_file: ~/.config/slack-cli/sytaku.env }   # reads SLACK_BOT_TOKEN from it
+  symphr-bot: { kind: bot,  env_file: ~/.config/slack-cli/newproj.env }
+  taku:       { kind: user, profile: acme }
+```
+
+**A write that would go out as a person's session is refused** (exit 2) unless it names `@who`, `--as-bot` or `--as-user`, in two cases:
+
+- from inside an agent (`AY_AGENT_ID`, `AGENT_YES_PID` or `CLAUDECODE` set);
+- when two or more identities are configured.
+
+This closes the trap where an agent's `slack ask` without `--as-bot` was posted as the person.
+
 ### Language packs (locales/*.json)
 
 slack-term's own text (help, errors, logs, hints) is English. Language packs hold only two things: text it posts to **people**, and patterns it looks for in **their** messages.
