@@ -11,7 +11,7 @@
 /** Write commands, as `argv._` spells them (aliases included). Read-only
  *  commands are never refused — reading as the user impersonates no one. */
 const WRITES = new Set([
-  "send", "reply", "outbox flush", "ask", "poll", "vote", "edit", "tick", "delete", "react", "upload",
+  "send", "reply", "outbox flush", "inbox nudge", "ask", "poll", "vote", "edit", "tick", "delete", "react", "upload",
   "schedule send", "schedule rm",
   "pinlog new", "pinlog set", "pinlog note", "pinlog pin",
   "todo set", "todo flag",

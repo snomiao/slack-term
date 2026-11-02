@@ -38,6 +38,7 @@ const fixtures = {
     ],
     response_metadata: { next_cursor: "" },
   },
+  "reactions.add": { ok: true },
   "users.info__user=U00000002": { ok: true, user: { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } } },
   "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
   "chat.getPermalink__channel=C00000001&message_ts=1700000000.000100": { ok: true, channel: "C00000001", permalink: "https://acme.slack.com/archives/C00000001/p1700000000000100" },
@@ -366,5 +367,34 @@ describe("slack @<who>, and the agent trap (CLI)", { timeout: 90_000 }, () => {
     const r = await run(["send", `C00000001:${ROOT_TS}`, "hi"], idDir());
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain("several identities are configured (@alice | @sybot)");
+  });
+});
+
+describe("inbox nudge --eyes (CLI)", { timeout: 60_000 }, () => {
+  test("puts 👀 on an overdue message once, records it, still exits 1", async () => {
+    const d = join(tmpHome, "tree", "nudge");
+    mkdirSync(d, { recursive: true });
+    await run(["init"], d);
+    writeFileSync(join(d, ".slack-term", "settings.yml"), "nudge_after_min: 1\n");
+    const f = join(d, ".slack-term", "inbox", `C00000001-${REPLY_TS}.yml`);
+    writeFileSync(f, `ts: "${REPLY_TS}"\nchannel: C00000001\nuser: U00000002\ntext: hi\npermalink: x\nalias: a\nreceived_at: 2026-11-02T00:00:00Z\n`);
+    const { utimesSync } = await import("node:fs");
+    const old = (Date.now() - 5 * 60_000) / 1000;
+    utimesSync(f, old, old);
+    const before = mock.requests.length;
+    const r = await run(["inbox", "nudge", "--eyes"], d);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toContain("\t👀");
+    const adds = mock.requests.slice(before).filter((q) => q.method === "reactions.add");
+    expect(adds).toHaveLength(1);
+    expect(readFileSync(f, "utf8")).toContain("nudged_at:");
+    const again = mock.requests.length;
+    await run(["inbox", "nudge", "--eyes"], d);
+    expect(mock.requests.slice(again).filter((q) => q.method === "reactions.add")).toHaveLength(0);
+  });
+  test("without --eyes nothing is written to Slack", async () => {
+    const before = mock.requests.length;
+    await run(["inbox", "nudge"], join(tmpHome, "tree", "nudge"));
+    expect(mock.requests.slice(before).filter((q) => q.method.startsWith("reactions."))).toEqual([]);
   });
 });

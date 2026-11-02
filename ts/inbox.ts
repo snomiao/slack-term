@@ -30,6 +30,8 @@ export type InboxEntry = {
   /** The subscription that routed it here. */
   alias: string;
   received_at: string;
+  /** When `slack inbox nudge --eyes` put 👀 on it: never twice. */
+  nudged_at?: string;
 };
 
 /** What a stream hands over (its StreamMatch, plus the attachment count). */
@@ -188,4 +190,9 @@ export function recordFailure(item: Listed<OutboxEntry>, error: string): void {
 export function overdue(scope: Scope, nowMs = Date.now()): Listed<InboxEntry>[] {
   const min = readSettings(scope).nudge_after_min ?? 30;
   return listInbox(scope).filter((i) => nowMs - i.mtimeMs >= min * 60_000);
+}
+
+/** Record that an entry was nudged (👀 added), so a later run skips it. */
+export function markNudged(item: Listed<InboxEntry>, now = new Date()): void {
+  atomicWrite(item.file, yaml({ ...item.entry, nudged_at: now.toISOString() }));
 }

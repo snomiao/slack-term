@@ -56,7 +56,7 @@ import { keepLanePrefix, tickText } from "./tick.ts";
 import { applyIdentity, inAgent, listIdentities, splitWho, userSessionRefusal } from "./identity.ts";
 import { emojiMap, firstDifference, normText, storedAsSent } from "./readback.ts";
 import { choiceHint, choiceQuestionLang } from "./choiceHint.ts";
-import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
+import { addOutbox, deliver, listInbox, listOutbox, markDone, markNudged, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
   POLL_KEYCAPS,
   POLL_MARKER,
@@ -6616,12 +6616,35 @@ async function main(): Promise<void> {
         )
         .command(
           "nudge",
-          "Pending messages older than settings' nudge_after_min (default 30): exit 1 when there are any",
-          (yy) => yy.option("json", { type: "boolean", default: false }),
-          (argv) => {
-            const items = overdue(findScope());
-            if (argv.json) console.log(JSON.stringify(items.map((i) => ({ file: i.file, ts: i.entry.ts, channel: i.entry.channel, permalink: i.entry.permalink, waiting_min: Math.round((Date.now() - i.mtimeMs) / 60_000) }))));
-            else for (const i of items) console.log(`${i.entry.ts}\t${Math.round((Date.now() - i.mtimeMs) / 60_000)} min\t${i.entry.permalink}`);
+          "Pending messages older than settings' nudge_after_min (default 30): exit 1 when there are any; --eyes also puts 👀 on each, once",
+          (yy) => yy
+            .option("json", { type: "boolean", default: false })
+            .option("eyes", { type: "boolean", default: false, describe: "React 👀 on each overdue message (once per message: recorded as nudged_at)" })
+            .option("as-bot", { type: "boolean", describe: "React via the bot token (default: settings' as_bot)" }),
+          async (argv) => {
+            const scope = findScope();
+            const items = overdue(scope);
+            if (argv.eyes) {
+              const asBot = argv["as-bot"] ?? readSettings(scope).as_bot ?? false;
+              const token = asBot ? resolveBotToken() : tok(argv as W);
+              if (!token) { console.error("Error: as_bot needs a bot token (SLACK_BOT_TOKEN)"); process.exit(1); }
+              const cookie = asBot ? undefined : ck(argv as W);
+              for (const i of items) {
+                if (i.entry.nudged_at) continue;
+                try {
+                  await reactionAdd(token, i.entry.channel, i.entry.ts, "eyes", cookie);
+                } catch (e: unknown) {
+                  if (!/already_reacted/.test(e instanceof Error ? e.message : String(e))) {
+                    console.error(`⚠ ${i.entry.channel}:${i.entry.ts}: could not add 👀: ${friendlySlackError(e)}`);
+                    continue;
+                  }
+                }
+                markNudged(i);
+                i.entry.nudged_at = new Date().toISOString();
+              }
+            }
+            if (argv.json) console.log(JSON.stringify(items.map((i) => ({ file: i.file, ts: i.entry.ts, channel: i.entry.channel, permalink: i.entry.permalink, waiting_min: Math.round((Date.now() - i.mtimeMs) / 60_000), ...(i.entry.nudged_at ? { nudged_at: i.entry.nudged_at } : {}) }))));
+            else for (const i of items) console.log(`${i.entry.ts}\t${Math.round((Date.now() - i.mtimeMs) / 60_000)} min\t${i.entry.permalink}${i.entry.nudged_at ? "\t👀" : ""}`);
             if (items.length) process.exitCode = 1;
           },
         )
