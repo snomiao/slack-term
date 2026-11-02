@@ -61,6 +61,11 @@ export function goToJs(src: string): { source: string; flags: string } {
     if (src.startsWith("(?i)", i)) { out += "(?i:"; extra++; i += 3; continue; }
     if (c === "(") { closers.push(extra); extra = 0; out += c; continue; }
     if (c === ")") { out += ")".repeat(extra); extra = closers.pop() ?? 0; out += c; continue; }
+    // RE2's (?i) lasts to the end of its group, across `|`: close the scoped
+    // groups before the bar and reopen them after it, or the text before the
+    // first (?i) would bind to every alternative (rechrome 4b5f849:
+    // curl-auth-header missed -H 'Authorization: …').
+    if (c === "|" && extra) { out += ")".repeat(extra) + "|" + "(?i:".repeat(extra); continue; }
     out += c;
   }
   out += ")".repeat(extra);
