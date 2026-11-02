@@ -3,6 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
+    setupFiles: ["tests/preload.ts"],
     // Tests that drive the CLI as a SUBPROCESS are excluded from this run.
     //
     // They cannot contribute coverage even in principle: istanbul instruments
