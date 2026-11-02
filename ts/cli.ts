@@ -51,6 +51,7 @@ import {
 } from "./ask.ts";
 import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
 import { keepLanePrefix, tickText } from "./tick.ts";
+import { choiceHint, choiceQuestionLang } from "./choiceHint.ts";
 import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
   POLL_KEYCAPS,
@@ -2403,6 +2404,9 @@ async function dmCounterparty(token: string, channelId: string, cookie?: string)
 async function cmdSend(token: string, args: SendArgs): Promise<void> {
   const { ref, threadTs } = parseTargetThread(args.target);
   const cookie = args.cookie;
+
+  // Hint only, on the preview: a choice asked in prose makes the reader type.
+  if (!args.code && choiceQuestionLang(args.message)) console.error(choiceHint(args.target));
 
   // Identity of the token that will actually post — the bot token under
   // --as-bot, the user token otherwise.

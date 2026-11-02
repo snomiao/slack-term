@@ -352,6 +352,15 @@ slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tr
   - `owner: <dir>` names the allowlist's owner. `--shared` writes run only from under that directory, and are refused for everyone when no owner is named. Every lane runs as the same uid, so only the CLI can tell them apart.
 - `auto_subscribe` subscribes a new top-level message in that channel to this dir as `t-<ts>`.
 
+### Language packs (locales/*.json)
+
+slack-term's own text (help, errors, logs, hints) is English. Language packs hold only two things: text it posts to **people**, and patterns it looks for in **their** messages.
+
+- `ask`'s copy is `ask.*`. It follows the readers' Slack locale, then the question's language, then the system locale, and finally `en`. Keys marked `(WIRE)` are matched back on questions already posted, so never reword them.
+- `choice_patterns` are regexes (flags `iu`). Every pack's patterns are applied, so a "(yes/no)?" question is spotted in any language. `send`/`reply` then print a hint to use `slack ask` instead (a hint only, never a block).
+- Packs are read at call time and cached by mtime, so an edit takes effect on the next command with no rebuild.
+- A `.slack-term/locales/<lang>.json` overrides the package's keys. A new file there adds a language.
+
 ### pinlog — a pinned status board that keeps a log
 
 A **pinlog** is one pinned top-level message that always holds the *current* state

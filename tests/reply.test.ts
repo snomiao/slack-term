@@ -251,3 +251,16 @@ describe("tick / edit keep the lane (CLI)", { timeout: 90_000 }, () => {
     expect(dry.stdout).toContain("  [design] rewritten");
   });
 });
+
+describe("choice-question hint (CLI)", { timeout: 60_000 }, () => {
+  test("reply with (yes/no)? prints the hint on stderr, still reaches the gate", async () => {
+    const r = await run(["reply", `C00000001:${ROOT_TS}`, "ship it now (yes/no)?"], join(tmpHome, "tree", "other"));
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("hint: this looks like a choice question");
+    expect(r.stderr).toMatch(/--code=[0-9a-f]{4}/);
+  });
+  test("a plain question gets no hint", async () => {
+    const r = await run(["reply", `C00000001:${ROOT_TS}`, "can you check the build?"], join(tmpHome, "tree", "other"));
+    expect(r.stderr).not.toContain("hint:");
+  });
+});
