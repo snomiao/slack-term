@@ -308,6 +308,27 @@ Notes:
   are **never** cached — they are exactly the values that change, and Slack's search index
   already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
+### .slack-term/ — aliases and settings per directory
+
+`slack init` makes a `.slack-term/` in the current directory. `slack` uses the nearest one walking up from where it runs, like `.git`. So each repo, or each agent lane's `tree/<lane>`, has its own aliases and reply prefix, with no pid or env var needed. Without one, it uses `~/.config/slack-term/`. The dir holds a `.gitignore` of `*`, so nothing in it is committed.
+
+```sh
+slack init --prefix "[design]"                 # .slack-term/{README.md,.gitignore,settings.yml,inbox,outbox,sent,archived}
+slack alias set board <permalink>              # a reply's permalink names its thread ROOT
+slack alias ls                                 # name  channel  thread_ts  file
+slack read board                               # the thread
+slack reply board 'done'                       # posts "[design] done" in it, behind the --code gate
+slack reply --to <permalink> 'on it'           # replies in the thread where that message is
+slack reply board 'on it' --to <permalink>     # exit 2 when that message is in another thread (--any-thread overrides)
+slack send '#chan:<ts>' 'x' --to <permalink>   # the same check on send
+slack alias unset board
+```
+
+- **`settings.yml`** is for people to edit. It holds `prefix`, `channel` (used for a bare `<ts>` destination), `as_bot` and `subscriptions`.
+- **`settings.local.yml`** is written by `slack alias set/unset`, under a lock and with an atomic rename. It has the same keys and overrides `settings.yml`.
+- **The prefix is never doubled.** A text that already starts with `[design] ` (or `[design@host] `) keeps only one.
+- `reply` only posts in threads. Use `send` for a top-level post.
+
 ### pinlog — a pinned status board that keeps a log
 
 A **pinlog** is one pinned top-level message that always holds the *current* state

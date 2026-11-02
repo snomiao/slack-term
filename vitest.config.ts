@@ -37,6 +37,8 @@ export default defineConfig({
       "tests/upload.test.ts",
       "tests/todo-cli.test.ts",
       "tests/agent.test.ts", // command/signal lifecycle is exercised in subprocesses by bun test
+      "tests/reply.test.ts",
+      "tests/scope.test.ts", // Bun-only: ts/scope.ts reads YAML with Bun.YAML
       // Bun-only: imports `bun:sqlite` at top level, which node cannot resolve —
       // the unresolved import fails the whole vitest run, not just this file.
       // `ts/slack-app.ts` is already in `coverage.exclude`, so this costs no
