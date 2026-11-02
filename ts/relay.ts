@@ -42,8 +42,14 @@ export const FORWARD_PREFIX = "[slack-relay]";
 export type Agent = { pid: number; cwd: string; status: string; cli: string; seen?: number /* last output, ms */ };
 export type SlackMsg = {
   ts: string; user?: string; text?: string; subtype?: string; thread_ts?: string; bot_id?: string;
-  reply_count?: number; latest_reply?: string; username?: string; files?: { id: string }[];
+  reply_count?: number; latest_reply?: string; username?: string; files?: SlackFile[];
   attachments?: SharedAttachment[];
+};
+export type SlackFile = {
+  id: string; name?: string; mimetype?: string; filetype?: string; subtype?: string;
+  url_private?: string; url_private_download?: string; permalink?: string;
+  // Slack's own transcript of an audio clip (workspaces with transcription enabled).
+  transcription?: { status?: string; preview?: { content?: string; has_more?: boolean } };
 };
 type SharedAttachment = {
   is_share?: boolean; is_msg_unfurl?: boolean; text?: string; fallback?: string;
@@ -66,6 +72,25 @@ export function sharedText(m: SlackMsg): string {
 
 // ── pure logic (unit-tested) ────────────────────────────────────────────────
 
+/** The voice messages / audio uploads in a message: these are transcribed before delivery. */
+export function audioFiles(m: SlackMsg): SlackFile[] {
+  return (m.files ?? []).filter((f) => f.subtype === "slack_audio" || (f.mimetype ?? "").startsWith("audio/"));
+}
+
+/** Slack's own transcript of a clip, when it is complete and whole (the preview can be cut short). */
+export function slackTranscript(f: SlackFile): string | undefined {
+  const t = f.transcription;
+  const text = t?.status === "complete" && !t.preview?.has_more ? t.preview?.content?.trim() : undefined;
+  return text || undefined;
+}
+
+/** How transcribed voice messages read to the agent (and in the thread note). */
+export function voiceText(clips: ({ text: string } | { error: string })[]): string {
+  return clips.map((c) => "text" in c
+    ? `[voice message, transcribed]\n${c.text.split("\n").map((l) => `> ${l}`).join("\n")}`
+    : `[voice message — could not transcribe: ${c.error}]`).join("\n\n");
+}
+
 /** Only a plain message written by the token owner — and not by the relay
  *  itself — may become an instruction. Everything else is data. */
 export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<string>, agentFiles: ReadonlySet<string> = new Set()): boolean {
@@ -76,7 +101,7 @@ export function isInstruction(m: SlackMsg, selfId: string, ownTs: ReadonlySet<st
   if (m.files?.length && m.files.every((f) => agentFiles.has(f.id))) return false;
   const text = (m.text ?? "").trim();
   if (text.startsWith(RELAY_MARK)) return false;
-  return text !== "" || sharedText(m) !== "";
+  return text !== "" || sharedText(m) !== "" || audioFiles(m).length > 0;
 }
 
 /** Split a leading `@name` route off a message. Slack user mentions (<@U…>)
@@ -359,6 +384,8 @@ type Config = {
   defaultAgent?: string;  // a route ("slack-term", "bradiy/mac-x") or a pid; routes survive agent restarts
   wake?: boolean;        // false: never `lane wake` a lane for a message no running agent takes (default on)
   laneCmd?: string;      // the `lane` CLI (default ~/.local/bin/lane, else `lane` on PATH)
+  transcribe?: boolean;  // false: forward voice messages untranscribed (default on)
+  transcribeCmd?: string[]; // speech-to-text command; the audio file path is appended, the transcript read from stdout (default: uv run ts/transcribe.py)
   warnChannel?: string;  // the instance watching this channel posts realtime-degraded warnings there (others only log)
   agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
   channelDefaults?: Record<string, string>;
@@ -399,6 +426,7 @@ export function readBotToken(path: string): string | undefined {
 type Creds = {
   token: string;        // reads AND writes — the bot when there is one
   cookie?: string;
+  files?: { token: string; cookie?: string }; // fetches file bytes: a bot without files:read falls back to the owner's session
   owner: string;        // whose messages are instructions
   ownerName: string;
   selfId: string;       // who the relay posts as (loop guard)
@@ -425,7 +453,8 @@ async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
     if (!channel.startsWith("D")) {
       try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
     }
-    return { token: bot, owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
+    const files = user ? { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}) } : undefined;
+    return { token: bot, ...(files ? { files } : {}), owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
   }
   if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
   if (cfg.team && user.team !== cfg.team) throw new Error(`user session is for team ${user.team}, relay.json expects ${cfg.team}`);
@@ -606,6 +635,38 @@ export async function main(argv: string[]): Promise<void> {
     }
   };
 
+  /** Download a voice clip and run speech-to-text on it (Slack's own transcript when it has one). */
+  const transcribe = async (f: SlackFile): Promise<{ text: string } | { error: string }> => {
+    const own = slackTranscript(f);
+    if (own) return { text: own };
+    const url = f.url_private_download ?? f.url_private;
+    if (!url) return { error: "no download URL" };
+    const c = creds!;
+    let buf: Buffer | undefined;
+    for (const k of [{ token: c.token, cookie: c.cookie }, ...(c.files ? [c.files] : [])]) {
+      const headers: Record<string, string> = { Authorization: `Bearer ${k.token}` };
+      if (k.cookie) headers.Cookie = `d=${k.cookie}`;
+      const res = await fetch(url, { headers }).catch(() => undefined);
+      // A token without files:read gets Slack's HTML login page, not the bytes.
+      if (res?.ok && !(res.headers.get("content-type") ?? "").includes("text/html")) { buf = Buffer.from(await res.arrayBuffer()); break; }
+    }
+    if (!buf) return { error: "download failed (the bot needs files:read, or the owner's session)" };
+    const dir = join(stateDir, "voice");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    const file = join(dir, `${f.id}.${(f.filetype ?? "").replace(/\W/g, "") || "audio"}`);
+    writeFileSync(file, buf, { mode: 0o600 });
+    const uv = existsSync(join(homedir(), ".local", "bin", "uv")) ? join(homedir(), ".local", "bin", "uv") : "uv";
+    const [cmd, ...args] = cfg.transcribeCmd ?? [uv, "run", "-q", "--script", join(import.meta.dir, "transcribe.py")];
+    try {
+      const { stdout } = await run(cmd!, [...args, file], { timeout: 300_000, maxBuffer: 4 << 20 });
+      return stdout.trim() ? { text: stdout.trim() } : { error: "no speech recognised" };
+    } catch (e: unknown) {
+      const err = e as { code?: number | string; stderr?: string };
+      log("transcribe failed", f.id, `exit=${err.code}`, (err.stderr ?? String(e)).trim().slice(-500));
+      return { error: `speech-to-text exit ${err.code ?? "?"}` };
+    }
+  };
+
   // Latency trace, per message: Slack post → seen (wake/poll) → ay send done → the agent's
   // outbox write → reply posted. Logged as `trace …` lines (seconds, relative to the post).
   const wakeAt = new Map<string, number>();
@@ -691,7 +752,15 @@ export async function main(argv: string[]): Promise<void> {
     }
     await react(m.ts, "eyes");
     const shared = sharedText(m);
-    const full = forwardText([route ? body : text.trim(), shared].filter(Boolean).join("\n\n"), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
+    // Voice messages: transcribe first, show the owner what was heard, hand the agent text.
+    const clips = cfg.transcribe === false ? [] : audioFiles(m);
+    let voice = "";
+    if (clips.length) {
+      log(`transcribe ${clips.length} clip(s) for ts=${m.ts}`);
+      voice = voiceText(await Promise.all(clips.map(transcribe)));
+      await post(voice, threadTs).catch((e: unknown) => log("transcript post failed", String(e)));
+    }
+    const full = forwardText([route ? body : text.trim(), voice, shared].filter(Boolean).join("\n\n"), { from: `@${creds!.ownerName}`, agentPid: agent.pid, outbox });
     // Too long for `ay send`: the agent gets a pointer, and the whole message waits in a
     // private file (the same text, reply instructions included).
     const inboxFile = join(stateDir, "inbox", `${m.ts}.md`);

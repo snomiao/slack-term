@@ -2,10 +2,33 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
+
+describe("voice messages", () => {
+  const clip = { id: "F00000001", subtype: "slack_audio", mimetype: "audio/mp4", filetype: "m4a" };
+  test("a voice-only message from the owner is an instruction; an image-only one is not", () => {
+    expect(isInstruction({ ts: "1.1", user: SELF, text: "", files: [clip] }, SELF, new Set())).toBe(true);
+    expect(isInstruction({ ts: "1.1", user: SELF, text: "", files: [{ id: "F00000002", mimetype: "image/png" }] }, SELF, new Set())).toBe(false);
+    expect(isInstruction({ ts: "1.1", user: OTHER, text: "", files: [clip] }, SELF, new Set())).toBe(false);
+  });
+  test("audioFiles picks clips and audio uploads", () => {
+    const m = { ts: "1.1", files: [clip, { id: "F00000002", mimetype: "audio/webm" }, { id: "F00000003", mimetype: "image/png" }] };
+    expect(audioFiles(m).map((f) => f.id)).toEqual(["F00000001", "F00000002"]);
+  });
+  test("Slack's transcript is used only when complete and whole", () => {
+    expect(slackTranscript({ ...clip, transcription: { status: "complete", preview: { content: " 你好 ", has_more: false } } })).toBe("你好");
+    expect(slackTranscript({ ...clip, transcription: { status: "complete", preview: { content: "你好", has_more: true } } })).toBeUndefined();
+    expect(slackTranscript({ ...clip, transcription: { status: "processing" } })).toBeUndefined();
+    expect(slackTranscript(clip)).toBeUndefined();
+  });
+  test("voiceText quotes each transcript and names failures", () => {
+    expect(voiceText([{ text: "line1\nline2" }, { error: "no speech recognised" }]))
+      .toBe("[voice message, transcribed]\n> line1\n> line2\n\n[voice message — could not transcribe: no speech recognised]");
+  });
+});
 
 describe("isInstruction", () => {
   test("a forwarded message is passed on, quoted, with its author and link", () => {
