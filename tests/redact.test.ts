@@ -2,7 +2,7 @@
 // built at run time from a seeded generator, so no token-shaped literal sits
 // in the repo (and none of them is real).
 import { describe, expect, test } from "bun:test";
-import { findSecrets, goToJs, redact, secretRules } from "../ts/redact.ts";
+import { findSecrets, goToJs, loadGitleaksRules, redact, secretRules } from "../ts/redact.ts";
 
 let seed = 0x5eed;
 const rand = (): number => {
@@ -145,5 +145,39 @@ describe("the 1,000-message bench set (synthetic)", () => {
     expect(falsePositive).toBe(0);
     // Generous: measured 0.10-0.13 ms on a loaded 4-CPU box.
     expect(msPerMsg).toBeLessThan(5);
+  });
+});
+
+describe("which span is masked (rechrome #55, codex)", () => {
+  const toml = (allow: string) => `
+[[rules]]
+id = "demo"
+regex = '''(?i)(prefix)[-_](\\w{12,})'''
+keywords = ["prefix"]
+${allow}
+`;
+  test("no secretGroup: the whole match is masked, not just the first group", () => {
+    const rules = loadGitleaksRules(toml(""));
+    const v = rnd(16);
+    expect(redact(`x prefix-${v} y`, { rules }).text).toBe("x [redacted:demo] y");
+  });
+  test("secretGroup set: only that group", () => {
+    const rules = loadGitleaksRules(toml("secretGroup = 2"));
+    const v = rnd(16);
+    expect(redact(`x prefix-${v} y`, { rules }).text).toBe("x prefix-[redacted:demo] y");
+  });
+  test("regexTarget = match allowlist is tested against the whole match", () => {
+    const rules = loadGitleaksRules(toml('[[rules.allowlists]]\nregexTarget = "match"\nregexes = [\'\'\'^prefix-api\'\'\']'));
+    expect(redact(`prefix-api${rnd(12)}`, { rules }).kinds).toEqual([]);
+    expect(redact(`prefix-${rnd(12)}`, { rules }).kinds).toEqual(["demo"]);
+  });
+  test("regexTarget = line allowlist is tested against the line", () => {
+    const rules = loadGitleaksRules(toml('[[rules.allowlists]]\nregexTarget = "line"\nregexes = [\'\'\'example only\'\'\']'));
+    expect(redact(`example only: prefix-${rnd(12)}\nnext`, { rules }).kinds).toEqual([]);
+    expect(redact(`real: prefix-${rnd(12)}\nexample only`, { rules }).kinds).toEqual(["demo"]);
+  });
+  test("the default secret allowlist does not see the match", () => {
+    const rules = loadGitleaksRules(toml('secretGroup = 2\n[[rules.allowlists]]\nregexes = [\'\'\'^prefix\'\'\']'));
+    expect(redact(`prefix-${rnd(12)}`, { rules }).kinds).toEqual(["demo"]);
   });
 });
