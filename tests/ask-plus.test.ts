@@ -214,7 +214,7 @@ describe("➕ and ❓ pills through the CLI", { timeout: 120_000 }, () => {
           const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0"], m.baseUrl);
           expect(r.exitCode).toBe(2);
           const glyph = pressed === "heavy_plus_sign" ? "➕" : "❓";
-          expect(r.stderr.split(`<@${BOB}> が ${glyph} その他 を押しました`).length - 1).toBe(1);
+          expect(r.stderr.split(`<@${BOB}> pressed ${glyph} other`).length - 1).toBe(1);
           expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
         } finally {
           await m.stop();

@@ -290,7 +290,7 @@ export function recordSent(r: RecordSent): boolean {
   if (!attributionEnabled()) return false;
   const db = openSentLog();
   if (!db) {
-    console.error(`  (送信ログに記録できませんでした: ${SENT_LOG_UNAVAILABLE} — ${sentDbPath()})`);
+    console.error(`  (could not record to the sent log: ${SENT_LOG_UNAVAILABLE} — ${sentDbPath()})`);
     return false;
   }
   try {
@@ -305,7 +305,7 @@ export function recordSent(r: RecordSent): boolean {
     );
     return true;
   } catch (e: unknown) {
-    console.error(`  (送信ログに記録できませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    console.error(`  (could not record to the sent log: ${e instanceof Error ? e.message : String(e)})`);
     return false;
   } finally {
     try { db.close(); } catch { /* ignore */ }
@@ -330,7 +330,7 @@ export interface SentQuery {
  *  needs bun or node ≥ 22.5 (`node:sqlite`). Surfaced by `slack sent`, which
  *  must not answer "no matches" when the truth is "no log". */
 export const SENT_LOG_UNAVAILABLE =
-  "送信ログを開けません: SQLite が使えないランタイムです (bun、または node >= 22.5 の node:sqlite が必要)";
+  "cannot open the sent log: this runtime has no SQLite (needs bun, or node >= 22.5 for node:sqlite)";
 
 /** Newest first, or `undefined` when the log cannot be opened at all. */
 export function querySent(q: SentQuery): SentRow[] | undefined {

@@ -12,6 +12,10 @@ export type Doorbell = {
    *  skip the Web API read the bell would cost. Nothing about any other
    *  sender is kept. */
   self?: string;
+  /** A reaction_added on the message at channel/ts, by `user` — still only
+   *  ids: which emoji is read from Slack by whoever needs it. */
+  kind?: "reaction";
+  user?: string;
 };
 
 /** Slack rejects replays older than five minutes; so do we. */
@@ -112,6 +116,14 @@ export function doorbellOf(payload: unknown, teamId?: string): Doorbell | null {
   if (p.type !== "event_callback" || !p.event || typeof p.event !== "object") return null;
   if (teamId && p.team_id !== teamId) return null;
   const e = p.event;
+  if (e.type === "reaction_added") {
+    const item = e.item as Record<string, unknown> | undefined;
+    if (!item || item.type !== "message") return null; // file / file_comment reactions have no message ts
+    const { channel, ts } = item;
+    if (typeof channel !== "string" || !CHANNEL.test(channel) || typeof ts !== "string" || !TS.test(ts)) return null;
+    const self = selfPost(p, e);
+    return { channel, ts, kind: "reaction", ...(typeof e.user === "string" && USER.test(e.user) ? { user: e.user } : {}), ...(self ? { self } : {}) };
+  }
   if (e.type !== "message" && e.type !== "app_mention") return null;
   if (typeof e.subtype === "string" && SKIP_SUBTYPES.has(e.subtype)) return null;
   if (e.hidden === true) return null;

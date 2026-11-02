@@ -286,29 +286,29 @@ describe("ask identity is language-independent", () => {
 // like any other behaviour.
 describe("askExplainReject names which check failed", () => {
   test("an empty body", () => {
-    expect(askExplainReject("")).toContain("本文が空");
-    expect(askExplainReject("   \n  ")).toContain("本文が空");
+    expect(askExplainReject("")).toContain("body is empty");
+    expect(askExplainReject("   \n  ")).toContain("body is empty");
   });
 
   test("a ✅ body whose quoted answer is missing", () => {
-    expect(askExplainReject(":white_check_mark: *q*\n_返信で回答済み_")).toContain("回答済みマーク");
+    expect(askExplainReject(":white_check_mark: *q*\n_返信で回答済み_")).toContain("marked answered");
   });
 
   test("a message that is simply not an ask", () => {
-    expect(askExplainReject("ただの発言です")).toContain("案内文ではありません");
+    expect(askExplainReject("ただの発言です")).toContain("does not end with the `ask` instructions");
   });
 
   test("an ask whose leading question line was edited away", () => {
     // Instruction intact (so it looks like an ask) but the bold question gone.
     const t = askBuildText("q", "", ["A", "B"], [], true).split("\n");
     t[0] = "編集されて太字が消えた行";
-    expect(askExplainReject(t.join("\n"))).toContain("先頭が質問文");
+    expect(askExplainReject(t.join("\n"))).toContain("does not start with the (bold) question");
   });
 
   test("an ask whose choice block cannot be read", () => {
     // Marker, question and instruction all intact; the pills are broken.
     const t = askBuildText("q", "", ["A", "B"], [], true).replace(":one: A\n", "");
-    expect(askExplainReject(t)).toContain("選択肢の並び");
+    expect(askExplainReject(t)).toContain("cannot read the list of choices");
   });
 });
 

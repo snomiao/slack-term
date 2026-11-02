@@ -841,6 +841,40 @@ describe("runStream — relay", () => {
     expect(st.relay).toEqual({ url: "https://relay.example", seq: 1, epoch: "e1" });
   });
 
+  test("--reactions: a reaction bell is printed as it is, with no read", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let readsAtBell = 0;
+    stepper({
+      1: () => {
+        readsAtBell = s.calls.length;
+        r.ring(1, { channel: "D00000001", ts: ts(-60), kind: "reaction", user: "U00000002" });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    await runStream(s, { ...relayOpts(r, ac), reactions: true });
+    expect(emitted() as unknown[]).toEqual([{ type: "reaction", channel: { id: "D00000001" }, ts: ts(-60), user: { id: "U00000002" } }]);
+    expect(s.calls.slice(readsAtBell).filter((c) => c.startsWith("replies") || c.startsWith("history"))).toEqual([]);
+  });
+
+  test("without --reactions, a reaction bell is dropped unread; our own reactions never print", async () => {
+    const s = new FakeSlack();
+    const r = new FakeRelay();
+    const ac = new AbortController();
+    let readsAtBell = 0;
+    stepper({
+      1: () => {
+        readsAtBell = s.calls.length;
+        r.ring(1, { channel: "D00000001", ts: ts(-60), kind: "reaction", user: "U00000002" });
+      },
+      3: () => ac.abort(),
+    }, ac);
+    await runStream(s, relayOpts(r, ac));
+    expect(emitted()).toEqual([]);
+    expect(s.calls.slice(readsAtBell).filter((c) => c.startsWith("replies"))).toEqual([]);
+  });
+
   test("a reply bell reads the thread, even one whose parent is outside the window", async () => {
     const s = new FakeSlack();
     const r = new FakeRelay();

@@ -136,6 +136,20 @@ describe("worker: Slack request signing", () => {
   });
 });
 
+describe("worker: reaction_added bells (SyTaku)", () => {
+  const cbr = (event: Record<string, unknown>) => ({ type: "event_callback", team_id: "T00000001", event });
+  test("a reaction on a message rings with its channel/ts and the reactor, nothing else", () => {
+    expect(doorbellOf(cbr({ type: "reaction_added", user: "U00000002", reaction: "one", item: { type: "message", channel: "D00000001", ts: "1700000000.000100" }, item_user: "U00000003", event_ts: "1700000001.000000" })))
+      .toEqual({ channel: "D00000001", ts: "1700000000.000100", kind: "reaction", user: "U00000002" });
+  });
+  test("a reaction on a file does not ring", () => {
+    expect(doorbellOf(cbr({ type: "reaction_added", user: "U00000002", reaction: "x", item: { type: "file", file: "F00000001" } }))).toBeNull();
+  });
+  test("malformed ids do not ring", () => {
+    expect(doorbellOf(cbr({ type: "reaction_added", user: "U00000002", item: { type: "message", channel: "nope", ts: "1700000000.000100" } }))).toBeNull();
+  });
+});
+
 describe("worker: doorbellOf keeps ids and timestamps only", () => {
   const cb = (event: Record<string, unknown>, team = "T00000001"): unknown => ({ type: "event_callback", team_id: team, event });
   test("a message and a thread reply become bells without text or sender", () => {

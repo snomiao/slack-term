@@ -543,19 +543,19 @@ export type AskParsed =
  *  the three causes have completely different fixes: wrong link, a body someone
  *  edited, or a bug here. */
 export function askExplainReject(text: string): string {
-  if (!text.trim()) return "本文が空です (bot 投稿や添付のみのメッセージかもしれません)";
+  if (!text.trim()) return "the message body is empty (it may be a bot post or an attachment-only message)";
   const lines = text.split("\n");
   const last = lines[lines.length - 1] ?? "";
   if (text.startsWith(ASK_RESOLVED_PREFIX)) {
-    return "回答済みマーク付きですが、引用された回答本文が見つかりません";
+    return "it is marked answered, but the quoted answer text is missing";
   }
   if (!/_$/.test(last)) {
-    return "末尾が `ask` の案内文ではありません — このメッセージは `slack ask` で投稿されたものではないか、本文が編集されています";
+    return "it does not end with the `ask` instructions line — this message was not posted by `slack ask`, or its text has been edited";
   }
   if (!lines[0]!.startsWith(ASK_MARKER_PREFIX) && !lines[0]!.startsWith("*")) {
-    return "先頭が質問文 (太字) ではありません — 本文が編集されている可能性があります";
+    return "it does not start with the (bold) question — its text may have been edited";
   }
-  return "選択肢の並びを読み取れません — 番号が 1 から連番になっていないか、本文が編集されています";
+  return "cannot read the list of choices — they are not numbered consecutively from 1, or the text has been edited";
 }
 
 export function askParseMessage(text: string): AskParsed {

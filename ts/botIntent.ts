@@ -33,7 +33,7 @@ export function isWriteCommand(path: (string | number)[]): boolean {
 /** Read-only modes of a write command. `ask --ls` only reads the local
  *  sent-log and the questions' live state. (`ask --waitFor` and
  *  `poll --results` are NOT here: both can edit the posted message.) */
-function isReadMode(path: (string | number)[], argv: Record<string, unknown>): boolean {
+export function isReadMode(path: (string | number)[], argv: Record<string, unknown>): boolean {
   return String(path[0] ?? "") === "ask" && argv.ls === true;
 }
 

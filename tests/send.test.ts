@@ -363,7 +363,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
     try {
       const r = await run(["send", "#channel-02", "following up", "--channel-id", "C00000002"], { baseUrl: m.baseUrl });
       expect(r.exitCode).toBe(1); // still stops at the confirm gate
-      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain("They haven't replied yet");
       expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000200000100"');
     } finally {
       await m.stop();
@@ -374,7 +374,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
     // default `mock` fixtures: last message in C00000001 is bob (U00000002), self is U00000001
     const r = await run(["send", "#channel-01", "hi there"]);
     expect(r.exitCode).toBe(1);
-    expect(r.stderr).not.toContain("相手はまだ返信していません");
+    expect(r.stderr).not.toContain("They haven't replied yet");
   });
 
   test("thread target: warns when the thread's last reply is our own", async () => {
@@ -399,7 +399,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
         { baseUrl: m.baseUrl },
       );
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain("They haven't replied yet");
       expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000050000300"');
     } finally {
       await m.stop();
@@ -410,7 +410,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
     // default `mock` fixtures: thread's last reply is bob (U00000002), self is U00000001
     const r = await run(["send", MSG_PERMALINK, "something completely unrelated here"]);
     expect(r.exitCode).toBe(1);
-    expect(r.stderr).not.toContain("相手はまだ返信していません");
+    expect(r.stderr).not.toContain("They haven't replied yet");
   });
 
   test("channel target (--as-bot): warns on our own bot_message post (no `user` field, only bot_id)", async () => {
@@ -433,7 +433,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
         { baseUrl: m.baseUrl, env },
       );
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("相手はまだ返信していません");
+      expect(r.stderr).toContain("They haven't replied yet");
       expect(r.stderr).toContain('slack edit "https://acme.slack.com/archives/C00000002/p1700000300000100"');
     } finally {
       await m.stop();
@@ -457,7 +457,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
         { baseUrl: m.baseUrl, env },
       );
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).not.toContain("相手はまだ返信していません");
+      expect(r.stderr).not.toContain("They haven't replied yet");
     } finally {
       await m.stop();
     }
@@ -476,8 +476,8 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
     try {
       const r = await run(["send", "#channel-02", "following up", "--channel-id", "C00000002"], { baseUrl: m.baseUrl });
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).toContain("相手はまだ返信していません");
-      expect(r.stderr).toContain('slack edit "#C00000002:1700000200.000100" "<新しい本文>" --channel-id C00000002');
+      expect(r.stderr).toContain("They haven't replied yet");
+      expect(r.stderr).toContain('slack edit "#C00000002:1700000200.000100" "<new text>" --channel-id C00000002');
     } finally {
       await m.stop();
     }
@@ -501,7 +501,7 @@ describe("unreplied-warn (CLI)", { timeout: 60_000 }, () => {
         { baseUrl: m.baseUrl, env: { SLACK_UNREPLIED_WARN: "0" } },
       );
       expect(r.exitCode).toBe(1);
-      expect(r.stderr).not.toContain("相手はまだ返信していません");
+      expect(r.stderr).not.toContain("They haven't replied yet");
     } finally {
       await m.stop();
     }
