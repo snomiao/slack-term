@@ -68,8 +68,8 @@ function run(args: string[], cwd = lane, extraEnv: Record<string, string> = {}, 
     if (input !== undefined) { child.stdin!.write(input); child.stdin!.end(); }
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d: Buffer) => { stdout += String(d); });
-    child.stderr.on("data", (d: Buffer) => { stderr += String(d); });
+    child.stdout!.on("data", (d: Buffer) => { stdout += String(d); });
+    child.stderr!.on("data", (d: Buffer) => { stderr += String(d); });
     child.on("close", (exitCode: number | null) => {
       child.stdout?.destroy();
       child.stderr?.destroy();
