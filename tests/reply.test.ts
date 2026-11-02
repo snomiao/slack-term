@@ -389,8 +389,11 @@ describe("inbox nudge --eyes (CLI)", { timeout: 60_000 }, () => {
     expect(adds).toHaveLength(1);
     expect(readFileSync(f, "utf8")).toContain("nudged_at:");
     const again = mock.requests.length;
-    await run(["inbox", "nudge", "--eyes"], d);
+    const r2 = await run(["inbox", "nudge", "--eyes"], d);
     expect(mock.requests.slice(again).filter((q) => q.method === "reactions.add")).toHaveLength(0);
+    // Still overdue: recording the nudge must not restart its wait.
+    expect(r2.exitCode).toBe(1);
+    expect(r2.stdout).toMatch(/\t[5-9] min\t/);
   });
   test("without --eyes nothing is written to Slack", async () => {
     const before = mock.requests.length;
