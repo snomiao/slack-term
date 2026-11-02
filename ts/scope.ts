@@ -440,7 +440,7 @@ export function whoSubscribes(channel: string, threadOrTs: string, scopes = regi
 // --- reply text ---
 
 /** Put `prefix` in front of `text`, never twice: a caller that already wrote
- *  `[lane] ` (or `[lane@machine] `) keeps one (symphr-thread #654, taku 11-02:
+ *  `[lane] ` (or `[lane@machine] `) keeps one (owner request 11-02:
  *  "[shr] [shr]"). Only the exact lane is stripped — `[lanex]` or another
  *  lane's tag is the caller's text. Returns "" when nothing is left. */
 export function applyPrefix(text: string, prefix: string | undefined): string {

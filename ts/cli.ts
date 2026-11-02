@@ -450,7 +450,7 @@ async function cmdMsgsTarget(token: string, target: string, limit: number, forma
 // --- thread ---
 /** One message as `<ts> TAB <author> TAB <text>`: the author is the user or
  *  bot id, the text Slack's stored form with `\` newline CR TAB escaped, and
- *  attachments counted as ` [files: N]` (symphr-thread's read format). */
+ *  attachments counted as ` [files: N]` (the earlier thread tool's read format). */
 function tsvLine(m: Record<string, Json>): string {
   const esc = (t: string): string => t.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
   const author = typeof m.user === "string" ? m.user : typeof m.bot_id === "string" ? m.bot_id : "";
@@ -478,7 +478,13 @@ async function cmdThread(token: string, target: string, ts: string, limit: numbe
   let msgs = all
     ? await wholeThread(token, channelId, parseInputTs(ts), cookie)
     : asArray(((await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>).messages).map(asRecord);
-  if (since !== undefined) msgs = msgs.filter((m) => Number(m.ts) > Number(since));
+  if (since !== undefined) {
+    // The same ts forms the thread argument takes (Slack ts or the ISO stamp
+    // `read` prints); anything else would compare as NaN and drop every reply.
+    const after = Number(parseInputTs(since));
+    if (!Number.isFinite(after)) throw new Error(`--since needs a message ts (1700000000.000100) or ISO stamp (got ${stripTerminalControls(since)})`);
+    msgs = msgs.filter((m) => Number(m.ts) > after);
+  }
   if (format === "tsv") {
     for (const m of msgs) console.log(tsvLine(m));
     return;
@@ -2152,11 +2158,12 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
     attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
     // Read it back: Slack rewrites text when it stores it, so compare the
     // normalised forms (ts/readback.ts). A board that does not show what was
-    // sent gets no log line — exit 3, like symphr-thread's `state`.
+    // sent gets no log line — exit 3, like the earlier thread tool's `state`.
     let stored: Record<string, Json> | undefined;
     try {
       const back = asArray(asRecord((await replies(token, channel, ts, 1, args.cookie)) as Json).messages).map(asRecord);
       stored = back.find((m) => m.ts === ts);
+      if (!stored) console.error(`⚠ HEAD updated, but the read-back did not return it, so it was not checked`);
     } catch (e: unknown) {
       console.error(`⚠ HEAD updated, but it could not be read back to check: ${friendlySlackError(e)}`);
     }
@@ -6483,10 +6490,10 @@ async function main(): Promise<void> {
         )
         .command(
           "import <tsv>",
-          "One-shot: import a symphr-thread allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
+          "One-shot: import a legacy allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
           (yy) => yy
             .positional("tsv", { type: "string", demandOption: true })
-            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (symphr-thread: the DM id)" })
+            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (for a DM: the DM id)" })
             .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-term/, made if missing); repeatable" }),
           (argv) => {
             const dirs = new Map<string, string>();
@@ -6503,7 +6510,7 @@ async function main(): Promise<void> {
               const dir = dirs.get(lane);
               if (!dir || !/^\d{10}\.\d{6}$/.test(ts)) { skipped.set(lane, (skipped.get(lane) ?? 0) + 1); continue; }
               const scope = { dir: initScope(dir).dir, global: false };
-              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from symphr-thread allowlist" }, true);
+              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from legacy allowlist" }, true);
               added++;
             }
             console.log(`imported ${added} subscription(s)`);
@@ -6698,6 +6705,9 @@ async function main(): Promise<void> {
                 if ("error" in r) { refused.push(`${item.file}: ${r.error}`); continue; }
                 const text = applyPrefix(item.entry.text, settings.prefix);
                 if (!text.trim()) { refused.push(`${item.file}: empty`); continue; }
+                // send/reply's URL-boundary refusal: a glued URL stays queued, the
+                // reason in `refused`, for the author to fix the file.
+                guardUrlBoundaries(text);
                 plan.push({ item, ...r, text });
               } catch (e: unknown) {
                 refused.push(`${item.file}: ${friendlySlackError(e)}`);
@@ -6706,7 +6716,7 @@ async function main(): Promise<void> {
             for (const r of refused) console.error(`refused (stays queued): ${r}`);
             if (!plan.length) process.exit(2);
             const lines = [`OUTBOX — ${plan.length} repl${plan.length === 1 ? "y" : "ies"}${asBot ? " as the bot" : ""}:`];
-            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}`);
+            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}${p.text.includes("[redacted:") ? "  (secrets were masked when queued: this is what posts)" : ""}`);
             const expected = safetyCode("outbox", asBot ? "bot" : "user", ...plan.map((p) => `${p.channel}:${p.threadTs}:${p.text}`));
             if (argv.code !== expected) requireCode(argv.code, expected, lines);
             let failed = 0;

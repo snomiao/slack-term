@@ -1,4 +1,4 @@
-// Did Slack store what we sent? Ported from symphr-thread's read-back check
+// Did Slack store what we sent? Ported from the earlier thread tool's read-back check
 // (2026-10-14 / 10-30), for `pinlog set`.
 //
 // Slack rewrites text when it stores it:

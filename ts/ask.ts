@@ -49,7 +49,7 @@ export const ASK_MARKER_PREFIX = `:${ASK_MARKER}: `;
 
 /** The "other" pill — "none of these fit, my answer follows as a reply" —
  *  seeded after the numbered pills and listed under them in the body. ➕, not
- *  ❓ (taku 2026-10-14): ❓ read as "I have a question", not "add my own answer".
+ *  ❓ (2026-10-14): ❓ read as "I have a question", not "add my own answer".
  *
  *  ❓ stays the HEAD marker (`ASK_MARKER_PREFIX` on the first line): that is the
  *  wire format that identifies an ask, and every reader keys on it. Only the
@@ -103,7 +103,7 @@ export type AskLangSource = "flag" | "env" | "readers" | "content" | "system" | 
  *     in a different language from the question they sit under read as noise.
  *  4. The system locale (`LC_ALL` → `LC_MESSAGES` → `LANG`), for content with no
  *     letters at all (emoji, numbers).
- *  5. `en` (taku 11-02: English is the default; the readers' language, then
+ *  5. `en` (11-02: English is the default; the readers' language, then
  *     the content, win over it). */
 export function askResolveLang(
   opts: { flag?: string | undefined; readerLocales?: (string | undefined)[]; content?: string[] },

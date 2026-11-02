@@ -553,7 +553,7 @@ describe("askResolveLang picks the language the readers can read", () => {
     expect(askResolveLang({ readerLocales: ["fr-FR"], content: ["本番?"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "ja", source: "content" });
   });
 
-  test("content with no letters falls to the system locale, then to en (taku 11-02)", () => {
+  test("content with no letters falls to the system locale, then to en", () => {
     expect(askResolveLang({ content: ["<@U00000001> 👍?", "1", "2"] }, { LANG: "en_US.UTF-8" })).toEqual({ lang: "en", source: "system" });
     expect(askResolveLang({ content: ["<@U00000001> 👍?"] }, { LANG: "ja_JP.UTF-8" })).toEqual({ lang: "ja", source: "system" });
     expect(askResolveLang({ content: ["👍?"] }, { LC_ALL: "C", LANG: "ja_JP.UTF-8" })).toEqual({ lang: "en", source: "default" });

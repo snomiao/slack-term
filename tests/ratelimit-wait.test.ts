@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "./harness.ts";
 import { ASK_POLL, askNextPollDelay } from "../ts/ask.ts";
 import { RateLimitError, setRateLimitWait, withRateLimitWait } from "../ts/slack.ts";
 
