@@ -106,6 +106,16 @@ export async function startMock(
     }) };
   };
 
+  // `{ __sequence: [...] }` on a GET fixture: the next response per call,
+  // repeating the last — as the POST overrides do.
+  const nextOf = (fx: unknown, method: string): unknown => {
+    const seq = (fx as { __sequence?: unknown[] } | undefined)?.__sequence;
+    if (!seq) return fx;
+    const n = (sequenceCalls.get(method) ?? 0) + 1;
+    sequenceCalls.set(method, n);
+    return seq[Math.min(n, seq.length) - 1];
+  };
+
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     const method = url.pathname.replace(/^\/+api\/+/, "").replace(/^\/+/, "");
@@ -227,14 +237,14 @@ export async function startMock(
     const key = safeName(fixtureKey(method, params));
     const fx = fixtures.get(key);
     if (fx) {
-      respond(withEdits(resolveByAuth(fx, req), params.channel));
+      respond(withEdits(resolveByAuth(nextOf(fx, method), req), params.channel));
       return;
     }
     // Fall back: ignore params (so minor param drift still returns something).
     const looseKey = safeName(method);
     const loose = fixtures.get(looseKey);
     if (loose) {
-      respond(withEdits(resolveByAuth(loose, req), params.channel));
+      respond(withEdits(resolveByAuth(nextOf(loose, method), req), params.channel));
       return;
     }
     respond({ ok: false, error: `no_fixture:${key}` }, 200);

@@ -374,6 +374,22 @@ describe("pinlog update", { timeout: 60_000 }, () => {
     });
   });
 
+  test("a read-back that does not return the HEAD says it was not checked", async () => {
+    // The read-back is the last conversations.replies of a confirmed run:
+    // count them on a normal run, then answer that one with no messages.
+    const n = await withMock({}, async (m) => {
+      await confirmed(m, args);
+      return m.requests.filter((q) => q.method === "conversations.replies").length;
+    });
+    const real = base["conversations.replies"];
+    await withMock({ "conversations.replies": { __sequence: [...Array(n - 1).fill(real), { ok: true, messages: [] }] } }, async (m) => {
+      const { r } = await confirmed(m, args);
+      expect(r.exitCode).toBe(0);
+      expect(r.stderr).toContain("the read-back did not return it, so it was not checked");
+      expect(r.stdout).not.toContain("read back: matches");
+    });
+  });
+
   test("a failed edit posts NO log line", async () => {
     await withMock({ "chat.update": { ok: false, error: "cant_update_message" } }, async (m) => {
       const { r, writes } = await confirmed(m, args);

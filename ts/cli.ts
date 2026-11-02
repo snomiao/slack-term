@@ -477,7 +477,13 @@ async function cmdThread(token: string, target: string, ts: string, limit: numbe
   let msgs = all
     ? await wholeThread(token, channelId, parseInputTs(ts), cookie)
     : asArray(((await replies(token, channelId, parseInputTs(ts), limit, cookie)) as Record<string, Json>).messages).map(asRecord);
-  if (since !== undefined) msgs = msgs.filter((m) => Number(m.ts) > Number(since));
+  if (since !== undefined) {
+    // The same ts forms the thread argument takes (Slack ts or the ISO stamp
+    // `read` prints); anything else would compare as NaN and drop every reply.
+    const after = Number(parseInputTs(since));
+    if (!Number.isFinite(after)) throw new Error(`--since needs a message ts (1700000000.000100) or ISO stamp (got ${stripTerminalControls(since)})`);
+    msgs = msgs.filter((m) => Number(m.ts) > after);
+  }
   if (format === "tsv") {
     for (const m of msgs) console.log(tsvLine(m));
     return;
@@ -2156,6 +2162,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
     try {
       const back = asArray(asRecord((await replies(token, channel, ts, 1, args.cookie)) as Json).messages).map(asRecord);
       stored = back.find((m) => m.ts === ts);
+      if (!stored) console.error(`⚠ HEAD updated, but the read-back did not return it, so it was not checked`);
     } catch (e: unknown) {
       console.error(`⚠ HEAD updated, but it could not be read back to check: ${friendlySlackError(e)}`);
     }
@@ -6667,6 +6674,9 @@ async function main(): Promise<void> {
                 if ("error" in r) { refused.push(`${item.file}: ${r.error}`); continue; }
                 const text = applyPrefix(item.entry.text, settings.prefix);
                 if (!text.trim()) { refused.push(`${item.file}: empty`); continue; }
+                // send/reply's URL-boundary refusal: a glued URL stays queued, the
+                // reason in `refused`, for the author to fix the file.
+                guardUrlBoundaries(text);
                 plan.push({ item, ...r, text });
               } catch (e: unknown) {
                 refused.push(`${item.file}: ${friendlySlackError(e)}`);
@@ -6675,7 +6685,7 @@ async function main(): Promise<void> {
             for (const r of refused) console.error(`refused (stays queued): ${r}`);
             if (!plan.length) process.exit(2);
             const lines = [`OUTBOX — ${plan.length} repl${plan.length === 1 ? "y" : "ies"}${asBot ? " as the bot" : ""}:`];
-            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}`);
+            for (const p of plan) lines.push(`  → ${p.channel} thread ${p.threadTs}: ${stripTerminalControls(p.text).replace(/\n/g, "⏎").slice(0, 120)}${p.text.includes("[redacted:") ? "  (secrets were masked when queued: this is what posts)" : ""}`);
             const expected = safetyCode("outbox", asBot ? "bot" : "user", ...plan.map((p) => `${p.channel}:${p.threadTs}:${p.text}`));
             if (argv.code !== expected) requireCode(argv.code, expected, lines);
             let failed = 0;
