@@ -48,7 +48,7 @@ describe("slack relay (CLI)", { timeout: 60_000 }, () => {
     }
     expect(r.stdout).toContain("npx wrangler deploy");
     // Nothing written outside the folder (no profile, no wizard state).
-    expect(readdirSync(home).filter((f) => f !== ".bun").sort()).toEqual(["slack-term-relay"]); // .bun: the runtime's own cache
+    expect(readdirSync(home).filter((f) => f !== ".bun" && f !== "Library").sort()).toEqual(["slack-term-relay"]); // .bun, Library (macOS): the runtime's own caches
 
     writeFileSync(join(out, "README.md"), "mine");
     const again = await run(["relay", "init"]);

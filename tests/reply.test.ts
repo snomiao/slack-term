@@ -2,7 +2,7 @@
 // the mock server, from a directory holding its own .slack-term/.
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,7 +47,8 @@ let mock: MockHandle;
 let tmpHome: string;
 let lane: string;
 beforeAll(async () => {
-  tmpHome = mkdtempSync(join(tmpdir(), "slack-reply-"));
+  // realpath: macOS tmpdir() is /var/…, a symlink to /private/var/…, and scope dirs are reported resolved.
+  tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "slack-reply-")));
   lane = join(tmpHome, "tree", "design");
   mkdirSync(lane, { recursive: true });
   mock = await startMock({ inline: fixtures, rememberEdits: true });
@@ -198,6 +199,18 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     expect(readdirSync(join(ib(), ".slack-term", "archived"))).toEqual([`C00000001-${REPLY_TS}.yml`]);
   });
 
+  test("outbox flush: a URL glued to the text before it is refused and stays queued", async () => {
+    expect((await run(["outbox", "add", "board", "見てhttps://example.com/x"], ib())).exitCode).toBe(0);
+    const before = mock.requests.length;
+    const r = await run(["outbox", "flush"], ib());
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("refused (stays queued)");
+    expect(r.stderr).toContain("Ambiguous URL boundary");
+    expect(posts(before)).toEqual([]);
+    expect(readdirSync(join(ib(), ".slack-term", "outbox")).length).toBe(1);
+    for (const f of readdirSync(join(ib(), ".slack-term", "outbox"))) rmSync(join(ib(), ".slack-term", "outbox", f));
+  });
+
   test("done: a missing ref exits 2", async () => {
     expect((await run(["done", REPLY_TS], ib())).exitCode).toBe(2);
   });
@@ -287,6 +300,14 @@ describe("thread --since --format tsv, inbox listen filters (CLI)", { timeout: 9
   test("--since drops what is not newer", async () => {
     const r = await run(["thread", "C00000001", ROOT_TS, "--format", "tsv", "--since", REPLY_TS]);
     expect(r.stdout.split("\n").filter(Boolean)).toEqual(["1700000000.000300\tB00000001\tbot reply"]);
+  });
+  test("--since takes the ISO stamp `read` prints, and refuses what is no ts", async () => {
+    const iso = await run(["thread", "C00000001", ROOT_TS, "--format", "tsv", "--since", "2023-11-14T22:13:20.000200"]);
+    expect(iso.stdout.split("\n").filter(Boolean)).toEqual(["1700000000.000300\tB00000001\tbot reply"]);
+    const bad = await run(["thread", "C00000001", ROOT_TS, "--format", "tsv", "--since", "yesterday"]);
+    expect(bad.exitCode).not.toBe(0);
+    expect(bad.stderr).toContain("--since needs a message ts");
+    expect(bad.stdout).toBe("");
   });
   test("inbox listen --thread / --from / --alias", async () => {
     const d = join(tmpHome, "tree", "listen");
