@@ -615,6 +615,8 @@ A write-up of the design decisions behind the confirm gate lives on the agent-ye
 
 ## License
 
+`ts/vendor/gitleaks.toml` is gitleaks' default rule set (v8.30.1, MIT, © 2019 Zachary Rice, `ts/vendor/gitleaks.LICENSE`). slack-term runs it in-process (`ts/redact.ts`) to redact secrets from anything it writes to disk.
+
 MIT
 
 ### Print the active token (TypeScript CLI)
