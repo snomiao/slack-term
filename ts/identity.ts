@@ -1,16 +1,16 @@
-// `slack @<who> <command> …` — name the identity a command acts as (taku 11-02):
-// a bot (`@sytaku`, `@symphr-bot`) or a person (`@taku`). Replaces --as-bot /
+// `slack @<who> <command> …` — name the identity a command acts as (11-02):
+// a bot (`@deploy-bot`, `@ops-bot`) or a person (`@alice`). Replaces --as-bot /
 // --as-user and env-file juggling. The names map to WHERE a token lives (an
 // env var, optionally in an env file, or a slack-term profile) — never to the
 // token itself, which stays in the env/vault:
 //
 //   identities:                       # .slack-term/settings.yml or ~/.config/slack-term/settings.yml
-//     sytaku:     { kind: bot,  env_file: ~/.config/slack-cli/sytaku.env }   # SLACK_BOT_TOKEN in it
-//     symphr-bot: { kind: bot,  env_file: ~/.config/slack-cli/newproj.env }
-//     taku:       { kind: user, profile: acme }                                # slack auth profile
+//     deploy-bot: { kind: bot,  env_file: ~/.config/slack-cli/deploy-bot.env }   # SLACK_BOT_TOKEN in it
+//     ops-bot:    { kind: bot,  env_file: ~/.config/slack-cli/ops-bot.env }
+//     alice:      { kind: user, profile: acme }                                # slack auth profile
 //
 // And the trap it closes (11-02: an agent's `slack ask` without --as-bot was
-// posted AS taku): a write that would go out as a person's session is refused
+// posted AS a person): a write that would go out as a person's session is refused
 // from inside an agent, or when several identities exist, unless it names one.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";

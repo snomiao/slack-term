@@ -358,18 +358,18 @@ slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tr
 When several identities exist (bots and people), name the one a command acts as:
 
 ```sh
-slack @sytaku send '#chan:<ts>' 'deployed'     # as the SyTaku bot (like --as-bot, with its own token)
-slack @syform ask @alice "ship?" yes no
-slack @taku read '#general'                    # as a person's session
+slack @deploy-bot send '#chan:<ts>' 'deployed'     # as the deploy-bot bot (like --as-bot, with its own token)
+slack @form-bot ask @alice "ship?" yes no
+slack @alice read '#general'                    # as a person's session
 ```
 
 The names live in `identities:` in `.slack-term/settings.yml` or `~/.config/slack-term/settings.yml`. Each name points to **where** a token lives (an env var, optionally in an env file, or a `slack auth` profile), never the token itself:
 
 ```yaml
 identities:
-  sytaku:     { kind: bot,  env_file: ~/.config/slack-cli/sytaku.env }   # reads SLACK_BOT_TOKEN from it
-  symphr-bot: { kind: bot,  env_file: ~/.config/slack-cli/newproj.env }
-  taku:       { kind: user, profile: acme }
+  deploy-bot: { kind: bot,  env_file: ~/.config/slack-cli/deploy-bot.env }   # reads SLACK_BOT_TOKEN from it
+  ops-bot:    { kind: bot,  env_file: ~/.config/slack-cli/ops-bot.env }
+  alice:      { kind: user, profile: acme }
 ```
 
 **A write that would go out as a person's session is refused** (exit 2) unless it names `@who`, `--as-bot` or `--as-user`, in two cases:
