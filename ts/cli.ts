@@ -2386,6 +2386,8 @@ async function cmdReact(token: string, args: ReactArgs): Promise<void> {
 // --- send ---
 interface SendArgs {
   allowUrlAdjacent?: boolean;
+  /** Print the result as one JSON line: {ok, channel, ts, thread_ts?, permalink?}. */
+  json?: boolean;
   target: string;
   message: string;
   code?: string;
@@ -2724,7 +2726,10 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
     // mask send success — fall back to ts-only output below.
   }
   attr.record({ team: (await getSelf())?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
-  if (permalink) {
+  if (args.json) {
+    // For scripts: a lane's first post becomes its thread root by this ts.
+    console.log(JSON.stringify({ ok: true, channel: channelId, ts, ...(threadTs ? { thread_ts: threadTs } : {}), ...(permalink ? { permalink } : {}) }));
+  } else if (permalink) {
     console.log(`✓ Sent: ${permalink}`);
   } else {
     console.log(`✓ Sent (ts: ${ts})`);
@@ -2849,6 +2854,17 @@ interface AskArgs {
 
 
 const askSleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** `-` as the text argument means stdin. yargs hands a lone `-` positional
+ *  over as "" — so "" counts too when the raw arguments carry a `-`. */
+function isStdinArg(v: string | undefined): boolean {
+  return v === "-" || (v === "" && process.argv.slice(2).includes("-"));
+}
+
+/** The text piped in, without the trailing newline(s) every file and echo adds. */
+async function stdinText(): Promise<string> {
+  return (await Bun.stdin.text()).replace(/\s+$/, "");
+}
 
 // A thread reply sent with "also send to channel" ticked arrives as a normal
 // message carrying this subtype. Dropping every subtype would discard those —
@@ -5681,6 +5697,7 @@ async function main(): Promise<void> {
     workspace?: string | undefined; target?: string | undefined; message?: string | undefined; code?: string | undefined;
     "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined; "user-id"?: string | undefined;
     "as-bot"?: boolean | undefined; broadcast?: boolean | undefined; mentions?: boolean | undefined;
+    json?: boolean | undefined;
   };
   /** The `edit` handler, shared with `tick`. In a .slack-term/ scope the
    *  lane's tag is kept; in a restricted one the message must sit in one of
@@ -5746,11 +5763,13 @@ async function main(): Promise<void> {
     // staged a confirm code and posting it produced a blank message.
     // Verification cannot catch this: an empty publish reads back as an
     // exact match, so refusing here is the only mechanism.
+    if (isStdinArg(argv.message)) argv = { ...argv, message: await stdinText() };
     if (!String(argv.message ?? "").trim()) {
       console.error("Error: message is empty");
       process.exit(1);
     }
     const args: SendArgs = { target: argv.target!, message: argv.message!, allowUrlAdjacent: argv["allow-url-adjacent"] === true };
+    if (argv.json) args.json = true;
     if (argv.code) args.code = argv.code;
     if (argv["channel-id"]) args.channelId = argv["channel-id"];
     if (argv["user-id"]) args.userId = argv["user-id"];
@@ -6008,6 +6027,48 @@ async function main(): Promise<void> {
             if (purpose) console.log(`purpose: ${purpose}`);
             if (memberCount) console.log(`members: ${memberCount}`);
             console.log(`private: ${ch.is_private === true}`);
+          },
+        )
+        .command(
+          "invite <channel> <users..>",
+          "Invite people to a channel (conversations.invite; confirm-hash gate). Acts as the current identity, e.g. slack @bot channel invite …",
+          (yy) => yy
+            .positional("channel", { type: "string", demandOption: true, describe: "#name, channel id, or permalink" })
+            .positional("users", { type: "string", array: true, demandOption: true, describe: "@handle or U… ids" })
+            .option("code", { type: "string", describe: "Safety hash to confirm" }),
+          async (argv) => {
+            const token = tok(argv as W);
+            const cookie = ck(argv as W);
+            let channel: string;
+            const ids: string[] = [];
+            try {
+              channel = await resolveChannel(token, String(argv.channel), cookie);
+              for (const ref of (argv.users as string[]).map(String)) ids.push(/^[UW][A-Z0-9]{2,}$/.test(ref) ? ref : await resolveUserId(token, ref, cookie));
+            } catch (e: unknown) {
+              console.error(friendlySlackError(e));
+              process.exit(1);
+            }
+            const self = await selfIdentity(token, cookie);
+            const label = await destLabel(token, channel, String(argv.channel), cookie);
+            const code = safetyCode("channel-invite", channel, ids.join(","), self?.userId ?? "");
+            if (argv.code !== code) requireCode(argv.code, code, [
+              `--- Inviting to a channel --------------------`,
+              fromLine(self, { pad: 9 }),
+              `  channel: ${label}`,
+              `  users:   ${ids.join(", ")}`,
+              `--------------------------------────────────`,
+            ]);
+            try {
+              await inviteToChannel(token, channel, ids, cookie);
+            } catch (e: unknown) {
+              const raw = e instanceof Error ? e.message : String(e);
+              // Inviting someone already there is not a failure worth exit 1.
+              if (!/already_in_channel/.test(raw)) {
+                console.error(`✗ invite failed: ${friendlySlackError(e)}${/not_in_channel/.test(raw) ? "\n  The inviter must be a member of the channel first." : ""}`);
+                process.exit(1);
+              }
+            }
+            console.log(`✓ Invited ${ids.length} to ${label}`);
           },
         )
         .command(
@@ -6349,7 +6410,7 @@ async function main(): Promise<void> {
     )
     .command(
       "send <target> <message>",
-      "Send a message (confirm-hash safety gate)",
+      "Send a message (confirm-hash safety gate); - as the message reads stdin",
       (y) => y
         .positional("target", { type: "string", demandOption: true, describe: "#chan, @user, #chan:thread_ts, or permalink (a message permalink replies in its thread)" })
         .positional("message", { type: "string", demandOption: true })
@@ -6361,6 +6422,7 @@ async function main(): Promise<void> {
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel: broadcast a threaded reply back to the channel (Slack's \"Also send to #channel\" checkbox). Only effective with a thread target." })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real <@USERID> mentions (on by default; resolves via users.list, then channel members for Slack Connect guests). Unresolved handles stay as plain text. The confirm preview shows the converted message before sending. Disable with --no-mentions for literal @text." })
         .option("to", { type: "string", describe: "Permalink of the message you are answering: refuses when it is not in the target's thread (see also `slack reply --to`)" })
+        .option("json", { type: "boolean", default: false, describe: "On success print one JSON line: {ok, channel, ts, thread_ts?, permalink?}" })
         .option("any-thread", { type: "boolean", default: false, describe: "With --to: send even when the message is in another thread" }),
       async (argv) => {
         if (argv.to && !argv["any-thread"]) {
@@ -6525,6 +6587,7 @@ async function main(): Promise<void> {
       (y) => y
         .positional("dest", { type: "string", describe: "alias | permalink | #chan:<ts> | <ts> (in settings' channel). Omit with --to" })
         .positional("message", { type: "string", describe: "Text, or - for stdin" })
+        .option("json", { type: "boolean", default: false, describe: "On success print one JSON line: {ok, channel, ts, thread_ts, permalink?}" })
         .option("to", { type: "string", describe: "Permalink of the message you are answering: replies in ITS thread; with a dest, refuses when they differ" })
         .option("any-thread", { type: "boolean", default: false, describe: "With --to and a dest: post to dest even when the message is in another thread" })
         .option("prefix", { type: "string", describe: "Override settings' prefix (\"\" for none)" })
@@ -6538,7 +6601,7 @@ async function main(): Promise<void> {
         let message = argv.message;
         // `slack reply --to <link> 'text'`: the one positional is the text.
         if (argv.to && message === undefined) { message = dest; dest = undefined; }
-        if (message === "-") message = await Bun.stdin.text();
+        if (isStdinArg(message)) message = await stdinText();
         if (message === undefined || !message.trim()) { console.error("Error: message is empty"); process.exit(1); }
         if (!dest && !argv.to) { console.error("Error: reply needs a destination (alias, permalink, #chan:<ts>) or --to <permalink>"); process.exit(2); }
         const token = tok(argv as W);
@@ -6566,7 +6629,7 @@ async function main(): Promise<void> {
         await runSend({
           workspace: (argv as W).workspace, target: `${channel}:${threadTs}`, message: text, code: argv.code,
           "allow-url-adjacent": argv["allow-url-adjacent"], "as-bot": argv["as-bot"] ?? settings.as_bot ?? false,
-          broadcast: argv.broadcast, mentions: argv.mentions,
+          broadcast: argv.broadcast, mentions: argv.mentions, json: argv.json,
         });
       },
     )
@@ -6677,7 +6740,7 @@ async function main(): Promise<void> {
             .positional("message", { type: "string", demandOption: true })
             .option("in-reply-to", { type: "string", describe: "ts of the inbox message this answers: archived once sent" }),
           async (argv) => {
-            const text = argv.message === "-" ? await Bun.stdin.text() : argv.message;
+            const text = isStdinArg(argv.message) ? await stdinText() : argv.message;
             if (!text.trim()) { console.error("Error: message is empty"); process.exit(1); }
             const r = addOutbox(findScope(), { to: argv.dest, text, ...(argv["in-reply-to"] ? { in_reply_to: argv["in-reply-to"] } : {}) });
             if (r.redacted.length) console.error(`⚠ redacted before queueing: ${r.redacted.join(", ")}`);
@@ -7783,7 +7846,8 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
-        .option("user-id", { type: "string" }),
+        .option("user-id", { type: "string" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Upload via the bot token (xoxb / SLACK_BOT_TOKEN); `slack @bot upload …` does this too" }),
       async (argv) => {
         const args: UploadArgs = { target: argv.target!, filePaths: argv.file as string[] };
         if (argv.title) args.title = argv.title;
@@ -7792,6 +7856,12 @@ async function main(): Promise<void> {
         if (argv.code) args.code = argv.code;
         if (argv["channel-id"]) args.channelId = argv["channel-id"];
         if (argv["user-id"]) args.userId = argv["user-id"];
+        if (argv["as-bot"]) {
+          const bot = resolveBotToken();
+          if (!bot) { console.error("Error: --as-bot needs a bot token (SLACK_BOT_TOKEN)"); process.exit(1); }
+          await cmdUpload(bot, args);
+          return;
+        }
         const cookie = ck(argv as W);
         if (cookie) args.cookie = cookie;
         await cmdUpload(tok(argv as W), args);

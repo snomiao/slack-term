@@ -60,11 +60,12 @@ afterAll(async () => {
 });
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
-function run(args: string[], cwd = lane, extraEnv: Record<string, string> = {}): Promise<RunResult> {
+function run(args: string[], cwd = lane, extraEnv: Record<string, string> = {}, input?: string): Promise<RunResult> {
   const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_TERM_HOME: _g, ...rest } = process.env as Record<string, string>;
   const env = { ...rest, HOME: tmpHome, SLACK_TERM_HOME: join(tmpHome, "global"), SLACK_API_BASE: `${mock.baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", ...extraEnv };
   return new Promise((resolve, reject) => {
-    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd, env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+    if (input !== undefined) { child.stdin!.write(input); child.stdin!.end(); }
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => { stdout += String(d); });
@@ -399,5 +400,49 @@ describe("inbox nudge --eyes (CLI)", { timeout: 60_000 }, () => {
     const before = mock.requests.length;
     await run(["inbox", "nudge"], join(tmpHome, "tree", "nudge"));
     expect(mock.requests.slice(before).filter((q) => q.method.startsWith("reactions."))).toEqual([]);
+  });
+});
+
+describe("[tool]'s asks: stdin -, send --json, @bot upload, channel invite (CLI)", { timeout: 120_000 }, () => {
+  const fakeBot = ["xox", "b-", "0000000000-0000000000000-", "faketokenfaketokenfake00"].join("");
+  test("reply <link> - reads the text from stdin (yargs hands a lone - over as \"\")", async () => {
+    const dry = await run(["reply", REPLY_LINK, "-", "--prefix", "[t]"], join(tmpHome, "tree", "other"), {}, "from a file\n");
+    expect(dry.exitCode).toBe(1);
+    expect(dry.stdout).toContain("[t] from a file");
+    const before = mock.requests.length;
+    const r = await run(["reply", REPLY_LINK, "-", "--prefix", "[t]", `--code=${code(dry.stderr)}`], join(tmpHome, "tree", "other"), {}, "from a file\n");
+    expect(r.exitCode).toBe(0);
+    expect(posts(before)[0]!.text).toBe("[t] from a file");
+  });
+  test("send - with stdin, and --json prints the new ts", async () => {
+    const dry = await run(["send", `C00000001:${ROOT_TS}`, "-"], join(tmpHome, "tree", "other"), {}, "piped");
+    expect(dry.exitCode).toBe(1);
+    const r = await run(["send", `C00000001:${ROOT_TS}`, "-", "--json", `--code=${code(dry.stderr)}`], join(tmpHome, "tree", "other"), {}, "piped");
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(r.stdout.trim().split("\n").pop()!)).toEqual(expect.objectContaining({ ok: true, channel: "C00000001", ts: "1700000000.000100", thread_ts: ROOT_TS }));
+  });
+  test("slack @bot upload acts with the bot's token", async () => {
+    const d = join(tmpHome, "tree", "upl");
+    mkdirSync(d, { recursive: true });
+    await run(["init"], d);
+    writeFileSync(join(tmpHome, "upbot.env"), `SLACK_BOT_TOKEN=${fakeBot}\n`);
+    writeFileSync(join(d, ".slack-term", "settings.yml"), `identities:\n  upbot:\n    kind: bot\n    env_file: ${join(tmpHome, "upbot.env")}\n`);
+    writeFileSync(join(d, "a.txt"), "hello");
+    const before = mock.requests.length;
+    const r = await run(["@upbot", "upload", `C00000001:${ROOT_TS}`, join(d, "a.txt")], d);
+    expect(r.stdout + r.stderr).not.toContain(fakeBot);
+    const auths = mock.requests.slice(before).map((q) => String(q.headers.authorization ?? ""));
+    expect(auths.length).toBeGreaterThan(0);
+    expect(auths.every((a) => a === `Bearer ${fakeBot}`)).toBe(true);
+  });
+  test("channel invite: gate, then conversations.invite with the ids", async () => {
+    const dry = await run(["channel", "invite", "C00000001", "U00000002", "U00000003"], join(tmpHome, "tree", "other"));
+    expect(dry.exitCode).toBe(1);
+    expect(dry.stdout).toContain("users:   U00000002, U00000003");
+    const before = mock.requests.length;
+    const r = await run(["channel", "invite", "C00000001", "U00000002", "U00000003", `--code=${code(dry.stderr)}`], join(tmpHome, "tree", "other"));
+    expect(r.exitCode).toBe(0);
+    const inv = mock.requests.slice(before).find((q) => q.method === "conversations.invite")!;
+    expect(inv.body).toContain("U00000002,U00000003");
   });
 });
