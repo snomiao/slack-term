@@ -768,11 +768,14 @@ describe("webClient: what a bot without every *:read scope can still stream", ()
       inline: {
         "users.conversations": { ok: false, error: "missing_scope" },
         "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: "U00000001" } },
+        "conversations.info__channel=C00000002": { ok: true, channel: { id: "C00000002", name: "general", is_member: false } },
       },
     });
     process.env.SLACK_API_BASE = `${mock.baseUrl}/api`;
     const c = webClient("xoxb-fake");
     expect(await c.listChannels(["D00000001"])).toEqual([{ id: "D00000001", name: "D00000001", isIm: true, user: "U00000001" }]);
+    // A public channel it is not in: left out, so the stream refuses it as before.
+    expect(await c.listChannels(["C00000002"])).toEqual([]);
     expect(mock.requests.some((q) => q.method === "users.conversations")).toBe(false);
     await mock.stop();
   });

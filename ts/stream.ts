@@ -71,7 +71,10 @@ export function webClient(token: string, cookie?: string): StreamClient {
         raw = [];
         for (const id of only) {
           const r = (await conversationInfo(token, id, cookie)) as { channel?: Json };
-          if (r.channel) raw.push(r.channel);
+          // conversations.info also answers for a public channel the identity is NOT in;
+          // leave it out, so refresh still refuses it as "not a member".
+          const ch = r.channel as { is_member?: boolean } | undefined;
+          if (ch && ch.is_member !== false) raw.push(r.channel!);
         }
       } else {
         try {
