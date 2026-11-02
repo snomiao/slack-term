@@ -37,7 +37,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname } from "node:path";
 import type { Cursor, Doorbell, Subscribe } from "./relay.ts";
 import { RelayAuthError } from "./relay.ts";
-import { history, RateLimitError, repliesPage, userConversations, userName, type Json } from "./slack.ts";
+import { conversationInfo, history, RateLimitError, repliesPage, userConversations, userName, type Json } from "./slack.ts";
 
 export type ChannelRef = { id: string; name: string; isIm: boolean; isMpim?: boolean; user?: string };
 
@@ -45,7 +45,10 @@ export type Page = { messages: Record<string, Json>[]; nextCursor?: string };
 
 /** The Slack surface the stream needs — injected so tests run without HTTP. */
 export type StreamClient = {
-  listChannels(): Promise<ChannelRef[]>;
+  /** Every conversation the identity is in — or, given `only`, just those ids
+   *  (no users.conversations: a bot with im:read but not mpim:read or
+   *  channels:read can still stream the DM it was named). */
+  listChannels(only?: string[]): Promise<ChannelRef[]>;
   history(channel: string, oldest: string, cursor?: string): Promise<Page>;
   replies(channel: string, threadTs: string, oldest: string, cursor?: string): Promise<Page>;
   userName(id: string): Promise<string>;
@@ -62,8 +65,37 @@ function page(resp: Json): Page {
 /** The real client: Slack Web API calls as the given identity. */
 export function webClient(token: string, cookie?: string): StreamClient {
   return {
-    async listChannels() {
-      const raw = await userConversations(token, "public_channel,private_channel,im,mpim", cookie);
+    async listChannels(only) {
+      let raw: Json[];
+      if (only) {
+        raw = [];
+        for (const id of only) {
+          const r = (await conversationInfo(token, id, cookie)) as { channel?: Json };
+          // conversations.info also answers for a public channel the identity is NOT in;
+          // leave it out, so refresh still refuses it as "not a member".
+          const ch = r.channel as { is_member?: boolean } | undefined;
+          if (ch && ch.is_member !== false) raw.push(r.channel!);
+        }
+      } else {
+        try {
+          raw = await userConversations(token, "public_channel,private_channel,im,mpim", cookie);
+        } catch (e) {
+          if (!/missing_scope/.test(e instanceof Error ? e.message : String(e))) throw e;
+          // One missing *:read scope fails the whole call: list type by type,
+          // keeping what this token may read.
+          raw = [];
+          const skipped: string[] = [];
+          for (const t of ["public_channel", "private_channel", "im", "mpim"]) {
+            try {
+              raw.push(...await userConversations(token, t, cookie));
+            } catch (e2) {
+              if (!/missing_scope/.test(e2 instanceof Error ? e2.message : String(e2))) throw e2;
+              skipped.push(t);
+            }
+          }
+          _internals.err(`slack stream: no scope to list ${skipped.join(", ")} — watching the rest`);
+        }
+      }
       return raw.flatMap((c): ChannelRef[] => {
         if (!c || typeof c !== "object" || Array.isArray(c) || typeof c.id !== "string") return [];
         const isIm = c.is_im === true;
@@ -601,7 +633,7 @@ export function paced(client: StreamClient, perMin: number, signal?: AbortSignal
     if (wait > 0) await _internals.sleep(wait, signal);
   };
   return {
-    listChannels: () => client.listChannels(),
+    listChannels: (only) => client.listChannels(only),
     userName: (id) => client.userName(id),
     history: async (c, oldest, cursor) => { await pace(); return client.history(c, oldest, cursor); },
     replies: async (c, t, oldest, cursor) => { await pace(); return client.replies(c, t, oldest, cursor); },
@@ -687,7 +719,7 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     };
 
     const refresh = async (nowSec: number): Promise<void> => {
-      const listed = await client.listChannels();
+      const listed = await client.listChannels(opts.channels);
       channels = listed.filter((c) => !opts.channels || opts.channels.includes(c.id));
       if (opts.channels) {
         for (const id of opts.channels) {
