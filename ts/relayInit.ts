@@ -95,7 +95,8 @@ export function nextSteps(name: string, token?: string): string {
 4. In the Slack app -> Event Subscriptions: Enable Events, Request URL
      https://${name}.<your-subdomain>.workers.dev/slack/events
    and subscribe to bot events: message.channels, message.groups, message.im,
-   app_mention (and message.mpim if the bot has mpim:history). Save; reinstall if asked.
+   app_mention (and message.mpim if the bot has mpim:history; reaction_added,
+   with reactions:read, for \`slack stream --reactions\`). Save; reinstall if asked.
 5. Where \`slack stream\` runs:
      export SLACK_RELAY_URL=https://${name}.<your-subdomain>.workers.dev
      export SLACK_RELAY_TOKEN=${tok}

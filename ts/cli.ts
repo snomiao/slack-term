@@ -8320,7 +8320,8 @@ async function main(): Promise<void> {
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
         .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (`slack relay init`) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
         .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" })
-        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-term/ that subscribes its thread (redacted, text-only)" }),
+        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-term/ that subscribes its thread (redacted, text-only)" })
+        .option("reactions", { type: "boolean", default: false, describe: "Relay only: also print reaction_added bells as {type: \"reaction\", channel, ts, user} (the emoji: reactions.get)" }),
       async (argv) => {
         let re: RegExp;
         let reconcileMs: number;
@@ -8436,6 +8437,7 @@ async function main(): Promise<void> {
           selfUsers,
           selfBots,
           json: argv.json,
+          reactions: argv.reactions,
           ...(argv.inbox ? {
             onMatch: (rec: StreamMatch, files: number) => {
               try {

@@ -18,6 +18,10 @@ export type Doorbell = {
   channel: string; ts: string; thread_ts?: string;
   /** The relay app's bot user id, on that bot's own posts only. */
   self?: string;
+  /** A reaction_added on the message at channel/ts (relays from 11-02 on). */
+  kind?: "reaction";
+  /** Who reacted (reaction bells only). */
+  user?: string;
 };
 
 /** First frame of every connection. `seq` is the resume point the relay

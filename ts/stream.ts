@@ -136,6 +136,10 @@ export type StreamOpts = {
   selfUsers: Set<string>;
   selfBots: Set<string>;
   json: boolean;
+  /** Print reaction bells (`slack stream --reactions`): {type: "reaction",
+   *  channel, ts, user} — the emoji itself is read with reactions.get by
+   *  whoever needs it. Without it they are dropped unread. */
+  reactions?: boolean;
   /** Also called with every emitted match and its attachment count (`slack stream --inbox`). */
   onMatch?: (rec: StreamMatch, files: number) => void;
   once: boolean;
@@ -822,6 +826,14 @@ export async function runStream(client: StreamClient, opts: StreamOpts): Promise
     /** true = resolved (emitted, or nothing to emit); false = not visible yet. */
     const handleBell = async (bell: Doorbell): Promise<boolean> => {
       if (opts.channels && !opts.channels.includes(bell.channel)) return true;
+      // A reaction bell never costs a message read: printed as it is, or dropped.
+      if (bell.kind === "reaction") {
+        if (!opts.reactions || (bell.self && opts.selfUsers.has(bell.self))) return true;
+        if (bell.user && opts.selfUsers.has(bell.user)) return true;
+        const rec = { type: "reaction" as const, channel: { id: bell.channel }, ts: bell.ts, user: { id: bell.user ?? "" } };
+        _internals.out(opts.json ? JSON.stringify(rec) : `reaction  ${bell.channel}  ${bell.ts}  by ${bell.user ?? "?"}`);
+        return true;
+      }
       let ch = channels.find((c) => c.id === bell.channel);
       if (!ch) {
         // A channel joined since the last refresh. Re-list at most once a
