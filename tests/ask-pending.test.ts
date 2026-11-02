@@ -109,7 +109,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     expect(r.stdout).toContain(`pid ${DEAD_PID} (gone)`);
     expect(r.stdout).toContain("A: no");
     expect(r.stdout).toContain(`collect: slack ask --waitFor='${LINK}'`);
-    expect(r.stderr).toContain("1 件が回答済み・未回収");
+    expect(r.stderr).toContain("1 answered but not collected");
     // Read-only: it inspects questions, it does not settle them.
     expect(r.writes).toEqual([]);
   });
@@ -128,7 +128,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     await askLogged();
     const r = await pending(slackHas({}));
     expect(r.stdout.trim()).toBe("");
-    expect(r.stderr).toContain("0 件が回答済み・未回収, 1 件が未回答");
+    expect(r.stderr).toContain("0 answered but not collected, 1 unanswered");
   });
 
   test("once collected with --waitFor it is no longer pending", async () => {
@@ -143,7 +143,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     }
     const r = await pending(slackHas(PRESSED_NO));
     expect(r.stdout.trim()).toBe("");
-    expect(r.stderr).toContain("0 件の未回収の質問を確認");
+    expect(r.stderr).toContain("checked 0 uncollected question(s)");
   });
 
   test("a question stamped ✅ elsewhere is counted, not listed — and the log is left alone", async () => {
@@ -151,10 +151,10 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     const stamped = askBuildResolvedText(`<@${BOB}> ok?`, { answer: "no", how: "リアクション 2️⃣" }, "bob");
     const r = await pending(slackHas({ text: stamped }));
     expect(r.stdout.trim()).toBe("");
-    expect(r.stderr).toContain("1 件は ✅ 回収済み");
+    expect(r.stderr).toContain("1 ✅ already collected");
     // Read-only against the log too: the same look gives the same answer.
     const again = await pending(slackHas({ text: stamped }));
-    expect(again.stderr).toContain("1 件の未回収の質問を確認");
+    expect(again.stderr).toContain("checked 1 uncollected question(s)");
   });
 
   test("an ask from another workspace is named, not probed with this token", async () => {
@@ -165,7 +165,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       const r = await run(["ask", "--pending"], m.baseUrl);
       expect(r.exitCode).toBe(0);
       expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("別のワークスペース「Acme」");
+      expect(r.stderr).toContain("another workspace \"Acme\"");
       expect(m.requests.some((q) => q.method === "conversations.history")).toBe(false);
     } finally {
       await m.stop();
@@ -184,7 +184,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     await askLogged();
     const r = await pending(slackHas(PRESSED_NO), ["--since", "2099-01-01"]);
     expect(r.stdout.trim()).toBe("");
-    expect(r.stderr).toContain("0 件の未回収の質問を確認");
+    expect(r.stderr).toContain("checked 0 uncollected question(s)");
   });
 
   // cross-vendor review 2026-09-27: a clarification delivered first must not
@@ -200,7 +200,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     ] };
     const before = await pending(clarify);
     expect(before.stdout).toContain("A: 背景を教えて");
-    expect(before.stdout).toContain("決定ではありません");
+    expect(before.stdout).toContain("not a decision");
 
     const m = await startMock({ inline: clarify });
     try {
@@ -212,7 +212,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     }
     const after = await pending(clarify);
     expect(after.stdout.trim()).toBe("");
-    expect(after.stderr).toContain("1 件が未回答");
+    expect(after.stderr).toContain("1 unanswered");
 
     const decided = { ...clarify, ...slackHas({ reply_count: 1, ...PRESSED_NO }) };
     decided[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`] = clarify[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`]!;
@@ -230,8 +230,8 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     fx[`users.info__user=${BOB}`] = { ok: true, user: { id: BOB, name: "bob", is_bot: false, profile: { display_name: "bob" } } };
     const r = await pending(fx);
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toContain(`ℹ️ 説明を求められています (<@${BOB}>)`);
-    expect(r.stderr).toContain("1 件が未回答, 1 件は ℹ️ 説明のリクエストあり");
+    expect(r.stderr).toContain(`ℹ️ an explanation was requested (<@${BOB}>)`);
+    expect(r.stderr).toContain("1 unanswered, 1 with an ℹ️ explain request");
     // The note is the waiting session's to post — --pending writes nothing.
     expect(r.writes).toEqual([]);
   });

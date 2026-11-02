@@ -729,7 +729,7 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
       // Once, not once per poll tick.
-      expect(r.stderr.split("❓ その他 を押しました").length - 1).toBe(1);
+      expect(r.stderr.split("pressed ❓ other").length - 1).toBe(1);
     } finally {
       await m.stop();
     }
@@ -796,7 +796,7 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("以内に回答がありませんでした");
+      expect(r.stderr).toContain("no answer within");
       // The permalink alone would leave the caller where `ask` used to: holding
       // a link with nothing that reads a pressed pill back.
       expect(r.stderr).toContain(`slack ask --waitFor='${CHAN}:${QTS}'`);
@@ -848,7 +848,7 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("同時に選ばれています");
+      expect(r.stderr).toContain("are pressed at once");
     } finally {
       await m.stop();
     }
@@ -983,7 +983,7 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
     const m = await startMock({ inline });
     try {
       const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "0"], m.baseUrl);
-      expect(r.stderr).not.toContain("引用された回答本文が見つかりません");
+      expect(r.stderr).not.toContain("the quoted answer text is missing");
       expect(r.exitCode).toBe(0);
       expect(r.stdout.trim()).toBe("B & C");
     } finally {
@@ -1020,7 +1020,7 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       expect(r.exitCode).toBe(5);
       // The reply itself IS the output — it is usually an instruction or a question back.
       expect(r.stdout.trim()).toBe("没懂，能给我讲前因后果吗 用中文");
-      expect(r.stderr).toContain("選択肢外");
+      expect(r.stderr).toContain("is not a choice");
       // Resuming past it is spelled out, so re-waiting does not re-deliver it.
       expect(r.stderr).toContain("--after=1700000100.000200");
       // And the question is left standing: a pill pressed later still decides it.
@@ -1195,11 +1195,11 @@ describe("ask --waitFor (CLI)", { timeout: 90_000 }, () => {
       const r = await run(["ask", "--waitFor", `${DM}:${QTS}`, "--timeout", "20"], m.baseUrl);
       expect(r.exitCode).toBe(3);
       expect(r.stdout.trim()).toBe("");
-      expect(r.stderr).toContain("質問として読み取れません");
+      expect(r.stderr).toContain("cannot be read as a `slack ask` question");
       // The rejection must name WHICH check failed. A single generic line sent
       // a real user re-checking permalinks that were fine, for ~20 minutes,
       // while pressed answers went uncollected (2026-08-31).
-      expect(r.stderr).toContain("理由:");
+      expect(r.stderr).toContain("Reason:");
     } finally {
       await m.stop();
     }
@@ -1785,7 +1785,7 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
       const base = ["ask", `--void=${LINK}`, "--reask", "--reason", "head moved", `<@${BOB}> 出してよい?（head 2c706eb4）`, "リリースする", "見送る"];
       const dry = await run(base, m.baseUrl);
       expect(dry.exitCode).toBe(1);
-      expect(dry.stdout).toContain(`Then 無効化: ${LINK}`);
+      expect(dry.stdout).toContain(`Then void: ${LINK}`);
       expect(m.requests.some((q) => q.method === "chat.postMessage" || q.method === "chat.update")).toBe(false);
       const r = await run([...base, `--code=${extractCode(dry.stderr)}`], m.baseUrl);
       expect(r.exitCode).toBe(0);
@@ -1935,7 +1935,7 @@ describe("unreadable asks, plain edits, and who the multi-select notice names (C
           expect([...warning.matchAll(/<@([A-Z0-9]+)>/g)].map((x) => x[1])).toEqual([...named]);
         } else {
           expect(upd).toBeUndefined();
-          expect(r.stderr).toContain("回答が分かれています");
+          expect(r.stderr).toContain("answers are split");
         }
       } finally {
         await m.stop();

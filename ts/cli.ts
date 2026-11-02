@@ -2628,17 +2628,17 @@ async function cmdSend(token: string, args: SendArgs): Promise<void> {
         // a ts split, and `--channel-id` makes the leading "#name" irrelevant to
         // resolution, so it never depends on ref's original prefix or an
         // embedded thread_ts colliding with the appended message ts.
-        let editCmd = `slack edit "#${channelId}:${lastMsgTs}" "<新しい本文>" --channel-id ${channelId}`;
+        let editCmd = `slack edit "#${channelId}:${lastMsgTs}" "<new text>" --channel-id ${channelId}`;
         try {
           const permalink = await getPermalink(token, channelId, lastMsgTs, cookie);
-          if (permalink) editCmd = `slack edit "${permalink}" "<新しい本文>"`;
+          if (permalink) editCmd = `slack edit "${permalink}" "<new text>"`;
         } catch {
           // fall back to the --channel-id form above
         }
-        console.error(`⚠ 相手はまだ返信していません(最後のメッセージはあなたのものです)。`);
-        console.error(`  連投を避けるため、新規送信でなく直前のメッセージの edit を検討してください:`);
+        console.error(`⚠ They haven't replied yet (the last message is yours).`);
+        console.error(`  To avoid a string of messages, consider editing your last message instead of sending a new one:`);
         console.error(`    ${editCmd}`);
-        console.error(`  このまま送信する場合は --code=XXXX で確定。`);
+        console.error(`  To send anyway, confirm with --code=XXXX.`);
       }
     } catch {
       // best-effort; a failed self-identity lookup must not block the send
@@ -2994,7 +2994,7 @@ async function askCollectNotes(token: string, sc: AskNoteScope, after: string | 
       const rep = asRecord((await replies(token, sc.channelId, sc.threadParentTs ?? sc.ts, 100, sc.cookie)) as Json);
       for (const m of asArray(rep.messages).map(asRecord)) pool.set(String(m.ts), m);
     } catch (e: unknown) {
-      console.error(`  (スレッドの追記を読めませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not read the thread's follow-up notes: ${e instanceof Error ? e.message : String(e)})`);
     }
   }
   if (!sc.threadOnly && !sc.threadParentTs) {
@@ -3007,7 +3007,7 @@ async function askCollectNotes(token: string, sc: AskNoteScope, after: string | 
         .reduce((min, m) => Math.min(min, Number(m.ts)), Infinity);
       for (const m of msgs) if (Number(m.ts) < bound && !pool.has(String(m.ts))) pool.set(String(m.ts), m);
     } catch (e: unknown) {
-      console.error(`  (DM の追記を読めませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not read the DM's follow-up notes: ${e instanceof Error ? e.message : String(e)})`);
     }
   }
   const picked = [...pool.values()]
@@ -3061,7 +3061,7 @@ async function askEmit(
     return;
   }
   if (r.notes.length) {
-    console.error(`  スレッドの追記 ${r.notes.length} 件 (回答とは別):`);
+    console.error(`  ${r.notes.length} thread note(s) (separate from the answer):`);
     for (const n of r.notes) {
       let who = n.user;
       try {
@@ -3075,7 +3075,7 @@ async function askEmit(
     }
   }
   if (r.status === "answered") {
-    console.error(`  この後の追記を拾う:  ${askResumeCommand(o.shown, o.asBot, r.cursor)}`);
+    console.error(`  To pick up later notes:  ${askResumeCommand(o.shown, o.asBot, r.cursor)}`);
   }
   if (r.answer !== null) console.log(r.answer);
 }
@@ -3172,7 +3172,7 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
       await editMessage(token, channelId, ts, next, cookie, true);
     } catch (e: unknown) {
       // Cosmetic: the poller still refuses to guess, and stderr already said so.
-      console.error(`  (質問文に注意書きを入れられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not add the notice to the question text: ${e instanceof Error ? e.message : String(e)})`);
     }
   }
 
@@ -3189,7 +3189,7 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
       for (const u of asArray(r.users).filter(isAnswerer)) {
         if (otherReported.has(u)) continue;
         otherReported.add(u);
-        if (!readOnly) console.error(`  (<@${u}> が ${glyph} その他 を押しました。返信を待ちます)`);
+        if (!readOnly) console.error(`  (<@${u}> pressed ${glyph} other; waiting for their reply)`);
       }
     }
   }
@@ -3243,14 +3243,14 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
         if (++pages >= ASK_EXPLAIN_NOTE_MAX_PAGES) return "exists";
       }
     } catch (e: unknown) {
-      console.error(`  (スレッドを読めないため、説明リクエストの案内はまだ出していません: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not read the thread, so the explain-request note has not been posted yet: ${e instanceof Error ? e.message : String(e)})`);
       return "unread";
     }
     try {
       await slackSend(token, channelId, copy.explainNote, root, false, cookie, true);
     } catch (e: unknown) {
       // The press is still reported on stderr; the note is a courtesy.
-      console.error(`  (説明リクエストの案内をスレッドに出せませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not post the explain-request note to the thread: ${e instanceof Error ? e.message : String(e)})`);
       return "failed";
     }
     return "posted";
@@ -3263,7 +3263,7 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
       now.push(u);
       if (explainReported.has(u)) continue;
       explainReported.add(u);
-      if (!readOnly) console.error(`  (<@${u}> が ℹ️ 説明して を押しました — 回答ではありません。スレッドで説明してください。回答は待ち続けます)`);
+      if (!readOnly) console.error(`  (<@${u}> pressed ℹ️ explain — not an answer. Explain in the thread; still waiting for an answer)`);
     }
     state.explainNow = now;
     // Read-only (`--pending`): the press is reported, the note is not posted —
@@ -3300,8 +3300,8 @@ function askPoller(token: string, ctx: AskWaitCtx, readOnly = false): {
     for (const p of picks) for (const u of p.users) pillsPerUser.set(u, (pillsPerUser.get(u) ?? 0) + 1);
     const multi = [...pillsPerUser].filter(([, n]) => n > 1).map(([u]) => u);
     if (!readOnly) console.error(multi.length
-      ? `  (${glyphs} が同時に選ばれています。1 つに絞ってもらうまで待ちます)`
-      : `  (回答が分かれています: ${glyphs}。どちらか一方にそろうまで待ちます)`);
+      ? `  (${glyphs} are pressed at once; waiting until it is narrowed to one)`
+      : `  (answers are split: ${glyphs}; waiting until they agree on one)`);
     // Whoever is on more than one pill — and ONLY them. Naming everyone on any
     // pill told a voter who had pressed exactly one that she had pressed two
     // (2026-10-01: a voter on 1️⃣ only was named because someone else was on 1️⃣
@@ -3461,7 +3461,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     }
     // Who answered never reaches stdout — callers do ANS=$(slack ask --wait ...)
     // and must keep getting the answer body alone.
-    if (who) console.error(`  回答者: ${stripTerminalControls(who)}`);
+    if (who) console.error(`  Answered by: ${stripTerminalControls(who)}`);
     try {
       // The body and the chosen option stay; only what no longer applies goes.
       // Built from the message as it is NOW (an edit made in Slack after asking
@@ -3488,7 +3488,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       // The edit is bookkeeping, not the answer. It fails whenever the resuming
       // token is not the one that posted (Slack lets only the author update), and
       // that must not cost the caller an answer it already has.
-      console.error(`  (元メッセージの更新に失敗: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (failed to update the original message: ${e instanceof Error ? e.message : String(e)})`);
     }
   }
 
@@ -3513,10 +3513,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
         // A dropped poll is expected occasionally; only give up if it keeps failing.
         errors++;
         if (errors >= ASK_MAX_CONSECUTIVE_ERRORS) {
-          console.error(`Error: Slack への問い合わせに ${errors} 回連続で失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+          console.error(`Error: Slack requests failed ${errors} times in a row: ${e instanceof Error ? e.message : String(e)}`);
           process.exit(ASK_EXIT_ERROR);
         }
-        console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
+        console.error(`  (Slack error ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, retrying: ${e instanceof Error ? e.message : String(e)})`);
       }
     }
     unchosen = state.unchosen;
@@ -3559,7 +3559,7 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // only on the run that posted the thread note, so a `--timeout 0` poller is
     // woken once per question, not on every look.
     if (state.explainPosted && ctx.explainExit) {
-      console.error(`  説明を求められています (質問はまだ開いています)。スレッドで説明してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
+      console.error(`  An explanation was requested (the question is still open). Explain in the thread, then collect with:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
       if (ctx.json) await askEmit(token, ctx, { status: "explain", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: state.explainNow });
       process.exit(ASK_EXIT_EXPLAIN);
     }
@@ -3575,10 +3575,10 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       } catch {
         // the id is still a usable answer to "who"
       }
-      console.error(`  (${stripTerminalControls(who)} が選択肢外の返信をしました — 決定ではありません。本文を stdout に出します)`);
-      console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
+      console.error(`  (${stripTerminalControls(who)} replied with something that is not a choice — not a decision. Printing the reply on stdout)`);
+      console.error(`  Choices: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
       console.error(`  ${shown}`);
-      console.error(`  この返信の後を待つ:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
+      console.error(`  To wait for what comes after this reply:  ${askResumeCommand(shown, ctx.asBot, unchosen.ts)}`);
       // Delivered, not collected: `--pending` will not report THIS reply again,
       // but still reports a pill pressed after it.
       markAskDelivered(channelId, ts, unchosen.text, askNextCursor(ts, ctx.after, unchosen.ts));
@@ -3602,8 +3602,8 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
         // the id is still a usable answer to "who"
       }
       // Only the ambiguous case gets here — a plain free-text reply exited above.
-      console.error(`  (${stripTerminalControls(who)} の返信は複数の選択肢に一致します。1 つに絞ってもらうまで待ちます)`);
-      console.error(`    「${stripTerminalControls(unchosen.text)}」`);
+      console.error(`  (${stripTerminalControls(who)}'s reply matches several choices; waiting until it is narrowed to one)`);
+      console.error(`    "${stripTerminalControls(unchosen.text)}"`);
     }
     // Checked after the first poll, never before it: `--timeout 0` means one
     // look, and one look must still be a real look.
@@ -3624,20 +3624,20 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   // something to act on.
   if (unchosen) {
     // Ambiguous only: a plain free-text reply was delivered as exit 5 already.
-    console.error(`Error: 返信はありましたが、複数の選択肢に一致するため確定できません (メッセージはそのまま残っています)`);
-    console.error(`  返信: 「${stripTerminalControls(unchosen.text)}」`);
-    console.error(`  選択肢: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
+    console.error(`Error: there was a reply, but it matches several choices so it cannot be settled (the message is left in place)`);
+    console.error(`  Reply: "${stripTerminalControls(unchosen.text)}"`);
+    console.error(`  Choices: ${candidates.map((c, i) => `${i + 1}. ${stripTerminalControls(askFlatten(c))}`).join("  ")}`);
     console.error(`  ${shown}`);
-    console.error(`  返答してから回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
+    console.error(`  Reply in the thread, then collect with:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
     if (ctx.json) await askEmit(token, ctx, { status: "ambiguous", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: state.explainNow });
     process.exit(ASK_EXIT_UNCHOSEN);
   }
   if (timeout === 0) {
-    console.error(`まだ回答がありません: ${shown}`);
+    console.error(`No answer yet: ${shown}`);
   } else {
-    console.error(`Error: ${timeout}s 以内に回答がありませんでした (メッセージはそのまま残っています)`);
+    console.error(`Error: no answer within ${timeout}s (the message is left in place)`);
     console.error(`  ${shown}`);
-    console.error(`  あとで回収する:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
+    console.error(`  To collect later:  ${askResumeCommand(shown, ctx.asBot, ctx.after)}`);
   }
   if (ctx.json) await askEmit(token, ctx, { status: "timeout", answer: null, notes: [], cursor: askNextCursor(ts, ctx.after), explain: state.explainNow });
   process.exit(ASK_EXIT_TIMEOUT);
@@ -3821,7 +3821,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       `  Answerable by: ${audienceLabel}`,
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
       ...(explain ? [`  Explain:  ℹ️ pill offered — pressing it asks you to explain; it is never an answer`] : []),
-      ...(args.voidAfter ? [`  Then 無効化: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
+      ...(args.voidAfter ? [`  Then void: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
       `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_TERM_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
       `--------------------------------────────────`,
     ], recipientTz);
@@ -3858,8 +3858,8 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       const why = e instanceof Error ? e.message : String(e);
       // The marker is cosmetic + searchability; a keycap only costs the
       // answerer a trip to the emoji picker. Neither abandons a posted question.
-      if (name === seedMarker) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
-      else console.error(`  (リアクション ${name} を付けられませんでした: ${why})`);
+      if (name === seedMarker) console.error(`  (could not add marker ${name}: ${why})`);
+      else console.error(`  (could not add reaction ${name}: ${why})`);
     },
   );
 
@@ -3876,7 +3876,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // two open questions, which is reported loudly — never a missing one.
   if (args.voidAfter) {
     const ok = await askApplyVoid(token, args.voidAfter, args.voidAfter.reason, shown, cookie);
-    if (!ok) console.error(`  ⚠ 新しい質問は出ましたが、古い質問を無効化できませんでした — 手で: slack ask --void='${stripTerminalControls(args.voidAfter.link)}' --superseded-by='${shown}'`);
+    if (!ok) console.error(`  ⚠ The new question is posted, but the old one could not be voided — do it by hand: slack ask --void='${stripTerminalControls(args.voidAfter.link)}' --superseded-by='${shown}'`);
   }
 
   if (!args.wait) {
@@ -3890,7 +3890,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   }
 
   const timeout = args.timeout ?? 3600;
-  console.error(`  回答を待っています (最大 ${timeout}s)… Ctrl-C で中断`);
+  console.error(`  Waiting for an answer (up to ${timeout}s)… Ctrl-C to stop`);
 
   const ctx: AskWaitCtx = {
     channelId,
@@ -3921,9 +3921,9 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
 
 /** Say on stderr that a question is void, and where its replacement is. */
 function askReportVoid(p: { reason: string; supersededBy?: string }, shown: string): void {
-  console.error(`この質問は無効です — 回答されることはありません。待つのをやめてください: ${stripTerminalControls(shown)}`);
+  console.error(`This question is void — it will never be answered. Stop waiting on it: ${stripTerminalControls(shown)}`);
   if (p.reason) console.error(`  ${stripTerminalControls(p.reason)}`);
-  if (p.supersededBy) console.error(`  新しい質問: ${stripTerminalControls(p.supersededBy)}`);
+  if (p.supersededBy) console.error(`  New question: ${stripTerminalControls(p.supersededBy)}`);
 }
 
 /** Find the one message a permalink (or `C…:ts`) names. A question posted into
@@ -3978,20 +3978,20 @@ async function askLoadOwnOpen(token: string, link: string, self: Self | null, as
   Promise<(AskVoidTarget & { msg: Record<string, Json>; threadTs?: string }) | "void" | null> {
   const shown = stripTerminalControls(link);
   const got = await askFetchByLink(token, link, cookie);
-  if (!got) { console.error(`✗ ${shown}: permalink (または 'C…:1700000000.000100') ではありません`); return null; }
-  if (!got.msg) { console.error(`✗ ${shown}: メッセージが見つかりません`); return null; }
+  if (!got) { console.error(`✗ ${shown}: not a permalink (or 'C…:1700000000.000100')`); return null; }
+  if (!got.msg) { console.error(`✗ ${shown}: message not found`); return null; }
   const msg = got.msg;
   const own = (!!self?.userId && msg.user === self.userId) || (!!self?.botId && msg.bot_id === self.botId);
   if (!own) {
-    console.error(`✗ ${shown}: 自分（${senderLabel(self, asBot)}）が投稿した質問ではありません` +
-      `${asBot ? "" : " — bot が出した質問なら --as-bot で"}`);
+    console.error(`✗ ${shown}: not a question posted by you (${senderLabel(self, asBot)})` +
+      `${asBot ? "" : " — if the bot posted it, use --as-bot"}`);
     return null;
   }
   const text = typeof msg.text === "string" ? msg.text : "";
   const parsed = askParseMessage(text);
   if (parsed.kind === "void") return "void";
-  if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問です（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）— 変更できません`); return null; }
-  if (parsed.kind !== "open") { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); return null; }
+  if (parsed.kind === "resolved") { console.error(`✗ ${shown}: already answered (answer: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}) — cannot be changed`); return null; }
+  if (parsed.kind !== "open") { console.error(`✗ ${shown}: cannot be read as a \`slack ask\` question — ${askExplainReject(text)}`); return null; }
   const out: AskVoidTarget & { msg: Record<string, Json>; threadTs?: string } = { link, channelId: got.channelId, ts: got.ts, parsed, seedMarker: askSeedMarker(text) ?? ASK_MARKER, msg };
   if (got.threadTs) out.threadTs = got.threadTs;
   return out;
@@ -4035,7 +4035,7 @@ async function cmdAskEdit(token: string, args: {
 }): Promise<void> {
   const self = await selfIdentity(token, args.cookie);
   const t = await askLoadOwnOpen(token, args.link, self, args.asBot, args.cookie);
-  if (t === "void") { console.error(`✗ ${stripTerminalControls(args.link)}: 無効化済みの質問は編集できません`); process.exit(ASK_EXIT_ERROR); }
+  if (t === "void") { console.error(`✗ ${stripTerminalControls(args.link)}: a voided question cannot be edited`); process.exit(ASK_EXIT_ERROR); }
   if (!t) process.exit(ASK_EXIT_ERROR);
   const old = t.parsed;
   const encode = async (raw: string): Promise<string> => {
@@ -4051,8 +4051,8 @@ async function cmdAskEdit(token: string, args: {
   const choicesChanged = JSON.stringify(choices.map(askFlatten)) !== JSON.stringify(oldChoices.map(askFlatten));
   if (choicesChanged && await askHasResponses(token, t, self, args.cookie)) {
     console.error(
-      `✗ この質問にはもう回答（リアクションか返信）があります — 選択肢を変えると、押されたリアクションの意味が変わってしまいます。\n` +
-      `  質問文と本文は変えられます。選択肢を変えるなら無効化して出し直してください:\n` +
+      `✗ This question already has responses (reactions or replies) — changing the choices would change what the pressed reactions mean.\n` +
+      `  The question and body can still be changed. To change the choices, void it and ask again:\n` +
       `  slack ask --void='${stripTerminalControls(args.link)}' --reask${args.asBot ? " --as-bot" : ""} …`,
     );
     process.exit(ASK_EXIT_ERROR);
@@ -4063,7 +4063,7 @@ async function cmdAskEdit(token: string, args: {
   const tagged = [...`${question}\n${body}`.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)].some((m) => m[1] !== self?.userId);
   const addressed = tagged || /<!(?:here|channel|everyone)/.test(`${question}\n${body}`) || t.channelId.startsWith("D");
   if (!addressed) {
-    console.error(`✗ 誰にも宛てられていない質問になります — 回答できる人を @ で残してください`);
+    console.error(`✗ The question would be addressed to nobody — keep an @mention of who can answer`);
     process.exit(ASK_EXIT_ERROR);
   }
   const lang = args.lang ? askResolveLang({ flag: args.lang })?.lang ?? old.lang : old.lang;
@@ -4077,7 +4077,7 @@ async function cmdAskEdit(token: string, args: {
   if (invalid.length) next = applyInvalidNotice(next, invalid, lang);
   guardUrlBoundaries(next, args.allowUrlAdjacent);
   if (next === oldText) {
-    console.error("変更はありません。");
+    console.error("No changes.");
     return;
   }
 
@@ -4117,7 +4117,7 @@ async function cmdAskEdit(token: string, args: {
     await seedReactionsInOrder(
       [...reactable.map((_, i) => ASK_KEYCAPS[i]!.name), ...tail(seedMarker)],
       (name) => reactionAdd(token, t.channelId, t.ts, name, args.cookie),
-      (name, e) => console.error(`  (リアクション ${name} を付けられませんでした: ${e instanceof Error ? e.message : String(e)})`),
+      (name, e) => console.error(`  (could not add reaction ${name}: ${e instanceof Error ? e.message : String(e)})`),
     );
   } else if (oldSeed !== seedMarker) {
     // An old ❓ pill edited without touching its choices: the body now lists
@@ -4127,10 +4127,10 @@ async function cmdAskEdit(token: string, args: {
       await reactionAdd(token, t.channelId, t.ts, seedMarker, args.cookie);
       await reactionRemove(token, t.channelId, t.ts, oldSeed, args.cookie);
     } catch (e: unknown) {
-      console.error(`  (marker を ${seedMarker} に替えられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+      console.error(`  (could not swap the marker to ${seedMarker}: ${e instanceof Error ? e.message : String(e)})`);
     }
   }
-  console.error(`✓ 編集しました: ${stripTerminalControls(args.link)}`);
+  console.error(`✓ Edited: ${stripTerminalControls(args.link)}`);
 }
 
 /** `slack ask --ls [--stale <dur>] [--state …] [--channel …] [--json]` — the
@@ -4207,7 +4207,7 @@ async function cmdAskLs(tokens: { user?: string; bot?: string; cookie?: string }
     for (const bot of [false, true]) {
       const mine = open.filter((it) => it.asBot === bot);
       if (!mine.length) continue;
-      console.error(`無効化するなら (${mine.length} 件, ${bot ? "bot" : "user"}):\n  slack ask ${mine.map((it) => `--void='${it.link}'`).join(" ")} --reason 'stale'${bot ? " --as-bot" : ""}`);
+      console.error(`To void them (${mine.length}, ${bot ? "bot" : "user"}):\n  slack ask ${mine.map((it) => `--void='${it.link}'`).join(" ")} --reason 'stale'${bot ? " --as-bot" : ""}`);
     }
   }
 }
@@ -4273,7 +4273,7 @@ async function cmdAskPending(
     const asBot = !!row.as_bot;
     const token = asBot ? tokens.bot : tokens.user;
     if (!token) {
-      problems.push(`${link}: ${asBot ? "--as-bot で聞いた質問ですが bot token がありません" : "user token がありません"}`);
+      problems.push(`${link}: ${asBot ? "asked with --as-bot, but there is no bot token" : "no user token"}`);
       continue;
     }
     const cookie = asBot ? undefined : tokens.cookie;
@@ -4284,15 +4284,15 @@ async function cmdAskPending(
     try {
       const loc = { channelId: row.channel, ts: row.ts, threadTs: row.thread_ts ?? undefined };
       const got = await askFetchAt(token, loc, cookie);
-      if (!got.msg) { problems.push(`${link}: メッセージが見つかりません (削除?)`); continue; }
+      if (!got.msg) { problems.push(`${link}: message not found (deleted?)`); continue; }
       const q = await askReadBack(token, { channelId: row.channel, ts: row.ts, msg: got.msg }, cookie);
       const parsed = q.parsed;
       // ✅ already stamped: some `--wait`/`--waitFor` collected it (another
       // machine, another token, or a build before collection was logged).
       if (parsed.kind === "resolved") { count.resolved++; continue; }
       if (parsed.kind === "void") { count.void++; continue; }
-      if (parsed.kind === "other") { problems.push(`${link}: \`slack ask\` の質問として読めません — ${askExplainReject(q.text)}`); continue; }
-      if (!q.audience.size && !q.broadcast) { problems.push(`${link}: 誰にも宛てられていない質問です`); continue; }
+      if (parsed.kind === "other") { problems.push(`${link}: cannot be read as a \`slack ask\` question — ${askExplainReject(q.text)}`); continue; }
+      if (!q.audience.size && !q.broadcast) { problems.push(`${link}: the question is addressed to nobody`); continue; }
       const ctx = askWaitCtxFrom(q, parsed, loc, { timeout: 0, link, asBot, json: false, cookie, after });
       const poller = askPoller(token, ctx, true);
       const found = await poller.poll();
@@ -4301,13 +4301,13 @@ async function cmdAskPending(
       const collect = askResumeCommand(link, asBot, after);
       if (poller.state.explainNow.length) {
         count.explain++;
-        explainAsked.push(`${link}: ℹ️ 説明を求められています (${poller.state.explainNow.map((u) => `<@${u}>`).join(" ")}) — スレッドで説明してください`);
+        explainAsked.push(`${link}: ℹ️ an explanation was requested (${poller.state.explainNow.map((u) => `<@${u}>`).join(" ")}) — explain in the thread`);
       }
       const base = { row, link, question: parsed.question, collect, alive: senderAlive(row) };
       if (found) {
         pending.push({ ...base, answer: found.answer, how: found.how, freeText: false });
       } else if (unchosen && !unchosen.ambiguous && unchosen.text !== row.delivered_answer) {
-        pending.push({ ...base, answer: unchosen.text, how: "返信 (選択肢外)", freeText: true });
+        pending.push({ ...base, answer: unchosen.text, how: "reply (not a choice)", freeText: true });
       } else if (unchosen?.ambiguous) {
         count.ambiguous++;
       } else {
@@ -4345,7 +4345,7 @@ async function cmdAskPending(
       for (const it of items) {
         console.log(`  ${stripTerminalControls(it.link)}  (${formatYmdHm(it.row.sent_at / 1000)})`);
         console.log(`    Q: ${stripTerminalControls(askFlatten(it.question))}`);
-        console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${stripTerminalControls(it.how)}${it.freeText ? " — 決定ではありません" : ""}`);
+        console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${stripTerminalControls(it.how)}${it.freeText ? " — not a decision" : ""}`);
         console.log(`    collect: ${stripTerminalControls(it.collect)}`);
       }
     }
@@ -4353,15 +4353,15 @@ async function cmdAskPending(
   for (const p of problems) console.error(`  (${stripTerminalControls(p)})`);
   for (const p of explainAsked) console.error(`  (${stripTerminalControls(p)})`);
   for (const [team, n] of otherTeams) {
-    console.error(`  (${n} 件は別のワークスペース「${stripTerminalControls(team)}」の質問です — slack -w <name> ask --pending で確認)`);
+    console.error(`  (${n} question(s) belong to another workspace "${stripTerminalControls(team)}" — check with slack -w <name> ask --pending)`);
   }
   console.error(
-    `${pending.length} 件が回答済み・未回収, ${count.unanswered} 件が未回答` +
-    (count.ambiguous ? `, ${count.ambiguous} 件は返信が複数の選択肢に一致 (未確定)` : "") +
-    (count.resolved ? `, ${count.resolved} 件は ✅ 回収済み` : "") +
-    (count.void ? `, ${count.void} 件は無効化済み` : "") +
-    (count.explain ? `, ${count.explain} 件は ℹ️ 説明のリクエストあり` : "") +
-    ` — ${rows.length} 件の未回収の質問を確認 (log: ${sentDbPath()})`,
+    `${pending.length} answered but not collected, ${count.unanswered} unanswered` +
+    (count.ambiguous ? `, ${count.ambiguous} with a reply matching several choices (unsettled)` : "") +
+    (count.resolved ? `, ${count.resolved} ✅ already collected` : "") +
+    (count.void ? `, ${count.void} voided` : "") +
+    (count.explain ? `, ${count.explain} with an ℹ️ explain request` : "") +
+    ` — checked ${rows.length} uncollected question(s) (log: ${sentDbPath()})`,
   );
 }
 
@@ -4385,7 +4385,7 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
     const next = askBuildVoidText(t.parsed.question, reason, t.parsed.lang, t.parsed.body || undefined, supersededBy);
     await editMessage(token, t.channelId, t.ts, next, cookie, true);
   } catch (e: unknown) {
-    console.error(`✗ ${shown}: 書き換えに失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+    console.error(`✗ ${shown}: failed to rewrite: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
   for (const name of [...t.parsed.reactable.map((_, i) => ASK_KEYCAPS[i]!.name), t.seedMarker, ...(t.parsed.explain ? [ASK_EXPLAIN_MARKER] : [])]) {
@@ -4394,9 +4394,9 @@ async function askApplyVoid(token: string, t: AskVoidTarget, reason: string, sup
   try {
     await reactionAdd(token, t.channelId, t.ts, ASK_VOID_MARKER, cookie);
   } catch (e: unknown) {
-    console.error(`  (${shown}: 🚫 リアクションを付けられませんでした: ${e instanceof Error ? e.message : String(e)})`);
+    console.error(`  (${shown}: could not add the 🚫 reaction: ${e instanceof Error ? e.message : String(e)})`);
   }
-  console.error(`✓ 無効化: ${shown}`);
+  console.error(`✓ Voided: ${shown}`);
   return true;
 }
 
@@ -4436,11 +4436,11 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
         process.exit(ASK_EXIT_ERROR);
       }
     } catch (e: unknown) {
-      console.error(`Error: --superseded-by を確認できません: ${shown} (${e instanceof Error ? e.message : String(e)})`);
+      console.error(`Error: cannot check --superseded-by: ${shown} (${e instanceof Error ? e.message : String(e)})`);
       process.exit(ASK_EXIT_ERROR);
     }
     if (!found) {
-      console.error(`Error: --superseded-by のメッセージが見つかりません: ${shown}`);
+      console.error(`Error: --superseded-by message not found: ${shown}`);
       process.exit(ASK_EXIT_ERROR);
     }
   }
@@ -4450,21 +4450,21 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
   for (const link of args.links) {
     const shown = stripTerminalControls(link);
     const got = await askFetchByLink(token, link, args.cookie);
-    if (!got) { console.error(`✗ ${shown}: permalink (または 'C…:1700000000.000100') ではありません`); refused++; continue; }
-    if (!got.msg) { console.error(`✗ ${shown}: メッセージが見つかりません`); refused++; continue; }
+    if (!got) { console.error(`✗ ${shown}: not a permalink (or 'C…:1700000000.000100')`); refused++; continue; }
+    if (!got.msg) { console.error(`✗ ${shown}: message not found`); refused++; continue; }
     const msg = got.msg;
     const own = (!!self?.userId && msg.user === self.userId) || (!!self?.botId && msg.bot_id === self.botId);
     if (!own) {
-      console.error(`✗ ${shown}: 自分（${senderLabel(self, args.asBot)}）が投稿した質問ではないので無効化できません` +
-        `${args.asBot ? "" : " — bot が出した質問なら --as-bot で"}`);
+      console.error(`✗ ${shown}: not a question posted by you (${senderLabel(self, args.asBot)}), so it cannot be voided` +
+        `${args.asBot ? "" : " — if the bot posted it, use --as-bot"}`);
       refused++;
       continue;
     }
     const text = typeof msg.text === "string" ? msg.text : "";
     let parsed = askParseMessage(text);
     let unreadable = false;
-    if (parsed.kind === "void") { console.error(`- ${shown}: すでに無効化済みです（何もしません）`); continue; }
-    if (parsed.kind === "resolved") { console.error(`✗ ${shown}: 回答済みの質問は無効化できません（回答: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")}）`); refused++; continue; }
+    if (parsed.kind === "void") { console.error(`- ${shown}: already voided (nothing to do)`); continue; }
+    if (parsed.kind === "resolved") { console.error(`✗ ${shown}: an answered question cannot be voided (answer: ${stripTerminalControls(parsed.answer.split("\n")[0] ?? "")})`); refused++; continue; }
     if (parsed.kind !== "open") {
       // Our own ❓ question whose layout no longer parses (2026-10-01: a
       // `slack edit` flattened one; it could then be neither collected nor
@@ -4472,7 +4472,7 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
       // with it, so it is voided from a best-effort read — question and body
       // kept as they are, our own seeded pills removed — and the gate says so.
       const salvage = askSalvageUnreadable(text);
-      if (!salvage) { console.error(`✗ ${shown}: \`slack ask\` の質問として読み取れません — ${askExplainReject(text)}`); refused++; continue; }
+      if (!salvage) { console.error(`✗ ${shown}: cannot be read as a \`slack ask\` question — ${askExplainReject(text)}`); refused++; continue; }
       const seeded = asArray(msg.reactions).map(asRecord)
         .filter((r) => asArray(r.users).includes(self?.userId ?? "\u0000"))
         .map((r) => ASK_KEYCAPS.findIndex((k) => k.name === r.name))
@@ -4499,14 +4499,14 @@ async function cmdAskVoid(token: string, args: { links: string[]; reason: string
     targets.push({ link, channelId: got.channelId, ts: got.ts, text, parsed, seedMarker, pressed, ...(unreadable ? { unreadable } : {}) });
   }
   if (!targets.length) {
-    console.error(refused ? "無効化できる質問がありません。" : "何もすることがありません。");
+    console.error(refused ? "No questions can be voided." : "Nothing to do.");
     process.exit(refused ? ASK_EXIT_ERROR : 0);
   }
 
   const code = safetyCode("ask-void", ...targets.map((t) => `${t.channelId}:${t.ts}`), args.reason, args.supersededBy ?? "", self?.userId ?? "");
   if (args.code !== code) {
     requireCode(args.code, code, [
-      `--- 無効化 (void) -------------------------------`,
+      `--- Void -----------------------------------------`,
       fromLine(self, { asBot: args.asBot }),
       `  Reason:   ${args.reason ? stripTerminalControls(args.reason) : "(none)"}`,
       ...(args.supersededBy ? [`  Replaced: ${stripTerminalControls(args.supersededBy)}`] : []),
@@ -4561,7 +4561,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
 
   const got = await askFetchAt(token, { channelId, ts, threadTs }, args.cookie);
   if (!got.msg) {
-    console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(args.link)}`);
+    console.error(`Error: message not found: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
   }
   const msg = got.msg;
@@ -4569,12 +4569,12 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   const { text, parsed, audience, broadcast, askerUserId, askerBotId } = q;
   if (parsed.kind === "other") {
     console.error(
-      `Error: これは \`slack ask\` の質問として読み取れません。\n` +
-      `  理由: ${askExplainReject(text)}\n` +
+      `Error: this cannot be read as a \`slack ask\` question.\n` +
+      `  Reason: ${askExplainReject(text)}\n` +
       `  ${stripTerminalControls(args.link)}\n` +
       // The pills are still readable by hand, so a failure here is not a dead
       // end — say so, because the reported cost was not knowing that.
-      `  (押されたリアクションは残っています: slack read '${stripTerminalControls(args.link)}' で確認できます)`,
+      `  (the pressed reactions are still there: check with slack read '${stripTerminalControls(args.link)}')`,
     );
     process.exit(ASK_EXIT_ERROR);
   }
@@ -4606,7 +4606,7 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
     // What must not come back is the reply that IS the answer. The ✅ stamp says
     // whether the answer was a reply, and which number it picked: the first
     // audience reply before the ✅ edit that reads as that answer is it.
-    console.error(`✓ 回答済み: ${stripTerminalControls(parsed.question)}`);
+    console.error(`✓ Answered: ${stripTerminalControls(parsed.question)}`);
     const editedTs = typeof asRecord(msg.edited).ts === "string" ? String(asRecord(msg.edited).ts) : undefined;
     const how = askResolvedHow(text);
     let answerSkipped = false;
@@ -4639,12 +4639,12 @@ async function cmdAskWaitFor(token: string, args: { link: string; timeout: numbe
   }
 
   if (!audience.size && !broadcast) {
-    console.error(`Error: この質問は誰にも宛てられていないため、有効な回答者を判定できません: ${stripTerminalControls(args.link)}`);
+    console.error(`Error: this question is addressed to nobody, so valid answerers cannot be determined: ${stripTerminalControls(args.link)}`);
     process.exit(ASK_EXIT_ERROR);
   }
 
   if (args.timeout > 0) {
-    console.error(`  回答を待っています (最大 ${args.timeout}s)… Ctrl-C で中断`);
+    console.error(`  Waiting for an answer (up to ${args.timeout}s)… Ctrl-C to stop`);
   }
   await askWaitForAnswer(token, askWaitCtxFrom(q, parsed, { channelId, ts, threadTs }, args));
 }
@@ -4849,9 +4849,9 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
       fromLine(self, { asBot: args.asBot }),
       `  → ${dest}${threadTs ? " — THREAD REPLY" : " — NEW top-level message"}`,
       `  Question: ${question}`,
-      `  Rule:     ${multi ? "1 人 何票でも (--multi)" : "1 人 1 票"}${until ? ` — 締切 ${until}` : ""}`,
+      `  Rule:     ${multi ? "any number of votes per person (--multi)" : "one vote per person"}${until ? ` — closes ${until}` : ""}`,
       // Said out loud at the gate: this is the surprising half of the command.
-      `  Note:     あなた自身の票は数えません (ピルはあなたが付けた種なので区別できません)`,
+      `  Note:     your own votes are not counted (the pills are seeds you added, so they can't be told apart)`,
       `--------------------------------────────────`,
     ], recipientTz);
   }
@@ -4875,8 +4875,8 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
       const why = e instanceof Error ? e.message : String(e);
       // A missing seed costs a voter a trip to the emoji picker; it does not
       // invalidate a poll that is already posted.
-      if (name === POLL_MARKER) console.error(`  (marker ${name} を付けられませんでした: ${why})`);
-      else console.error(`  (リアクション ${name} を付けられませんでした: ${why})`);
+      if (name === POLL_MARKER) console.error(`  (could not add marker ${name}: ${why})`);
+      else console.error(`  (could not add reaction ${name}: ${why})`);
     },
   );
 
@@ -4890,7 +4890,7 @@ async function cmdPoll(token: string, args: PollArgs): Promise<void> {
   console.error(`✓ Posted: ${shown}`);
   attr.record({ team: self?.team, channel: channelId, target: args.target, ts, threadTs, permalink, text: message, asBot: args.asBot });
   console.log(pollResultsCommand(shown));
-  console.error(`  締め切る:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
+  console.error(`  To close:  slack poll --close='${shown}'${args.asBot ? " --as-bot" : ""}`);
 }
 
 /** Locate + read back one posted poll. Shared by `--results` and `--close`,
@@ -4929,7 +4929,7 @@ async function pollFetch(token: string, link: string, cookie?: string): Promise<
     msg = asArray(hist.messages).map(asRecord).find((m) => m.ts === ts);
   }
   if (!msg) {
-    console.error(`Error: そのメッセージが見つかりません: ${stripTerminalControls(link)}`);
+    console.error(`Error: message not found: ${stripTerminalControls(link)}`);
     process.exit(POLL_EXIT_ERROR);
   }
   return { channelId, ts, msg };
@@ -4953,7 +4953,7 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
   const parsed = pollParseMessage(text);
   if (parsed.kind === "other") {
     console.error(
-      `Error: これは \`slack poll\` の投票ではありません (票の数え方が分かりません)。\n` +
+      `Error: this is not a \`slack poll\` poll (don't know how to count its votes).\n` +
       `  ${stripTerminalControls(args.link)}`,
     );
     process.exit(POLL_EXIT_ERROR);
@@ -4961,7 +4961,7 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
   if (parsed.kind === "closed") {
     // Already closed: report what was RECORDED, never a fresh count. A pill
     // pressed after closing would otherwise silently change a settled result.
-    console.error(`✓ 投票終了: ${stripTerminalControls(parsed.question)}`);
+    console.error(`✓ Poll closed: ${stripTerminalControls(parsed.question)}`);
     for (const line of pollFormatTallies(parsed.tallies)) console.log(line);
     return;
   }
@@ -4974,10 +4974,10 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
   const reactions = await reactionsGet(token, channelId, ts, args.cookie);
   const counted = pollTally(parsed.choices, reactions, exclude, parsed.multi);
 
-  console.error(`${stripTerminalControls(parsed.question)}${parsed.deadline ? ` (締切 ${parsed.deadline})` : ""}`);
+  console.error(`${stripTerminalControls(parsed.question)}${parsed.deadline ? ` (closes ${parsed.deadline})` : ""}`);
   for (const line of pollFormatTallies(counted.tallies)) console.log(line);
   const total = counted.tallies.reduce((n, t) => n + t.count, 0);
-  console.error(`  計 ${total} 票${parsed.multi ? " (複数選択可)" : ""}`);
+  console.error(`  ${total} vote(s) total${parsed.multi ? " (multiple choice)" : ""}`);
   if (args.names) {
     for (let i = 0; i < counted.voters.length; i++) {
       if (!counted.voters[i]!.length) continue;
@@ -4996,8 +4996,8 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
       await editMessage(args.writeToken ?? token, channelId, ts, nextText, args.writeToken ? args.writeCookie : args.cookie, true);
     } catch (e: unknown) {
       console.error(
-        `  (投票文に注意書きを入れられませんでした: ${e instanceof Error ? e.message : String(e)})\n` +
-        `   メッセージを書き換えられるのは投稿者だけです — bot が投稿した投票なら --as-bot を付けてください。`,
+        `  (could not add the notice to the poll text: ${e instanceof Error ? e.message : String(e)})\n` +
+        `   Only the poster can rewrite a message — if the bot posted the poll, add --as-bot.`,
       );
     }
   }
@@ -5005,7 +5005,7 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
     // Not counted for anything, and said so out loud: a reaction carries no
     // timestamp anywhere in the Slack API, so "the latest one" does not exist.
     const names = await Promise.all(counted.ambiguous.map((u) => userName(token, u, args.cookie)));
-    console.error(`⚠ 1 人 1 票なのに複数押している人がいます (無効票): ${names.map((n) => `@${stripTerminalControls(n)}`).join(", ")}`);
+    console.error(`⚠ One vote per person, but some people pressed several (invalid votes): ${names.map((n) => `@${stripTerminalControls(n)}`).join(", ")}`);
   }
 
   if (!args.close) return;
@@ -5022,7 +5022,7 @@ async function cmdPollResults(token: string, args: { link: string; close?: boole
   } catch {
     // Cosmetic: the 📊 body is what makes it closed.
   }
-  console.error(`✓ 投票を締め切りました: ${stripTerminalControls(args.link)}`);
+  console.error(`✓ Closed the poll: ${stripTerminalControls(args.link)}`);
 }
 
 async function cmdDoctor(token: string): Promise<void> {
@@ -6730,7 +6730,7 @@ async function main(): Promise<void> {
     )
     .command(
       "ask [target] [question] [choices..]",
-      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate). Lifecycle: --waitFor=<link> collect, --void=<link> 無効化 (verb aliases: `ask collect <link>`, `ask void <link…>`)",
+      "Ask a question with its choices pre-seeded as 1️⃣..🔟 reactions (confirm-hash safety gate). Lifecycle: --waitFor=<link> collect, --void=<link> void (verb aliases: `ask collect <link>`, `ask void <link…>`)",
       (y) => y
         .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --waitFor)" })
         .positional("question", { type: "string", describe: "The question. Must @tag whoever may answer (@alice), or the whole channel (@here / @channel / @everyone) — only their answer counts. In a 1:1 DM the other party counts automatically." })
@@ -6739,10 +6739,10 @@ async function main(): Promise<void> {
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
         .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
-        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (無効化, `slack ask void`) — stop waiting. 7 = only with --explain-exit: ℹ️ pressed, explain and collect again (the question stays open)." })
+        .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (`slack ask void`) — stop waiting. 7 = only with --explain-exit: ℹ️ pressed, explain and collect again (the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted (except, on an --explain question someone pressed ℹ️ on, one thread note per question). Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
-        .option("void", { type: "string", array: true, describe: "無効化: void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
+        .option("void", { type: "string", array: true, describe: "Void question(s) you posted that expired or stopped meaning anything — --void=<permalink>, repeatable. The text becomes 🚫 with --reason (body kept, options removed), our pills come off, and --wait/--waitFor on it exits 6. Same --code gate. Only your own questions (--as-bot for the bot's). Alias: `slack ask void <link…>`." })
         .option("reask", { type: "boolean", default: false, describe: "With ONE --void: post the question again (same channel/thread, same text and choices unless you give new ones as positionals / --body) and void the old one as replaced by it — one gate for both. The way to change the options of a question someone already answered." })
         .option("edit", { type: "string", describe: "Change an open question you posted: --edit=<permalink> [\"new question\" [choices…]] [--body …]. Rebuilt with the ask layout so collect still reads it. Options can change only while nobody has answered (then: --void=<link> --reask). Same --code gate." })
         .option("ls", { type: "boolean", default: false, describe: "List the questions you posted (local sent-log) with their LIVE state: --state open|answered|void|all (default open), --stale 24h, --channel, --json. With --stale it prints the --void command that would retire them." })
@@ -6868,7 +6868,7 @@ async function main(): Promise<void> {
           const { token, cookie } = askTokenFor(!!argv["as-bot"]);
           const self = await selfIdentity(token, cookie);
           const t = await askLoadOwnOpen(token, voidFlag[0]!, self, !!argv["as-bot"], cookie);
-          if (t === "void") { console.error(`✗ ${stripTerminalControls(voidFlag[0]!)}: すでに無効化済みです — 新しく聞くなら普通に slack ask で`); process.exit(ASK_EXIT_ERROR); }
+          if (t === "void") { console.error(`✗ ${stripTerminalControls(voidFlag[0]!)}: already voided — to ask again, just use slack ask`); process.exit(ASK_EXIT_ERROR); }
           if (!t) process.exit(ASK_EXIT_ERROR);
           voidAfter = { ...t, reason: unescapeArg(String(argv.reason ?? "")).trim() };
           // Same place, same words, unless new ones were given. The create path
@@ -7067,7 +7067,7 @@ async function main(): Promise<void> {
         .positional("target", { type: "string", describe: "#chan, @user, #chan:thread_ts, or permalink (omit with --results/--close)" })
         .positional("question", { type: "string", describe: "The question. @tags are optional here — unlike `ask`, a poll needs no addressee: anyone who can see it may vote." })
         .positional("choices", { type: "string", array: true, describe: "2..10 choices, seeded as 1️⃣..🔟 reactions for voters to click" })
-        .option("multi", { type: "boolean", default: false, describe: "Let one person pick several choices (default: 1 人 1 票)" })
+        .option("multi", { type: "boolean", default: false, describe: "Let one person pick several choices (default: one vote per person)" })
         .option("until", { type: "string", describe: "Deadline shown in the message (display only — closing is still `--close`)" })
         .option("results", { type: "string", describe: "Count an existing poll: pass its permalink. Posts nothing; only edit is the invalid-ballot notice in the poll itself (--no-notify to suppress)." })
         .option("close", { type: "string", describe: "Count an existing poll AND freeze the tally into the message. Only the poster can do this." })

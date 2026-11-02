@@ -171,7 +171,7 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
       expect(o.status).toBe("timeout");
       expect(o.answer).toBe(null);
       expect(o.explain).toEqual([BOB]);
-      expect(r.stderr).toContain(`<@${BOB}> が ℹ️ 説明して を押しました`);
+      expect(r.stderr).toContain(`<@${BOB}> pressed ℹ️ explain`);
       expect(m.requests.some((q) => q.method === "chat.update")).toBe(false);
       expect(m.requests.some((q) => q.method === "reactions.remove")).toBe(false);
       const p = posts(m);
@@ -253,7 +253,7 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
     try {
       const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "3", "--explain-exit"], m.baseUrl);
       expect(r.exitCode).toBe(2);
-      expect(r.stderr).toContain("説明リクエストの案内をスレッドに出せませんでした");
+      expect(r.stderr).toContain("could not post the explain-request note to the thread");
       // Tried once this run, not on every tick.
       expect(m.requests.filter((q) => q.method === "chat.postMessage").length).toBe(1);
     } finally {
@@ -308,7 +308,7 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
       const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit", "--json"], m.baseUrl);
       expect(r.exitCode).toBe(2);
       expect(JSON.parse(r.stdout.trim()).explain).toBeUndefined();
-      expect(r.stderr).not.toContain("説明して を押しました");
+      expect(r.stderr).not.toContain("pressed ℹ️ explain");
       expect(posts(m).length).toBe(0);
     } finally {
       await m.stop();
@@ -333,7 +333,7 @@ describe("ask --waitFor with ℹ️ pressed (CLI)", { timeout: 90_000 }, () => {
     try {
       const r = await run(["ask", "--waitFor", `${CHAN}:${QTS}`, "--timeout", "0", "--explain-exit"], m.baseUrl);
       expect(r.exitCode).toBe(2);
-      expect(r.stderr).not.toContain("説明して を押しました");
+      expect(r.stderr).not.toContain("pressed ℹ️ explain");
       expect(posts(m).length).toBe(0);
     } finally {
       await m.stop();
