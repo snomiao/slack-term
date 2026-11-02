@@ -322,6 +322,8 @@ slack reply --to <permalink> 'on it'           # replies in the thread where tha
 slack reply board 'on it' --to <permalink>     # exit 2 when that message is in another thread (--any-thread overrides)
 slack send '#chan:<ts>' 'x' --to <permalink>   # the same check on send
 slack alias unset board
+slack tick <permalink> 2                       # ⬜ 2. → ✅ 2. in a posted checklist, nothing else changed
+slack edit <permalink> 'new text'              # in a [lane] scope the lane tag the message was posted with is kept
 ```
 
 - **`settings.yml`** is for people to edit. It holds `prefix`, `channel` (used for a bare `<ts>` destination), `as_bot` and `subscriptions`.

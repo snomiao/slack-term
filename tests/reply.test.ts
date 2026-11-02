@@ -28,6 +28,7 @@ const fixtures = {
   [`conversations.replies__channel=C00000001&limit=1&ts=${ROOT_TS}`]: thread(ROOT_TS),
   [`conversations.replies__channel=C00000001&limit=1&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
   [`conversations.replies__channel=C00000001&limit=100&ts=${OTHER_ROOT}`]: thread(OTHER_ROOT),
+  "conversations.replies__channel=C00000001&limit=1&ts=1700000000.000400": { ok: true, messages: [{ type: "message", user: "U00000001", text: "[design] plan\n⬜ 1. build\n⬜ 2. test", ts: "1700000000.000400" }] },
   "users.info__user=U00000002": { ok: true, user: { id: "U00000002", name: "bob", real_name: "Bob", profile: { display_name: "" } } },
   "conversations.info__channel=C00000001": { ok: true, channel: { id: "C00000001", name: "channel-01" } },
   "chat.getPermalink__channel=C00000001&message_ts=1700000000.000100": { ok: true, channel: "C00000001", permalink: "https://acme.slack.com/archives/C00000001/p1700000000000100" },
@@ -224,5 +225,29 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     expect(r.stderr).toContain(`skipped 1 line(s) for lane "nobody"`);
     expect(existsSync(join(guide, ".slack-term", ".gitignore"))).toBe(true);
     expect(readFileSync(join(guide, ".slack-term", "settings.yml"), "utf8")).toContain(`t-${OTHER_ROOT}`);
+  });
+});
+
+describe("tick / edit keep the lane (CLI)", { timeout: 90_000 }, () => {
+  const LIST = "https://acme.slack.com/archives/C00000001/p1700000000000400";
+  test("tick 2: gate shows the ticked text, then chat.update changes only that item", async () => {
+    const dry = await run(["tick", LIST, "2"]);
+    expect(dry.exitCode).toBe(1);
+    expect(dry.stdout).toContain("✅ 2. test");
+    const before = mock.requests.length;
+    const r = await run(["tick", LIST, "2", `--code=${code(dry.stderr)}`]);
+    expect(r.exitCode).toBe(0);
+    const upd = mock.requests.slice(before).find((q) => q.method === "chat.update")!;
+    expect((JSON.parse(upd.body) as { text: string }).text).toBe("[design] plan\n⬜ 1. build\n✅ 2. test");
+  });
+  test("tick without n and two open items: exit 2, names them", async () => {
+    const r = await run(["tick", LIST]);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("several open items (1, 2)");
+  });
+  test("edit in a [design] scope keeps the tag", async () => {
+    const dry = await run(["edit", LIST, "rewritten"]);
+    expect(dry.exitCode).toBe(1);
+    expect(dry.stdout).toContain("  [design] rewritten");
   });
 });

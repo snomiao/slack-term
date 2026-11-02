@@ -50,6 +50,7 @@ import {
   type AskLang,
 } from "./ask.ts";
 import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
+import { keepLanePrefix, tickText } from "./tick.ts";
 import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent as recordOutboxSent } from "./inbox.ts";
 import {
   POLL_KEYCAPS,
@@ -1571,6 +1572,12 @@ interface EditArgs {
    *  `send --as-bot`. */
   mentionToken?: string;
   mentionCookie?: string;
+  /** `slack tick`: the new text is the original with item `n` (or the one open
+   *  item) ticked — computed from what is stored, so nothing else changes. */
+  tick?: { n?: number };
+  /** The scope's `[lane]` prefix: an edit keeps the lane tag the original
+   *  was posted with. */
+  lanePrefix?: string;
 }
 /** The bot token, plus the bot↔user DM when the target names an `@handle`.
  *
@@ -1641,11 +1648,24 @@ async function cmdEdit(token: string, args: EditArgs): Promise<void> {
   }
   const originalText = typeof original.text === "string" ? original.text : "";
 
+  let wanted = args.newText;
+  if (args.tick) {
+    const r = tickText(originalText, args.tick.n);
+    if (r.kind === "already") { console.log(`already ticked (${r.n}.)`); process.exit(0); }
+    if (r.kind === "none") { console.error("Error: the message has no ⬜ <n>. item"); process.exit(2); }
+    if (r.kind === "missing") { console.error(`Error: the message has no ⬜ ${r.n}. item`); process.exit(2); }
+    if (r.kind === "ambiguous") { console.error(`Error: several open items (${r.open.join(", ")}): name one, e.g. slack tick <target> ${r.open[0]}`); process.exit(2); }
+    wanted = r.text;
+  } else {
+    wanted = keepLanePrefix(originalText, wanted, args.lanePrefix);
+  }
+
   // Convert @handle → <@USERID> before hashing/editing (unresolved stay as text).
+  // A tick rewrites stored text, whose mentions are encoded already.
   const mentionCookie = args.mentionCookie ?? args.cookie;
-  const newText = args.mentions
-    ? await encodeMentions(args.mentionToken ?? token, args.newText, channelId, mentionCookie ? { cookie: mentionCookie } : {})
-    : args.newText;
+  const newText = args.mentions && !args.tick
+    ? await encodeMentions(args.mentionToken ?? token, wanted, channelId, mentionCookie ? { cookie: mentionCookie } : {})
+    : wanted;
 
   guardUrlBoundaries(newText, args.allowUrlAdjacent);
 
@@ -5590,6 +5610,64 @@ async function main(): Promise<void> {
     "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined; "user-id"?: string | undefined;
     "as-bot"?: boolean | undefined; broadcast?: boolean | undefined; mentions?: boolean | undefined;
   };
+  /** The `edit` handler, shared with `tick`. In a .slack-term/ scope the
+   *  lane's tag is kept; in a restricted one the message must sit in one of
+   *  its subscriptions. */
+  type EditCli = {
+    workspace?: string | undefined; target?: string | undefined; newText?: string | undefined; code?: string | undefined;
+    force?: boolean | undefined; "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined;
+    mentions?: boolean | undefined; "as-bot"?: boolean | undefined; tick?: { n?: number } | undefined;
+  };
+  const runEdit = async (argv: EditCli): Promise<void> => {
+    const scope = findScope();
+    const settings = readSettings(scope);
+    if (isRestricted(scope)) {
+      try {
+        const place = await messagePlace(tok(argv as W), argv.target!, ck(argv as W));
+        if (!listAliases(scope).some((a) => a.channel === place.channel && (a.thread_ts === undefined || a.thread_ts === place.root))) {
+          console.error(`Error: that message is not in one of ${scope.dir}'s subscriptions (restrict_to_subscriptions)`);
+          process.exit(2);
+        }
+      } catch (e: unknown) {
+        console.error(friendlySlackError(e));
+        process.exit(1);
+      }
+    }
+    const args: EditArgs = { target: argv.target!, newText: argv.newText ?? "", allowUrlAdjacent: argv["allow-url-adjacent"] === true };
+    if (argv.tick) args.tick = argv.tick;
+    if (settings.prefix) args.lanePrefix = settings.prefix;
+    if (argv.force) args.force = true;
+    if (argv.code) args.code = argv.code;
+    if (argv["channel-id"]) args.channelId = argv["channel-id"];
+    if (argv.mentions !== false) args.mentions = true;
+    let editToken: string;
+    if (argv["as-bot"]) {
+      // --as-bot is not a switch on chat.update. It selects a DIFFERENT
+      // resolved token, and until now `edit` never wired one — so every
+      // message the bot posted was uncorrectable, and the workaround people
+      // reached for was RESENDING, which this repo's own etiquette forbids.
+      // Bot identity is what makes a DM notify at all, so "uncorrectable"
+      // applied to exactly the messages that matter most.
+      const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
+      editToken = resolved.botToken;
+      if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
+      args.asBot = true;
+      // Mentions still resolve on the USER token: the bot has no users:read,
+      // and a silently unresolved @handle in a CORRECTION is the same defect
+      // twice.
+      args.mentionToken = tok(argv as W);
+      const mc = ck(argv as W);
+      if (mc) args.mentionCookie = mc;
+    } else {
+      editToken = tok(argv as W);
+      // Not set under --as-bot: a bot token needs no session cookie, and
+      // attaching one is how a working call starts failing.
+      const cookie = ck(argv as W);
+      if (cookie) args.cookie = cookie;
+    }
+    await cmdEdit(editToken, args);
+  };
+
   const runSend = async (argv: SendCli): Promise<void> => {
     // An empty body is never a meaningful send. `ask` already refuses one
     // ("Error: question is empty"); `send` did not, so an empty draft
@@ -7207,39 +7285,18 @@ async function main(): Promise<void> {
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
         .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),
-      async (argv) => {
-        const args: EditArgs = { target: argv.target!, newText: argv.newText!, allowUrlAdjacent: argv["allow-url-adjacent"] };
-        if (argv.force) args.force = true;
-        if (argv.code) args.code = argv.code;
-        if (argv["channel-id"]) args.channelId = argv["channel-id"];
-        if (argv.mentions !== false) args.mentions = true;
-        let editToken: string;
-        if (argv["as-bot"]) {
-          // --as-bot is not a switch on chat.update. It selects a DIFFERENT
-          // resolved token, and until now `edit` never wired one — so every
-          // message the bot posted was uncorrectable, and the workaround people
-          // reached for was RESENDING, which this repo's own etiquette forbids.
-          // Bot identity is what makes a DM notify at all, so "uncorrectable"
-          // applied to exactly the messages that matter most.
-          const resolved = await asBotTarget(args.target, tok(argv as W), ck(argv as W), args.channelId);
-          editToken = resolved.botToken;
-          if (resolved.channelId && !args.channelId) args.channelId = resolved.channelId;
-          args.asBot = true;
-          // Mentions still resolve on the USER token: the bot has no users:read,
-          // and a silently unresolved @handle in a CORRECTION is the same defect
-          // twice.
-          args.mentionToken = tok(argv as W);
-          const mc = ck(argv as W);
-          if (mc) args.mentionCookie = mc;
-        } else {
-          editToken = tok(argv as W);
-          // Not set under --as-bot: a bot token needs no session cookie, and
-          // attaching one is how a working call starts failing.
-          const cookie = ck(argv as W);
-          if (cookie) args.cookie = cookie;
-        }
-        await cmdEdit(editToken, args);
-      },
+      async (argv) => runEdit(argv),
+    )
+    .command(
+      "tick <target> [n]",
+      "Tick item n of a posted checklist (⬜ n. → ✅ n.), nothing else changed; without n, the one open item (confirm-hash gate, like edit)",
+      (y) => y
+        .positional("target", { type: "string", demandOption: true, describe: "#chan:ts, @user:ts, or permalink" })
+        .positional("n", { type: "number", describe: "Item number" })
+        .option("code", { type: "string", describe: "Safety hash to confirm the edit" })
+        .option("channel-id", { type: "string", describe: "Raw channel ID" })
+        .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (needed for a message the bot posted)" }),
+      async (argv) => runEdit({ ...argv, tick: argv.n !== undefined ? { n: argv.n } : {}, mentions: false }),
     )
     .command(
       "delete <target>",
