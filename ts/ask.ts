@@ -852,3 +852,18 @@ export function askMatchChoice(reply: string, choices: string[]): AskChoiceMatch
   if (indexes.length > 1) return { kind: "ambiguous", indexes };
   return { kind: "chosen", index: indexes[0]! };
 }
+
+/** `--waitFor` polls `conversations.replies` (or history) on a φ-growing
+ *  delay. That method's rate limit is per app, shared by every waiter on the
+ *  same token and by `slack stream`'s thread reads: eight waiters held at 5 s
+ *  made ~96 calls a minute against Tier 3's ~50 and kept the bucket at 429, so
+ *  every thread-reply doorbell waited out a Retry-After. A question answered
+ *  within its first minutes still gets the fast poll; a long wait settles at
+ *  `slowMaxMs` instead. */
+export const ASK_POLL = { phi: 1.618033988749895, minMs: 1000, fastMaxMs: 5000, fastWindowMs: 120_000, slowMaxMs: 20_000 } as const;
+
+/** The next poll delay, `elapsedMs` into the wait. */
+export function askNextPollDelay(prevMs: number, elapsedMs: number): number {
+  const cap = elapsedMs < ASK_POLL.fastWindowMs ? ASK_POLL.fastMaxMs : ASK_POLL.slowMaxMs;
+  return Math.min(Math.max(prevMs, ASK_POLL.minMs) * ASK_POLL.phi, cap);
+}

@@ -48,6 +48,8 @@ import {
   ASK_LANGS,
   type AskFound,
   type AskLang,
+  ASK_POLL,
+  askNextPollDelay,
 } from "./ask.ts";
 import { applyPrefix, findScope, initScope, isRestricted, listAliases, lookupAlias, readSettings, RestrictedError, setAlias, threadMismatch, unsetAlias, whoSubscribes, type MessagePlace, type Scope } from "./scope.ts";
 import { keepLanePrefix, tickText } from "./tick.ts";
@@ -112,6 +114,7 @@ import {
   send as slackSend,
   pinsAdd,
   RateLimitError,
+  setRateLimitWait,
   repliesCursor,
   type MessageMetadata,
   getPermalink,
@@ -2799,9 +2802,6 @@ function askExplainDefault(): boolean {
   return /^(1|true|yes|on)$/i.test(process.env.SLACK_TERM_ASK_EXPLAIN ?? "");
 }
 
-const ASK_PHI = 1.618033988749895;
-const ASK_POLL_MIN_MS = 1000;
-const ASK_POLL_MAX_MS = 5000;
 const ASK_MAX_CONSECUTIVE_ERRORS = 8;
 
 
@@ -3492,8 +3492,11 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
   }
 
   const deadline = Date.now() + timeout * 1000;
+  const started = Date.now();
   let errors = 0;
-  let delay = ASK_POLL_MIN_MS;
+  let delay: number = ASK_POLL.minMs;
+  /** A 429's Retry-After: the next poll waits at least this long. */
+  let coolMs = 0;
   let unchosen: AskPollState["unchosen"];
   for (;;) {
     let found: AskFound | null = null;
@@ -3501,13 +3504,19 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
       found = await poll();
       errors = 0;
     } catch (e: unknown) {
-      // A dropped poll is expected occasionally; only give up if it keeps failing.
-      errors++;
-      if (errors >= ASK_MAX_CONSECUTIVE_ERRORS) {
-        console.error(`Error: Slack への問い合わせに ${errors} 回連続で失敗しました: ${e instanceof Error ? e.message : String(e)}`);
-        process.exit(ASK_EXIT_ERROR);
+      if (e instanceof RateLimitError) {
+        // Not a failure: the bucket is shared with every other waiter on this
+        // token. Polling again before Retry-After only keeps it at 429.
+        coolMs = e.retryAfter * 1000;
+      } else {
+        // A dropped poll is expected occasionally; only give up if it keeps failing.
+        errors++;
+        if (errors >= ASK_MAX_CONSECUTIVE_ERRORS) {
+          console.error(`Error: Slack への問い合わせに ${errors} 回連続で失敗しました: ${e instanceof Error ? e.message : String(e)}`);
+          process.exit(ASK_EXIT_ERROR);
+        }
+        console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
       }
-      console.error(`  (Slack エラー ${errors}/${ASK_MAX_CONSECUTIVE_ERRORS}, 再試行します: ${e instanceof Error ? e.message : String(e)})`);
     }
     unchosen = state.unchosen;
     const voided = state.voided;
@@ -3598,8 +3607,9 @@ async function askWaitForAnswer(token: string, ctx: AskWaitCtx): Promise<never> 
     // Checked after the first poll, never before it: `--timeout 0` means one
     // look, and one look must still be a real look.
     if (Date.now() >= deadline) break;
-    await askSleep(Math.min(delay, Math.max(0, deadline - Date.now())));
-    delay = Math.min(delay * ASK_PHI, ASK_POLL_MAX_MS);
+    await askSleep(Math.min(Math.max(delay, coolMs), Math.max(0, deadline - Date.now())));
+    coolMs = 0;
+    delay = askNextPollDelay(delay, Date.now() - started);
   }
 
   // A timeout is the moment the caller most needs the collect command: the
@@ -8385,6 +8395,9 @@ async function main(): Promise<void> {
         const ac = new AbortController();
         process.on("SIGINT", () => ac.abort());
         process.on("SIGTERM", () => ac.abort());
+        // The stream schedules around Retry-After itself (bells and polls take
+        // turns): a call that slept inside would stall both.
+        setRateLimitWait(0);
         const code = await runStream(webClient(token, cookie), {
           grep: re,
           ...(repliesTo ? { repliesTo } : {}),

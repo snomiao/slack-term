@@ -41,7 +41,41 @@ function base(): string {
   return (process.env.SLACK_API_BASE ?? "https://slack.com/api").replace(/\/$/, "");
 }
 
-async function call(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+/** How long one call may spend waiting out 429s before it throws
+ *  RateLimitError (seconds, summed over its retries). A 429 means Slack
+ *  rejected the request unprocessed, so retrying it — even a write — cannot
+ *  duplicate anything. One-shot commands wait (`pinlog`, `read`, `send`…);
+ *  `slack stream` sets 0 because it schedules around Retry-After itself.
+ *  SLACK_RATELIMIT_WAIT_SEC overrides the default. */
+let rateLimitWaitSec = ((): number => {
+  const v = Number(process.env.SLACK_RATELIMIT_WAIT_SEC);
+  return Number.isFinite(v) && v >= 0 ? v : 120;
+})();
+export function setRateLimitWait(sec: number): void {
+  rateLimitWaitSec = sec;
+}
+
+/** Run `once`; while it throws RateLimitError and the budget allows, wait out
+ *  its Retry-After (one stderr line each, method and seconds only) and retry. */
+export async function withRateLimitWait<T>(once: () => Promise<T>, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))): Promise<T> {
+  let waited = 0;
+  for (;;) {
+    try {
+      return await once();
+    } catch (e) {
+      if (!(e instanceof RateLimitError) || waited + e.retryAfter > rateLimitWaitSec) throw e;
+      waited += e.retryAfter;
+      console.error(`slack: ${e.message} — waiting`);
+      await sleep(e.retryAfter * 1000);
+    }
+  }
+}
+
+function call(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  return withRateLimitWait(() => callOnce(token, method, init, cookie));
+}
+
+async function callOnce(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
   cookie = token.startsWith("xoxc-") ? (cookie ?? resolveCookie()) : undefined;
   const extraHeaders: Record<string, string> = {};
   if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
@@ -95,7 +129,11 @@ async function call(token: string, method: string, init: RequestInit, cookie?: s
 // Internal Slack API caller — does NOT reject xoxc tokens.
 // Used for hidden endpoints (drafts, etc.) only accessible via session tokens.
 // cookie: raw xoxd value (without "d=" prefix); injected as Cookie header when present.
-async function callSession(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+function callSession(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
+  return withRateLimitWait(() => callSessionOnce(token, method, init, cookie));
+}
+
+async function callSessionOnce(token: string, method: string, init: RequestInit, cookie?: string): Promise<Json> {
   const extraHeaders: Record<string, string> = {};
   if (cookie) extraHeaders["Cookie"] = `d=${cookie}`;
   const res = await fetch(`${base()}/${method}`, {
