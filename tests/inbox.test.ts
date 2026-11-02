@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFailure, recordSent, type Incoming } from "../ts/inbox.ts";
-import { findScope, initScope, isRestricted, listAliases, readSettings, registeredScopes, RestrictedError, setAlias, whoSubscribes } from "../ts/scope.ts";
+import { findScope, initScope, isRestricted, listAliases, readSettings, registeredScopes, RestrictedError, setAlias, unsetAlias, whoSubscribes } from "../ts/scope.ts";
 
 let root: string;
 const prevHome = process.env.SLACK_TERM_HOME;
@@ -102,12 +102,45 @@ describe("restrict_to_subscriptions", () => {
   });
   test("a lane's alias set refuses; the owner's --shared write works", () => {
     const a = lane("design");
-    writeFileSync(join(a.dir, "settings.yml"), "# owned by shr\nrestrict_to_subscriptions: true\n");
+    const shrTree = join(root, "tree", "shr");
+    writeFileSync(join(a.dir, "settings.yml"), `# owned by shr\nrestrict_to_subscriptions: true\nowner: ${shrTree}\n`);
     expect(() => setAlias(a, "x", { channel: "D00000001", thread_ts: ROOT_TS })).toThrow(RestrictedError);
-    setAlias(a, "x", { channel: "D00000001", thread_ts: ROOT_TS }, true);
+    // the lane itself cannot use --shared on its own dir
+    expect(() => setAlias(a, "x", { channel: "D00000001", thread_ts: ROOT_TS }, { shared: true, cwd: join(root, "tree", "design") })).toThrow(/owned by/);
+    setAlias(a, "x", { channel: "D00000001", thread_ts: ROOT_TS }, { shared: true, cwd: join(shrTree, "sub") });
     expect(listAliases(a).map((x) => [x.name, x.file])).toEqual([["x", "settings.yml"]]);
     // the owner's comment header survives the rewrite
     expect(readFileSync(join(a.dir, "settings.yml"), "utf8")).toStartWith("# owned by shr\n");
+  });
+});
+
+describe("restricted: the owner decides", () => {
+  test("no owner named: nobody may write --shared", () => {
+    const a = lane("design");
+    writeFileSync(join(a.dir, "settings.yml"), "restrict_to_subscriptions: true\n");
+    expect(() => setAlias(a, "x", { channel: "D00000001" }, { shared: true, cwd: root })).toThrow(/names no `owner`/);
+  });
+  test("a sibling dir whose name starts like the owner's is not under it", () => {
+    const a = lane("design");
+    writeFileSync(join(a.dir, "settings.yml"), `restrict_to_subscriptions: true\nowner: ${join(root, "tree", "shr")}\n`);
+    expect(() => setAlias(a, "x", { channel: "D00000001" }, { shared: true, cwd: join(root, "tree", "shr-evil") })).toThrow(/owned by/);
+  });
+  test("prefix, as_bot and channel from settings.local.yml are ignored when restricted", () => {
+    const a = lane("design");
+    writeFileSync(join(a.dir, "settings.yml"), 'restrict_to_subscriptions: true\nprefix: "[design]"\nas_bot: true\n');
+    writeFileSync(join(a.dir, "settings.local.yml"), 'prefix: "[shr]"\nas_bot: false\nchannel: C00000009\nowner: /\n');
+    expect(readSettings(a)).toEqual({ restrict_to_subscriptions: true, prefix: "[design]", as_bot: true });
+  });
+  test("auto_subscribe still subscribes (it is the owner's own rule)", () => {
+    const shr = lane("shr");
+    writeFileSync(join(shr.dir, "settings.yml"), `restrict_to_subscriptions: true\nowner: ${join(root, "elsewhere")}\nauto_subscribe: [D00000001]\n`);
+    expect(deliver(msg({ ts: "1700000000.000700", thread_ts: null }))).toEqual([shr.dir]);
+  });
+  test("unset of a settings.yml alias follows the same owner rule", () => {
+    const a = lane("design");
+    writeFileSync(join(a.dir, "settings.yml"), `restrict_to_subscriptions: true\nowner: ${join(root, "tree", "shr")}\nsubscriptions:\n  x:\n    channel: D00000001\n`);
+    expect(() => unsetAlias(a, "x", true, join(root, "tree", "design"))).toThrow(/owned by/);
+    expect(unsetAlias(a, "x", true, join(root, "tree", "shr"))).toBe("removed");
   });
 });
 

@@ -74,7 +74,7 @@ export function deliver(m: Incoming, scopes = registeredScopes(), now = new Date
     for (const s of scopes) {
       if (!readSettings(s).auto_subscribe?.includes(m.channel.id)) continue;
       // settings.yml: auto_subscribe is the owner's own rule, so it writes as the owner.
-      setAlias(s, `t-${m.ts}`, { channel: m.channel.id, thread_ts: m.ts, note: "auto: new top-level message" }, true);
+      setAlias(s, `t-${m.ts}`, { channel: m.channel.id, thread_ts: m.ts, note: "auto: new top-level message" }, { shared: true, asOwner: true });
     }
     subs = whoSubscribes(m.channel.id, root, scopes);
   }

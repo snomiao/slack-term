@@ -193,7 +193,7 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
   });
 
   test("restricted: lane alias set refuses, --shared works, reply elsewhere refuses", async () => {
-    writeFileSync(join(ib(), ".slack-term", "settings.yml"), `prefix: "[ib]"\nrestrict_to_subscriptions: true\n`);
+    writeFileSync(join(ib(), ".slack-term", "settings.yml"), `prefix: "[ib]"\nrestrict_to_subscriptions: true\nowner: ${ib()}\n`);
     const set = await run(["alias", "set", "x", `C00000001:${OTHER_ROOT}`], ib());
     expect(set.exitCode).toBe(2);
     expect(set.stderr).toContain("restricted");
@@ -205,6 +205,14 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     const ok = await run(["reply", `C00000001:${ROOT_TS}`, "hi"], ib());
     expect(ok.exitCode).toBe(1); // reached the --code gate
     expect(ok.stderr).toMatch(/--code=[0-9a-f]{4}/);
+    // a lane cannot post as someone else, nor --shared from outside the owner dir
+    const pre = await run(["reply", `C00000001:${ROOT_TS}`, "hi", "--prefix", "[shr]"], ib());
+    expect(pre.exitCode).toBe(2);
+    expect(pre.stderr).toContain("--prefix / --as-bot are refused");
+    const other = join(tmpHome, "tree", "other");
+    const sh = await run(["alias", "set", "y", `C00000001:${OTHER_ROOT}`, "--shared", "--dir", ib()], other);
+    expect(sh.exitCode).toBe(2);
+    expect(sh.stderr).toContain("owned by");
   });
 
   test("alias import: allowlist.tsv → each lane's settings.yml", async () => {

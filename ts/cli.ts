@@ -6281,7 +6281,13 @@ async function main(): Promise<void> {
             .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory" }),
           (argv) => {
             const scope = findScope(argv.dir);
-            const r = unsetAlias(scope, argv.name, argv.shared);
+            let r;
+            try {
+              r = unsetAlias(scope, argv.name, argv.shared);
+            } catch (e: unknown) {
+              if (e instanceof RestrictedError) { console.error(`Error: ${e.message}`); process.exit(2); }
+              throw e;
+            }
             if (r === "removed") console.log(`${argv.name} removed  [${scope.dir}]`);
             else if (r === "absent") { console.error(`no alias "${argv.name}" in ${scope.dir}`); process.exit(2); }
             else { console.error(`"${argv.name}" is defined in ${scope.dir}/settings.yml: edit that file to remove it`); process.exit(2); }
@@ -6368,6 +6374,12 @@ async function main(): Promise<void> {
           process.exit(1);
         }
         const { channel, threadTs } = where;
+        // A restricted scope's prefix is its owner's: overriding it would let a
+        // lane post as another.
+        if (isRestricted(scope) && (argv.prefix !== undefined || (argv["as-bot"] !== undefined && argv["as-bot"] !== (settings.as_bot ?? false)))) {
+          console.error(`Error: ${scope.dir} is restricted: who it posts as (prefix, as_bot) comes from settings.yml; --prefix / --as-bot are refused`);
+          process.exit(2);
+        }
         const text = applyPrefix(message, argv.prefix ?? settings.prefix);
         if (!text.trim()) { console.error("Error: message is empty (only the prefix)"); process.exit(1); }
         await runSend({
@@ -6481,6 +6493,10 @@ async function main(): Promise<void> {
             const settings = readSettings(scope);
             const items = listOutbox(scope);
             if (!items.length) { console.error(`nothing in ${scope.dir}/outbox`); return; }
+            if (isRestricted(scope) && argv["as-bot"] !== undefined && argv["as-bot"] !== (settings.as_bot ?? false)) {
+              console.error(`Error: ${scope.dir} is restricted: as_bot comes from settings.yml; --as-bot is refused`);
+              process.exit(2);
+            }
             const asBot = argv["as-bot"] ?? settings.as_bot ?? false;
             const lookTok = tok(argv as W);
             const lookCk = ck(argv as W);

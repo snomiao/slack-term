@@ -14,7 +14,7 @@
 // Every write is tmp + rename (a reader never sees half a file), and the
 // read-modify-write of settings.local.yml holds a lock file, so two `slack
 // alias set` at once cannot drop each other's entry.
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -99,7 +99,9 @@ const SETTINGS = `# slack-term settings for this directory. settings.local.yml (
 #     thread_ts: "1700000000.000100"
 #
 # Only here, never in settings.local.yml:
-# restrict_to_subscriptions: true  # the subscriptions above are the whole allowlist
+# restrict_to_subscriptions: true  # the subscriptions above are the whole allowlist,
+#                                  # and prefix / as_bot / channel come from here only
+# owner: ~/ws/x/tree/shr           # with restrict: --shared writes run only from under it
 # auto_subscribe: [D00000001]      # new top-level messages there are subscribed here
 # nudge_after_min: 30              # \`slack inbox nudge\` reports what waits longer
 `;
@@ -116,6 +118,11 @@ export type Settings = {
   auto_subscribe?: string[];
   /** Minutes an inbox entry may wait before `slack inbox nudge` reports it. */
   nudge_after_min?: number;
+  /** settings.yml only: the directory whose lane owns this allowlist (e.g. the
+   *  coordinator's tree). In a restricted scope, `--shared` writes are refused
+   *  unless they run from under it — every lane is the same uid, so the CLI is
+   *  the only thing that can tell them apart. */
+  owner?: string;
 };
 
 /** Create (or complete) `<parent>/.slack-term/`. Idempotent: existing files are kept. */
@@ -206,6 +213,7 @@ export function readSettingsFile(path: string): Settings {
   if (o.restrict_to_subscriptions === true) s.restrict_to_subscriptions = true;
   if (Array.isArray(o.auto_subscribe)) s.auto_subscribe = o.auto_subscribe.filter((c): c is string => typeof c === "string");
   if (typeof o.nudge_after_min === "number" && o.nudge_after_min > 0) s.nudge_after_min = o.nudge_after_min;
+  if (typeof o.owner === "string" && o.owner) s.owner = o.owner;
   if (o.subscriptions && typeof o.subscriptions === "object") {
     const subs: Record<string, Subscription> = {};
     for (const [k, v] of Object.entries(o.subscriptions as Record<string, unknown>)) {
@@ -224,7 +232,15 @@ export function readSettings(scope: Scope): Settings {
   // What only settings.yml may say.
   delete local.restrict_to_subscriptions;
   delete local.auto_subscribe;
-  if (base.restrict_to_subscriptions) delete local.subscriptions;
+  delete local.owner;
+  if (base.restrict_to_subscriptions) {
+    // Who the lane posts as is the owner's call too: a local prefix `[shr]`
+    // would let any lane speak as another.
+    delete local.subscriptions;
+    delete local.prefix;
+    delete local.as_bot;
+    delete local.channel;
+  }
   const subs = { ...base.subscriptions, ...local.subscriptions };
   const out: Settings = { ...base, ...local };
   if (Object.keys(subs).length) out.subscriptions = subs;
@@ -302,12 +318,41 @@ export function isRestricted(scope: Scope): boolean {
   return readSettingsFile(join(scope.dir, "settings.yml")).restrict_to_subscriptions === true;
 }
 
+/** May the process at `cwd` write `scope`'s settings.yml? Always when the
+ *  scope is not restricted; otherwise only from under its `owner` dir (and
+ *  never when no owner is named). */
+export function sharedWriteRefusal(scope: Scope, cwd = process.cwd()): string | undefined {
+  if (!isRestricted(scope)) return undefined;
+  const owner = readSettingsFile(join(scope.dir, "settings.yml")).owner;
+  if (!owner) return `${scope.dir} is restricted and names no \`owner\` in settings.yml: nobody may write it with --shared (edit the file)`;
+  const real = (p: string): string => { try { return realpathSync(resolve(p)); } catch { return resolve(p); } };
+  const o = real(owner.replace(/^~(?=\/|$)/, homedir()));
+  const c = real(cwd);
+  if (c === o || c.startsWith(o.endsWith("/") ? o : o + "/")) return undefined;
+  return `${scope.dir} is owned by ${owner}: --shared writes run only from under that directory`;
+}
+
+export type SetAliasOpts = {
+  /** Write settings.yml instead of settings.local.yml. */
+  shared?: boolean;
+  /** The owner's own rule (auto_subscribe) writing: skips the owner/cwd check. */
+  asOwner?: boolean;
+  cwd?: string;
+};
+
 /** Add or replace an alias — in settings.local.yml, or with `shared` in
  *  settings.yml — and return the one it replaced. A restricted scope refuses
- *  the local write: its allowlist is not the lane's to extend. */
-export function setAlias(scope: Scope, name: string, sub: Subscription, shared = false): Subscription | undefined {
+ *  the local write (its allowlist is not the lane's to extend), and a shared
+ *  write from outside its owner dir. */
+export function setAlias(scope: Scope, name: string, sub: Subscription, opts: SetAliasOpts | boolean = {}): Subscription | undefined {
+  const o: SetAliasOpts = typeof opts === "boolean" ? { shared: opts } : opts;
+  const shared = o.shared === true;
   if (!validAliasName(name)) throw new Error(`invalid alias name "${name}" (a-z 0-9 . _ -, at most 64, not a bare ts)`);
   if (!shared && isRestricted(scope)) throw new RestrictedError(scope);
+  if (shared && !o.asOwner) {
+    const why = sharedWriteRefusal(scope, o.cwd);
+    if (why) throw new RestrictedError(scope, why);
+  }
   const before = listAliases(scope).find((a) => a.name === name);
   updateSettings(scope, shared, (raw) => {
     const subs = (raw.subscriptions && typeof raw.subscriptions === "object" ? raw.subscriptions : {}) as Record<string, unknown>;
@@ -319,10 +364,14 @@ export function setAlias(scope: Scope, name: string, sub: Subscription, shared =
 
 /** Remove an alias from settings.local.yml. One defined in settings.yml is
  *  refused: that file belongs to whoever wrote it. */
-export function unsetAlias(scope: Scope, name: string, shared = false): "removed" | "absent" | "in-settings.yml" {
+export function unsetAlias(scope: Scope, name: string, shared = false, cwd?: string): "removed" | "absent" | "in-settings.yml" {
   const a = listAliases(scope).find((x) => x.name === name);
   if (!a) return "absent";
   if (a.file === "settings.yml" && !shared) return "in-settings.yml";
+  if (a.file === "settings.yml") {
+    const why = sharedWriteRefusal(scope, cwd);
+    if (why) throw new RestrictedError(scope, why);
+  }
   updateSettings(scope, a.file === "settings.yml", (raw) => {
     const subs = raw.subscriptions as Record<string, unknown> | undefined;
     if (subs) delete subs[name];
@@ -332,8 +381,8 @@ export function unsetAlias(scope: Scope, name: string, shared = false): "removed
 }
 
 export class RestrictedError extends Error {
-  constructor(scope: Scope) {
-    super(`${scope.dir} is restricted (restrict_to_subscriptions in settings.yml): only its owner adds subscriptions, with \`slack alias set --shared\``);
+  constructor(scope: Scope, why?: string) {
+    super(why ?? `${scope.dir} is restricted (restrict_to_subscriptions in settings.yml): only its owner adds subscriptions, with \`slack alias set --shared\` run from the owner's directory`);
   }
 }
 

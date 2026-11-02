@@ -346,6 +346,8 @@ slack alias import allowlist.tsv --channel D00000001 --lane-dir design=~/ws/x/tr
 **Settings only `settings.yml` can hold:** `restrict_to_subscriptions: true`, `auto_subscribe: [<channel>]` and `nudge_after_min` (see `slack inbox nudge`).
 
 - With `restrict_to_subscriptions`, only the `settings.yml` subscriptions count. `alias set` without `--shared` refuses, and `reply` and `outbox flush` refuse any other thread.
+  - Who the lane posts as (`prefix`, `as_bot`, `channel`) also comes from `settings.yml` only. `--prefix` and a differing `--as-bot` are refused.
+  - `owner: <dir>` names the allowlist's owner. `--shared` writes run only from under that directory, and are refused for everyone when no owner is named. Every lane runs as the same uid, so only the CLI can tell them apart.
 - `auto_subscribe` subscribes a new top-level message in that channel to this dir as `t-<ts>`.
 
 ### pinlog — a pinned status board that keeps a log
