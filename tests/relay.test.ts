@@ -2,7 +2,7 @@
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
-import { isSlackFileUrl, audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { stripSelfMention, isSlackFileUrl, audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
@@ -23,6 +23,10 @@ describe("voice messages", () => {
     expect(slackTranscript({ ...clip, transcription: { status: "complete", preview: { content: "你好", has_more: true } } })).toBeUndefined();
     expect(slackTranscript({ ...clip, transcription: { status: "processing" } })).toBeUndefined();
     expect(slackTranscript(clip)).toBeUndefined();
+  });
+  test("a voice-only message is not reported as a bare mention", () => {
+    expect(stripSelfMention("", "U00000009", "snobot")).toBe("");
+    expect(stripSelfMention("<@U00000009>", "U00000009", "snobot")).toBe("(you were mentioned, no text)");
   });
   test("a token is only ever sent to https://files.slack.com", () => {
     expect(isSlackFileUrl("https://files.slack.com/files-pri/T00000001-F00000001/download/clip.m4a")).toBe(true);

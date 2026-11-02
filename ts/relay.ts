@@ -158,7 +158,8 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
   if (selfId) t = t.replace(new RegExp(`^<@${selfId}(\\|[^>]*)?>[\\s:,]*`), "");
   if (selfName) t = t.replace(new RegExp(`^@${selfName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w./-])[\\s:,]*`, "i"), "");
   t = t.trim();
-  return t || "(you were mentioned, no text)";
+  // An empty message (a voice clip, a file) is not a bare mention: it stays empty.
+  return t || (text.trim() ? "(you were mentioned, no text)" : "");
 }
 
 const AGENT_EMOJI = ["robot_face", "gear", "rocket", "brain", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];

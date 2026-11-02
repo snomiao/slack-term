@@ -23,6 +23,12 @@ def load(path: str) -> np.ndarray:
 
 
 import mlx_whisper  # noqa: E402
+from huggingface_hub import snapshot_download  # noqa: E402
 
 model = os.environ.get("RELAY_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+# Run offline once the model is cached: no request to the Hub, the audio never leaves the Mac.
+try:
+    model = snapshot_download(model, local_files_only=True)
+except Exception:
+    pass  # first run: mlx-whisper downloads it
 print(mlx_whisper.transcribe(load(sys.argv[1]), path_or_hf_repo=model)["text"].strip())
