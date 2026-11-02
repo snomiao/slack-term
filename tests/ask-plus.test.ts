@@ -1,4 +1,4 @@
-// The "other" pill is ➕ (`:heavy_plus_sign:`), not ❓ (taku 2026-10-14). ❓
+// The "other" pill is ➕ (`:heavy_plus_sign:`), not ❓ (2026-10-14). ❓
 // stays the head marker that identifies an ask; only the pill moved. Pills
 // posted before this carry ❓ as the other pill and must keep working:
 // collect, void, edit, the ✅ rewrite and the ℹ️ explain note. Everything runs

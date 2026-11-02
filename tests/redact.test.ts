@@ -16,7 +16,7 @@ const rnd = (n: number, abc = AN): string => Array.from({ length: n }, () => abc
 const dig = (n: number): string => rnd(n, "0123456789");
 const hex = (n: number): string => rnd(n, "0123456789abcdef");
 
-/** One generator per kind taku listed (11-02). */
+/** One generator per kind on the 11-02 list. */
 const FAKES: Record<string, () => string> = {
   slack_bot: () => ["xox", "b-", dig(12), "-", dig(13), "-", rnd(24)].join(""),
   slack_user: () => ["xox", "p-", dig(12), "-", dig(12), "-", dig(13), "-", hex(32)].join(""),

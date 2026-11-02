@@ -21,7 +21,7 @@ describe("tickText", () => {
 
 describe("keepLanePrefix", () => {
   test("keeps the original's tag when the new text drops it", () => expect(keepLanePrefix("[design] old", "new", "[design]")).toBe("[design] new"));
-  test("keeps [lane@host] as posted", () => expect(keepLanePrefix("[design@ubu] old", "[design] new", "[design]")).toBe("[design@ubu] new"));
+  test("keeps [lane@host] as posted", () => expect(keepLanePrefix("[design@host1] old", "[design] new", "[design]")).toBe("[design@host1] new"));
   test("another lane's message: untouched", () => expect(keepLanePrefix("[shr] old", "new", "[design]")).toBe("new"));
   test("no scope prefix: untouched", () => expect(keepLanePrefix("[design] old", "new", undefined)).toBe("new"));
 });

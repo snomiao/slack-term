@@ -123,11 +123,11 @@ describe("withFileLock", () => {
   });
 });
 
-describe("applyPrefix (symphr-thread #654: never '[lane] [lane]')", () => {
+describe("applyPrefix (never '[lane] [lane]')", () => {
   for (const [given, want] of [
     ["hi", "[guide] hi"],
     ["[guide] hi", "[guide] hi"],
-    ["[guide@ubu]  hi", "[guide] hi"],
+    ["[guide@host1]  hi", "[guide] hi"],
     ["  [guide] hi", "[guide] hi"],
     ["[guidex] hi", "[guide] [guidex] hi"],
     ["hi [guide]", "[guide] hi [guide]"],

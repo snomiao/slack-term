@@ -446,7 +446,7 @@ async function cmdMsgsTarget(token: string, target: string, limit: number, forma
 // --- thread ---
 /** One message as `<ts> TAB <author> TAB <text>`: the author is the user or
  *  bot id, the text Slack's stored form with `\` newline CR TAB escaped, and
- *  attachments counted as ` [files: N]` (symphr-thread's read format). */
+ *  attachments counted as ` [files: N]` (the earlier thread tool's read format). */
 function tsvLine(m: Record<string, Json>): string {
   const esc = (t: string): string => t.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t");
   const author = typeof m.user === "string" ? m.user : typeof m.bot_id === "string" ? m.bot_id : "";
@@ -2148,7 +2148,7 @@ async function cmdPinlogUpdate(token: string, args: PinlogUpdateArgs): Promise<v
     attrEdit.record({ team: self?.team, channel, target: args.target, ts, text: newHead, asBot: args.asBot });
     // Read it back: Slack rewrites text when it stores it, so compare the
     // normalised forms (ts/readback.ts). A board that does not show what was
-    // sent gets no log line — exit 3, like symphr-thread's `state`.
+    // sent gets no log line — exit 3, like the earlier thread tool's `state`.
     let stored: Record<string, Json> | undefined;
     try {
       const back = asArray(asRecord((await replies(token, channel, ts, 1, args.cookie)) as Json).messages).map(asRecord);
@@ -6442,10 +6442,10 @@ async function main(): Promise<void> {
         )
         .command(
           "import <tsv>",
-          "One-shot: import a symphr-thread allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
+          "One-shot: import a legacy allowlist.tsv (<thread_ts> TAB <lane>) into each lane's settings.yml",
           (yy) => yy
             .positional("tsv", { type: "string", demandOption: true })
-            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (symphr-thread: the DM id)" })
+            .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (for a DM: the DM id)" })
             .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-term/, made if missing); repeatable" }),
           (argv) => {
             const dirs = new Map<string, string>();
@@ -6462,7 +6462,7 @@ async function main(): Promise<void> {
               const dir = dirs.get(lane);
               if (!dir || !/^\d{10}\.\d{6}$/.test(ts)) { skipped.set(lane, (skipped.get(lane) ?? 0) + 1); continue; }
               const scope = { dir: initScope(dir).dir, global: false };
-              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from symphr-thread allowlist" }, true);
+              setAlias(scope, `t-${ts}`, { channel: argv.channel, thread_ts: ts, note: "imported from legacy allowlist" }, true);
               added++;
             }
             console.log(`imported ${added} subscription(s)`);

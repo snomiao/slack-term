@@ -1,4 +1,4 @@
-// The choice-question hint on send/reply (taku 11-02): a message that asks
+// The choice-question hint on send/reply: a message that asks
 // "(yes/no)?" or lists (a)/(b) options is better posted with `slack ask`, so
 // the reader taps an answer instead of typing one. Hint only — never blocks.
 // The patterns are per-language packs (locales/*.json `choice_patterns`), all

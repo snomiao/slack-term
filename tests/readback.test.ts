@@ -1,5 +1,5 @@
-// Read-back normaliser, ported with symphr-thread's own cases (its
-// test_symphr_thread.py, "stored_as_sent: real shapes / real differences").
+// Read-back normaliser, ported with the earlier thread tool's own cases (its
+// "stored_as_sent: real shapes / real differences").
 import { describe, expect, test } from "./harness.ts";
 import { storedAsSent } from "../ts/readback.ts";
 

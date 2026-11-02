@@ -7,6 +7,7 @@
 // next command (and the next access in a long-running one): no rebuild.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { findScope } from "./scope.ts";
 
 export type Pack = {
@@ -18,7 +19,9 @@ export type Pack = {
   choice_patterns?: string[];
 };
 
-const PACKAGE_DIR = new URL("../locales/", import.meta.url).pathname;
+// fileURLToPath, not .pathname: a path with spaces or non-ASCII stays
+// percent-encoded in .pathname, and a Windows one comes out as /C:/….
+const PACKAGE_DIR = fileURLToPath(new URL("../locales/", import.meta.url));
 
 const cache = new Map<string, { mtimeMs: number; pack: Pack | undefined }>();
 

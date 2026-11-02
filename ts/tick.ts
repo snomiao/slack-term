@@ -1,5 +1,5 @@
 // `slack tick`: turn a "⬜ <n>." item of a posted checklist into "✅ <n>.",
-// changing nothing else (taku 10-30: when an announced ⬜ criterion is done,
+// changing nothing else (10-30: when an announced ⬜ criterion is done,
 // edit the original to ✅ rather than only posting a new "done" reply).
 // Slack may store the box as the shortcode, so both spellings are handled and
 // the tick keeps the spelling it found.
