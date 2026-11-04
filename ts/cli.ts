@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 
 import yargs, { type Options } from "yargs";
 import { hideBin } from "yargs/helpers";
-import { guardUrlBoundaries } from "./urlGuard.ts";
+import { fixUrlBoundaries, guardUrlBoundaries } from "./urlGuard.ts";
 import { listProfiles, removeProfile, resolveBotToken, resolveCookie, resolveToken, useProfile, type Profile } from "./profiles.ts";
 import { diagnoseBotMessaging, formatDiagnosis } from "./botdoctor.ts";
 import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAuthToken, cmdAuthApp, cmdAuthSave, cmdAuthTokens } from "./auth.ts";
@@ -5695,7 +5695,7 @@ async function main(): Promise<void> {
    *  prefix and thread check first). */
   type SendCli = {
     workspace?: string | undefined; target?: string | undefined; message?: string | undefined; code?: string | undefined;
-    "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined; "user-id"?: string | undefined;
+    "allow-url-adjacent"?: boolean | undefined; "fix-urls"?: boolean | undefined; "channel-id"?: string | undefined; "user-id"?: string | undefined;
     "as-bot"?: boolean | undefined; broadcast?: boolean | undefined; mentions?: boolean | undefined;
     json?: boolean | undefined;
   };
@@ -5704,7 +5704,7 @@ async function main(): Promise<void> {
    *  its subscriptions. */
   type EditCli = {
     workspace?: string | undefined; target?: string | undefined; newText?: string | undefined; code?: string | undefined;
-    force?: boolean | undefined; "allow-url-adjacent"?: boolean | undefined; "channel-id"?: string | undefined;
+    force?: boolean | undefined; "allow-url-adjacent"?: boolean | undefined; "fix-urls"?: boolean | undefined; "channel-id"?: string | undefined;
     mentions?: boolean | undefined; "as-bot"?: boolean | undefined; tick?: { n?: number } | undefined;
   };
   const runEdit = async (argv: EditCli): Promise<void> => {
@@ -5722,6 +5722,7 @@ async function main(): Promise<void> {
         process.exit(1);
       }
     }
+    if (argv["fix-urls"] && argv.newText) argv = { ...argv, newText: fixUrlBoundaries(argv.newText) };
     const args: EditArgs = { target: argv.target!, newText: argv.newText ?? "", allowUrlAdjacent: argv["allow-url-adjacent"] === true };
     if (argv.tick) args.tick = argv.tick;
     if (settings.prefix) args.lanePrefix = settings.prefix;
@@ -5768,6 +5769,7 @@ async function main(): Promise<void> {
       console.error("Error: message is empty");
       process.exit(1);
     }
+    if (argv["fix-urls"]) argv = { ...argv, message: fixUrlBoundaries(argv.message!) };
     const args: SendArgs = { target: argv.target!, message: argv.message!, allowUrlAdjacent: argv["allow-url-adjacent"] === true };
     if (argv.json) args.json = true;
     if (argv.code) args.code = argv.code;
@@ -6416,6 +6418,7 @@ async function main(): Promise<void> {
         .positional("message", { type: "string", demandOption: true })
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("user-id", { type: "string", describe: "Raw user ID (opens DM)" })
         .option("as-bot", { type: "boolean", default: false, describe: "Send via the bot token (xoxb / SLACK_BOT_TOKEN) so a DM notifies the recipient and can be two-way" })
@@ -6594,6 +6597,7 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm send" })
         .option("as-bot", { type: "boolean", describe: "Send via the bot token (default: settings' as_bot)" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
         .option("broadcast", { type: "boolean", default: false, describe: "Also send to channel" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens to real mentions (--no-mentions for literal text)" }),
       async (argv) => {
@@ -6628,7 +6632,7 @@ async function main(): Promise<void> {
         if (!text.trim()) { console.error("Error: message is empty (only the prefix)"); process.exit(1); }
         await runSend({
           workspace: (argv as W).workspace, target: `${channel}:${threadTs}`, message: text, code: argv.code,
-          "allow-url-adjacent": argv["allow-url-adjacent"], "as-bot": argv["as-bot"] ?? settings.as_bot ?? false,
+          "allow-url-adjacent": argv["allow-url-adjacent"], "fix-urls": argv["fix-urls"], "as-bot": argv["as-bot"] ?? settings.as_bot ?? false,
           broadcast: argv.broadcast, mentions: argv.mentions, json: argv.json,
         });
       },
@@ -7480,6 +7484,7 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm edit" })
         .option("force", { type: "boolean", default: false, describe: "Apply an edit that BREAKS a `slack ask` / `slack poll` message (new text no longer reads as one, or an answered/void question made open again). Refused by default because collect reads that body back; edits that keep it readable (e.g. writing the ✅ form) need no flag. Prefer `slack ask --edit=` / `--void=`." })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
+        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
         .option("channel-id", { type: "string", describe: "Raw channel ID" })
         .option("mentions", { type: "boolean", default: true, describe: "Convert @handle tokens in the new text to real <@USERID> mentions (on by default). Unresolved handles stay as plain text. Disable with --no-mentions for literal @text." })
         .option("as-bot", { type: "boolean", default: false, describe: "Edit as the bot (xoxb / SLACK_BOT_TOKEN). REQUIRED to correct a message the bot posted: Slack only lets a token edit its OWN messages, so a bot-authored message is uneditable by the user token and chat.update returns cant_update_message. Address it by permalink or --channel-id; an @user target resolves against the BOT's DM list, which is where a bot-authored DM actually lives." }),

@@ -16,7 +16,15 @@ const URL_TOKEN = /<https?:\/\/[^\s<>|]+(?:\|[^<>\r\n]*)?>|https?:\/\/[^\t\n\v\f
 /** What may sit right before a bare URL and still let it autolink. */
 const SAFE_BEFORE = /[\t\n\v\f\r (*_~]/;
 
-export type UrlBoundaryIssue = { url: string; side: "before" | "after"; char: string };
+/** `trailing`: the URL ends in ASCII punctuation (`)` without a matching `(`, or `.,:;!?`) that Slack may or may
+ *  not take into the link: `(see https://x/a)` would link `https://x/a)`. Only warned, never refused. */
+export type UrlBoundaryIssue = { url: string; side: "before" | "after" | "trailing"; char: string };
+const TRAILING = /[.,:;!?]$/;
+function trailingChar(url: string): string | undefined {
+  if (TRAILING.test(url)) return url.slice(-1);
+  if (url.endsWith(")") && count(url, "(") < count(url, ")")) return ")";
+  return undefined;
+}
 
 /** Code spans and fences are shown verbatim and never autolinked, so a URL in
  *  one is not a boundary problem; neither is a `[label](url)` link, which is
@@ -97,6 +105,11 @@ export function urlBoundaryIssues(text: string, { markdown = true }: { markdown?
     }
     const after = url.match(/[^\x00-\x7f]|>/);
     if (after) issues.push({ url, side: "after", char: after[0] });
+    else {
+      // `(https://x/a)`: the `)` closes the paren before the URL, as GFM and Slack read it
+      const t = trailingChar(url);
+      if (t && !(t === ")" && before === "(")) issues.push({ url, side: "trailing", char: t });
+    }
   }
   return issues;
 }
@@ -107,22 +120,25 @@ export function adjacentUrls(text: string): string[] {
 
 export function guardUrlBoundaries(
   text: string, allow = false, warn: (message: string) => void = console.error,
-  { sides = ["before", "after"], markdown = true }: {
+  { sides = ["before", "after", "trailing"], markdown = true }: {
     sides?: ReadonlyArray<UrlBoundaryIssue["side"]>; markdown?: boolean;
   } = {},
 ): void {
-  const issues = urlBoundaryIssues(text, { markdown }).filter((i) => sides.includes(i.side));
+  const all = urlBoundaryIssues(text, { markdown });
+  const trailing = all.filter((i) => i.side === "trailing" && sides.includes("trailing"));
+  if (trailing.length) warn(`⚠ URL ends in punctuation Slack may take into the link: ${trailing.map((i) => `${JSON.stringify(i.url)} → ${JSON.stringify(fixUrlBoundaries(`x ${i.url}`).slice(2))}`).join(", ")}. If the ${JSON.stringify(trailing[0]!.char)} is not part of the URL, send the suggested form (or --fix-urls).`);
+  const issues = all.filter((i) => i.side !== "trailing" && sides.includes(i.side));
   if (!issues.length) return;
   const described = issues.map((i) => i.side === "before"
     ? `${JSON.stringify(i.url)} (glued to ${JSON.stringify(i.char)} before it — Slack will NOT make it a link)`
-    : `${JSON.stringify(i.url)} (runs into ${JSON.stringify(i.char)} after it)`);
+    : `${JSON.stringify(i.url)} (runs into ${JSON.stringify(i.char)} after it; non-ASCII in a URL is OK only if intended, otherwise send ${JSON.stringify(fixUrlBoundaries(`x ${i.url}`).slice(2))} or put an ASCII space after the URL)`);
   const fixes = issues.some((i) => i.side === "before")
     ? "Put an ASCII space (or a newline) before the URL, " : "";
   const message = `Ambiguous URL boundary: ${described.join(", ")}. ` +
     `${fixes}Put the URL on its own line, or wrap it as <url> / <url|label>. ` +
-    "Use --allow-url-adjacent to warn only.";
+    "Use --fix-urls to wrap them, or --allow-url-adjacent to warn only.";
   if (!allow) throw new Error(message);
-  warn(`Warning: ${message}`);
+  warn(`⚠ Warning: ${message}`);
 }
 
 type RichTextElement =
@@ -165,6 +181,27 @@ export function linkifyRichText(text: string): RichTextElement[] {
   }
   pushText(text.slice(pos));
   return out;
+}
+
+/** Optional auto-fix (`--fix-urls`): wrap every ambiguous bare URL as `<url>`, cut where Slack's link would end
+ *  (at the first non-ASCII character, before trailing punctuation). Text, code spans and explicit links are kept. */
+export function fixUrlBoundaries(text: string): string {
+  const masked = maskCode(text);
+  let out = "", pos = 0;
+  for (const m of masked.matchAll(URL_TOKEN)) {
+    const at = m.index ?? 0;
+    if (m[0].startsWith("<")) continue;
+    let url = text.slice(at, at + m[0].length);
+    const cut = url.search(/[^\x00-\x7f]|>/);
+    if (cut >= 0) url = url.slice(0, cut);
+    while (trailingChar(url)) url = url.slice(0, -1);
+    const before = at > 0 ? masked[at - 1]! : "";
+    const ambiguous = url.length < m[0].length || (before && !SAFE_BEFORE.test(before));
+    if (!ambiguous || !/^https?:\/\/./i.test(url)) continue;
+    out += text.slice(pos, at) + `<${url}>`;
+    pos = at + url.length;
+  }
+  return out + text.slice(pos);
 }
 
 function count(s: string, ch: string): number {
