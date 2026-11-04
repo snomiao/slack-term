@@ -28,7 +28,7 @@ describe("URL boundaries", () => {
   test("override emits a warning naming the URL", () => {
     const warnings: string[] = [];
     guardUrlBoundaries("http://example.com/内容", true, (s) => warnings.push(s));
-    expect(warnings[0]).toContain("Warning: ⚠ Ambiguous URL boundary");
+    expect(warnings[0]).toContain("⚠ Warning: Ambiguous URL boundary");
     expect(warnings[0]).toContain("http://example.com/内容");
   });
 
@@ -157,11 +157,11 @@ describe("linkifyRichText (drafts)", () => {
   });
 });
 
-describe("URL boundaries: trailing punctuation and --fix-urls (taku 11-04)", () => {
+describe("URL boundaries: trailing punctuation and --fix-urls", () => {
   test("a URL glued to CJK text is refused and names the URL", () => {
     expect(() => guardUrlBoundaries("见 https://example.com/a。下一句")).toThrow("https://example.com/a。下一句");
   });
-  for (const [text, ch] of [["(see https://example.com/a)", ")"], ["at https://example.com/a.", "."], ["https://example.com/a, then", ","]]) {
+  for (const [text, ch] of <[string, string][]>[["(see https://example.com/a)", ")"], ["at https://example.com/a.", "."], ["https://example.com/a, then", ","]]) {
     test(`a trailing ${JSON.stringify(ch)} warns but does not refuse`, () => {
       const warnings: string[] = [];
       expect(() => guardUrlBoundaries(text, false, (s) => warnings.push(s))).not.toThrow();
@@ -173,7 +173,7 @@ describe("URL boundaries: trailing punctuation and --fix-urls (taku 11-04)", () 
   test("a balanced paren is part of the URL", () => {
     expect(urlBoundaryIssues("https://en.wikipedia.org/wiki/A_(b)")).toEqual([]);
   });
-  for (const [text, fixed] of [
+  for (const [text, fixed] of <[string, string][]>[
     ["见 https://example.com/a。下一句", "见 <https://example.com/a>。下一句"],
     ["(see https://example.com/a)", "(see <https://example.com/a>)"],
     ["说明：https://example.com/a 后", "说明：<https://example.com/a> 后"],

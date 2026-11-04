@@ -7577,7 +7577,6 @@ async function main(): Promise<void> {
               .option("file", { type: "string", describe: "Read the state from a file (- = stdin); then the only positional after <channel> is the reason" })
               .option("code", { type: "string", describe: "Safety hash to confirm (printed by the preview)" })
               .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
-        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
               .option("as-bot", asBotOpt)
               .example('slack pinlog new "#gtm" "販売ブロッカー\\n1. 見積テンプレ — 未"', "preview, then rerun with --code"),
             async (argv) => {
@@ -7614,7 +7613,6 @@ async function main(): Promise<void> {
               .option("adopt", { type: "boolean", default: false, describe: "Allow a message WITHOUT the pinlog footer: turn a hand-run board into one" })
               .option("code", { type: "string", describe: "Safety hash to confirm (printed by the preview)" })
               .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
-        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
               .option("as-bot", asBotOpt)
               .example('slack pinlog set <board-link> "販売ブロッカー\\n1. 見積テンプレ — 済" "見積テンプレ: 未 → 済"', "")
               .example('slack pinlog set <board-link> --file board.md "見積テンプレ: 未 → 済"', "state from a file"),
@@ -7654,7 +7652,6 @@ async function main(): Promise<void> {
               .positional("reason", { type: "string", demandOption: true, describe: "One short line, e.g. still blocked — chased X" })
               .option("code", { type: "string", describe: "Safety hash to confirm (printed by the preview)" })
               .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
-        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
               .option("as-bot", asBotOpt),
             async (argv) => {
               const t = await pick(argv as W & { "as-bot"?: boolean });
@@ -7852,7 +7849,6 @@ async function main(): Promise<void> {
         .option("title", { type: "string", describe: "Title (single file only)" })
         .option("comment", { type: "string", describe: "Initial comment (first file)" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
-        .option("fix-urls", { type: "boolean", default: false, describe: "Wrap ambiguous bare URLs as <url> (cut at the first non-ASCII character / trailing punctuation) before sending" })
         .option("code", { type: "string", describe: "4-hex safety code to confirm upload" })
         .option("channel-id", { type: "string" })
         .option("user-id", { type: "string" })

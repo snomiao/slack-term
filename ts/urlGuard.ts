@@ -17,12 +17,13 @@ const URL_TOKEN = /<https?:\/\/[^\s<>|]+(?:\|[^<>\r\n]*)?>|https?:\/\/[^\t\n\v\f
 const SAFE_BEFORE = /[\t\n\v\f\r (*_~]/;
 
 /** `trailing`: the URL ends in ASCII punctuation (`)` without a matching `(`, or `.,:;!?`) that Slack may or may
- *  not take into the link (taku 11-04: `(see https://x/a)` → a broken link). Only warned, never refused. */
+ *  not take into the link: `(see https://x/a)` would link `https://x/a)`. Only warned, never refused. */
 export type UrlBoundaryIssue = { url: string; side: "before" | "after" | "trailing"; char: string };
 const TRAILING = /[.,:;!?]$/;
 function trailingChar(url: string): string | undefined {
   if (TRAILING.test(url)) return url.slice(-1);
   if (url.endsWith(")") && count(url, "(") < count(url, ")")) return ")";
+  return undefined;
 }
 
 /** Code spans and fences are shown verbatim and never autolinked, so a URL in
@@ -119,12 +120,12 @@ export function adjacentUrls(text: string): string[] {
 
 export function guardUrlBoundaries(
   text: string, allow = false, warn: (message: string) => void = console.error,
-  { sides = ["before", "after"], markdown = true }: {
+  { sides = ["before", "after", "trailing"], markdown = true }: {
     sides?: ReadonlyArray<UrlBoundaryIssue["side"]>; markdown?: boolean;
   } = {},
 ): void {
   const all = urlBoundaryIssues(text, { markdown });
-  const trailing = all.filter((i) => i.side === "trailing");
+  const trailing = all.filter((i) => i.side === "trailing" && sides.includes("trailing"));
   if (trailing.length) warn(`⚠ URL ends in punctuation Slack may take into the link: ${trailing.map((i) => `${JSON.stringify(i.url)} → ${JSON.stringify(fixUrlBoundaries(`x ${i.url}`).slice(2))}`).join(", ")}. If the ${JSON.stringify(trailing[0]!.char)} is not part of the URL, send the suggested form (or --fix-urls).`);
   const issues = all.filter((i) => i.side !== "trailing" && sides.includes(i.side));
   if (!issues.length) return;
@@ -133,11 +134,11 @@ export function guardUrlBoundaries(
     : `${JSON.stringify(i.url)} (runs into ${JSON.stringify(i.char)} after it; non-ASCII in a URL is OK only if intended, otherwise send ${JSON.stringify(fixUrlBoundaries(`x ${i.url}`).slice(2))} or put an ASCII space after the URL)`);
   const fixes = issues.some((i) => i.side === "before")
     ? "Put an ASCII space (or a newline) before the URL, " : "";
-  const message = `⚠ Ambiguous URL boundary: ${described.join(", ")}. ` +
+  const message = `Ambiguous URL boundary: ${described.join(", ")}. ` +
     `${fixes}Put the URL on its own line, or wrap it as <url> / <url|label>. ` +
     "Use --fix-urls to wrap them, or --allow-url-adjacent to warn only.";
   if (!allow) throw new Error(message);
-  warn(`Warning: ${message}`);
+  warn(`⚠ Warning: ${message}`);
 }
 
 type RichTextElement =
