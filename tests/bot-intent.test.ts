@@ -43,6 +43,9 @@ describe("botIntentRefusal", () => {
     expect(botIntentRefusal(["send"], { "as-bot": true }, intent())).toBeNull();
     expect(botIntentRefusal(["read"], {}, intent())).toBeNull();
     expect(botIntentRefusal(["ask"], { ls: true }, intent())).toBeNull();
+    expect(botIntentRefusal(["ask"], { pending: true }, intent())).toBeNull();
+    // --push collects (✅): a write.
+    expect(botIntentRefusal(["ask"], { pending: true, push: true }, intent())).not.toBeNull();
     // --waitFor stamps ✅ into the question — a write.
     expect(botIntentRefusal(["ask"], { waitFor: "https://acme.slack.com/archives/C00000001/p1700000000000100" }, intent())).not.toBeNull();
     expect(botIntentRefusal(["send"], {}, intent({ botTokenSource: undefined }))).toBeNull();

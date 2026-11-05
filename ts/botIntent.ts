@@ -30,11 +30,12 @@ export function isWriteCommand(path: (string | number)[]): boolean {
   return WRITES.has(a) || WRITES.has(`${a} ${b}`);
 }
 
-/** Read-only modes of a write command. `ask --ls` only reads the local
- *  sent-log and the questions' live state. (`ask --waitFor` and
- *  `poll --results` are NOT here: both can edit the posted message.) */
+/** Read-only modes of a write command. `ask --ls` and `ask --pending` only
+ *  read the local sent-log and the questions' live state. (`ask --waitFor`,
+ *  `ask --pending --push` and `poll --results` are NOT here: each can edit the
+ *  posted message.) */
 export function isReadMode(path: (string | number)[], argv: Record<string, unknown>): boolean {
-  return String(path[0] ?? "") === "ask" && argv.ls === true;
+  return String(path[0] ?? "") === "ask" && (argv.ls === true || (argv.pending === true && argv.push !== true));
 }
 
 export type BotIntent = {
