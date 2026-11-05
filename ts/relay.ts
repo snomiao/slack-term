@@ -162,7 +162,7 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
   return t || (text.trim() ? "(you were mentioned, no text)" : "");
 }
 
-const AGENT_EMOJI = ["robot_face", "gear", "rocket", "brain", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
+const AGENT_EMOJI = ["robot_face", "gear", "rocket", "speech_balloon", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
 
 /** Who an agent is, for the post's sender name: `host:repo#worktree` (the checkout's
  *  folder under tree/, which stays put while the lane switches branches), with an emoji
