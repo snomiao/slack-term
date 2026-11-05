@@ -184,7 +184,17 @@ eval "$RESUME --timeout 0" && echo answered
 # pressed, or that got a reply, while nobody was waiting — grouped by the asking
 # session, with whether that agent is still alive and the --waitFor line that
 # collects each. Read-only: collecting (that line) is what takes it off the list.
+# Never blocks: no waiting out rate limits — a throttled pass says what it skipped.
 slack ask --pending                    # last 7 days; --since 2h, --channel, --json
+# Push instead of waiting to be asked: each answer goes to the agent that asked
+# (`ay send` to its pid from the sent-log, or a parent ay knows), then a decision
+# is collected (✅, off the list); a free-text reply is pushed once and the
+# question stays open. Askers that are gone get nothing — the list keeps them.
+slack ask --pending --push
+# As a service: a pass every --interval (min), and one per question as soon as
+# the relay rings for it (SLACK_RELAY_URL / SLACK_RELAY_TOKEN: a reaction on it
+# or a reply in its thread). Prints only what it pushed.
+slack ask --pending --push --watch --interval 10
 
 # Who sent what: every send/ask/poll/edit is logged locally with its sender —
 # pid, cwd, git branch, agent CLI and session id — and the same attribution rides
