@@ -3,9 +3,36 @@
 // only the token owner's own plain messages, never the relay's own posts.
 import { describe, test, expect } from "./harness.ts";
 import { stripSelfMention, isSlackFileUrl, audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
+import { threadOriginOf, originRoute } from "../ts/relay.ts";
 
 const SELF = "U00000001";
 const OTHER = "U00000002";
+
+describe("a reply in a lane's thread goes to that lane", () => {
+  const origin = { host: "tak", repo: "lianki", worktree: "main" };
+  test("the root post's identity names the lane; a person's or plain bot's root does not", () => {
+    const root = { ts: "1.1", bot_id: "B00000001", username: "tak:lianki#main" };
+    const mine = { ts: "1.2", bot_id: "B00000001", username: "tak:slack-term#main" };
+    expect(threadOriginOf([root, mine])).toEqual(origin);
+    expect(threadOriginOf([{ ts: "1.1", bot_id: "B00000001", username: "tak:lianki" }])).toEqual({ host: "tak", repo: "lianki", worktree: "" });
+    expect(threadOriginOf([{ ts: "1.1", user: SELF, text: "hi" }, root])).toBeUndefined();
+    expect(threadOriginOf([{ ts: "1.1", bot_id: "B00000001", username: "SnoBot" }])).toBeUndefined();
+    expect(threadOriginOf([])).toBeUndefined();
+  });
+  test("it outranks a binding the default agent got as the fallback", () => {
+    expect(originRoute({ origin, host: "tak", boundCwd: "/home/a/ws/acme/slack-term/tree/main" })).toBe("lianki/main");
+    expect(originRoute({ origin, host: "TAK" })).toBe("lianki/main");
+  });
+  test("an explicit @route, another machine's thread, or no origin leave it alone", () => {
+    expect(originRoute({ origin, host: "tak", explicit: true })).toBeUndefined();
+    expect(originRoute({ origin, host: "other" })).toBeUndefined();
+    expect(originRoute({ host: "tak" })).toBeUndefined();
+  });
+  test("already with that lane: stays with the same agent", () => {
+    expect(originRoute({ origin, host: "tak", boundCwd: "/home/a/ws/acme/lianki/tree/main" })).toBeUndefined();
+    expect(originRoute({ origin, host: "tak", boundCwd: "/home/a/ws/acme/lianki/tree/other" })).toBe("lianki/main");
+  });
+});
 
 describe("voice messages", () => {
   const clip = { id: "F00000001", subtype: "slack_audio", mimetype: "audio/mp4", filetype: "m4a" };
