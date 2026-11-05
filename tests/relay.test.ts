@@ -10,15 +10,25 @@ const OTHER = "U00000002";
 
 describe("a reply in a lane's thread goes to that lane", () => {
   const origin = { host: "tak", repo: "lianki", worktree: "main" };
+  const BOT = "B00000001";
+  const rootAs = (username: string, bot_id = BOT) => [{ ts: "1.1", bot_id, username }];
   test("the root post's identity names the lane; a person's or plain bot's root does not", () => {
-    const root = { ts: "1.1", bot_id: "B00000001", username: "tak:lianki#main" };
-    const mine = { ts: "1.2", bot_id: "B00000001", username: "tak:slack-term#main" };
-    expect(threadOriginOf([root, mine])).toEqual(origin);
-    expect(threadOriginOf([{ ts: "1.1", bot_id: "B00000001", username: "tak:lianki" }])).toEqual({ host: "tak", repo: "lianki", worktree: "" });
-    expect(threadOriginOf([{ ts: "1.1", user: SELF, text: "hi" }, root])).toBeUndefined();
-    expect(threadOriginOf([{ ts: "1.1", bot_id: "B00000001", username: "SnoBot" }])).toBeUndefined();
-    expect(threadOriginOf([])).toBeUndefined();
+    const mine = { ts: "1.2", bot_id: BOT, username: "tak:slack-term#main" };
+    expect(threadOriginOf([...rootAs("tak:lianki#main"), mine], BOT)).toEqual(origin);
+    expect(threadOriginOf(rootAs("tak:lianki"), BOT)).toEqual({ host: "tak", repo: "lianki", worktree: "" });
+    expect(threadOriginOf([{ ts: "1.1", user: SELF, text: "hi" }, ...rootAs("tak:lianki#main")], BOT)).toBeUndefined();
+    expect(threadOriginOf(rootAs("SnoBot"), BOT)).toBeUndefined();
+    expect(threadOriginOf([], BOT)).toBeUndefined();
   });
+  test("another bot naming itself after a lane is not trusted", () => {
+    expect(threadOriginOf(rootAs("tak:lianki#main", "B00000002"), BOT)).toBeUndefined();
+    expect(threadOriginOf(rootAs("tak:lianki#main"), undefined)).toBeUndefined(); // no bot of our own (user mode)
+  });
+  for (const username of ["tak:..", "tak:.", "tak:--help", "tak:-x", "tak:.hidden#main", "tak:_x"]) {
+    test(`${username} is no lane, even from our own bot`, () => {
+      expect(threadOriginOf(rootAs(username), BOT)).toBeUndefined();
+    });
+  }
   test("it outranks a binding the default agent got as the fallback", () => {
     expect(originRoute({ origin, host: "tak", boundCwd: "/home/a/ws/acme/slack-term/tree/main" })).toBe("lianki/main");
     expect(originRoute({ origin, host: "TAK" })).toBe("lianki/main");

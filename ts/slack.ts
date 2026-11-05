@@ -160,11 +160,12 @@ export function renameAgentSession(token: string, thread: AgentThread, title: st
 export async function authTest(
   token: string,
   cookie?: string,
-): Promise<{ team: string; teamId: string; url: string; user: string; userId: string }> {
+): Promise<{ team: string; teamId: string; url: string; user: string; userId: string; botId?: string }> {
   const resp = (await get(token, "auth.test", {}, cookie)) as {
-    team?: string; team_id?: string; url?: string; user?: string; user_id?: string;
+    team?: string; team_id?: string; url?: string; user?: string; user_id?: string; bot_id?: string;
   };
   return {
+    ...(resp.bot_id ? { botId: resp.bot_id } : {}),
     team: resp.team ?? "",
     teamId: resp.team_id ?? "",
     url: resp.url ?? "",

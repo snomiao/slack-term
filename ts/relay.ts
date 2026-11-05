@@ -151,10 +151,14 @@ export function threadHostOf(msgs: SlackMsg[]): string | undefined {
   return undefined;
 }
 
-/** Which lane opened a thread: the identity on its root post (`host:repo#worktree`). */
-export function threadOriginOf(msgs: SlackMsg[]): ThreadOrigin | undefined {
+/** Which lane opened a thread: the identity on its root post (`host:repo#worktree`).
+ *  Only the relay's own bot counts: any other bot can pick its own username, and this
+ *  decides which local lane gets the owner's reply (and which one is woken). A post with
+ *  a custom username has no `user` field, so `bot_id` is what identifies the poster. The
+ *  repo must start with a letter or digit: it can reach `lane wake` as a target or flag. */
+export function threadOriginOf(msgs: SlackMsg[], selfBotId: string | undefined): ThreadOrigin | undefined {
   const root = msgs[0];
-  const m = root?.bot_id ? root.username?.match(/^([\w-]+):([\w.-]+)(?:#(.+))?$/) : undefined;
+  const m = selfBotId && root?.bot_id === selfBotId ? root.username?.match(/^([\w-]+):([A-Za-z0-9][\w.-]*)(?:#(.+))?$/) : undefined;
   return m ? { host: m[1]!, repo: m[2]!, worktree: m[3] ?? "" } : undefined;
 }
 
@@ -466,6 +470,7 @@ type Creds = {
   ownerName: string;
   selfId: string;       // who the relay posts as (loop guard)
   selfName: string;
+  selfBotId?: string;   // the bot_id on the relay's own posts (bot mode)
   mode: "bot" | "user";
 };
 
@@ -489,7 +494,7 @@ async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
       try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
     }
     const files = user ? { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}) } : undefined;
-    return { token: bot, ...(files ? { files } : {}), owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
+    return { token: bot, ...(files ? { files } : {}), owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, ...(b.botId ? { selfBotId: b.botId } : {}), mode: "bot" };
   }
   if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
   if (cfg.team && user.team !== cfg.team) throw new Error(`user session is for team ${user.team}, relay.json expects ${cfg.team}`);
@@ -897,7 +902,7 @@ export async function main(argv: string[]): Promise<void> {
       if (Number(m.latest_reply) <= Number(seen)) continue;
       const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
       const tHost = threadHostOf(r.messages ?? []);
-      const tOrigin = threadOriginOf(r.messages ?? []);
+      const tOrigin = threadOriginOf(r.messages ?? [], c.selfBotId);
       for (const x of r.messages ?? []) {
         if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
         if (isInstruction(x, c.owner, ownTs, agentFiles) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost, tOrigin);
