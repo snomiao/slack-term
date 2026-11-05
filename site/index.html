@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>slack-term: Slack from your shell</title>
-<meta name="description" content="A Slack CLI for people and agents. Read, search and reply from the terminal, with a preview and a confirm code before anything is sent.">
+<title>slack-term: a Slack CLI</title>
+<meta name="description" content="A Slack CLI for people and coding agents. Read, search and reply from a shell. Every post shows a preview and needs a confirm code.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#1d1c1d">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.png">
 <meta property="og:title" content="slack-term">
-<meta property="og:description" content="Slack from your shell, with a preview and a confirm code before anything is sent.">
+<meta property="og:description" content="A Slack CLI for people and coding agents. Every post shows a preview and needs a confirm code.">
 <meta property="og:image" content="https://slack-term.pages.dev/icon.png">
 <meta property="og:url" content="https://slack-term.pages.dev/">
 <style>
@@ -45,7 +45,7 @@
   .k { color: var(--yellow); }
   .ok { color: var(--green); }
 
-  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 10px 24px; }
+  dl { margin: 0; display: grid; grid-template-columns: 200px 1fr; gap: 10px 24px; }
   dt { color: var(--blue); white-space: nowrap; }
   dd { margin: 0; color: var(--muted); }
   dd code { white-space: nowrap; }
@@ -56,6 +56,36 @@
 
   .note { color: var(--muted); margin: 0 0 12px; }
   footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 20px; }
+
+  /* long-form sections */
+  p, li, dd, td { font-family: system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans CJK SC", sans-serif; }
+  code { font-family: var(--mono); font-size: 0.92em; }
+  section p { margin: 0 0 14px; }
+  section p.note { margin-bottom: 12px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 32px 0 0; font-size: 14px; }
+  h3 { font-size: 16px; line-height: 1.4; margin: 32px 0 8px; }
+  ol.time { list-style: none; margin: 0; padding: 0; border-left: 2px solid var(--line); }
+  ol.time li { padding: 0 0 16px 16px; color: var(--muted); }
+  ol.time b { display: block; color: var(--text); font: 600 14px var(--mono); }
+  .formula { color: var(--yellow); }
+  pre + p, pre + h3 { margin-top: 16px; }
+  .ev { color: var(--red); }
+  .tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  th { font: 600 13px var(--mono); color: var(--muted); }
+  td:first-child { white-space: nowrap; }
+  td { color: var(--muted); min-width: 150px; }
+  h2 { scroll-margin-top: 16px; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  /* Wide screens: the page's nav becomes a table of contents beside the text. */
+  @media (min-width: 1180px) {
+    nav { position: fixed; top: 56px; left: calc(50% - 380px - 190px); width: 170px; margin: 0; flex-direction: column; flex-wrap: nowrap; gap: 2px; border-left: 2px solid var(--line); }
+    nav a { padding: 4px 0 4px 12px; margin-left: -2px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; }
+    nav a.on { color: var(--text); border-left-color: var(--yellow); }
+  }
 </style>
 </head>
 <body>
@@ -63,48 +93,213 @@
   <header>
     <img src="icon.svg" alt="" width="88" height="88">
     <h1>slack-term</h1>
-    <p class="lede">Slack from your shell. Read, search and reply from a terminal or an agent script, and see exactly what will be sent before it goes.</p>
+    <p class="lede">Use Slack from a shell, or let your coding agents do it. Every post shows a preview first.</p>
   </header>
 
   <div class="install">
     <code id="cmd">npm install -g slack-term</code>
     <button type="button" id="copy">copy</button>
   </div>
-  <p class="alt">Also with bun or pnpm, or as a native Rust build. Both give you the same <code>slack</code> command.</p>
+  <p class="alt">Also with bun or pnpm. A smaller native Rust build covers the core commands.</p>
 
-  <h2>Nothing sends by accident</h2>
-  <p class="note">A write shows who you are, where it goes and what it says, then waits for a confirm code. Change the account or the text and the code stops working.</p>
-<pre><span class="p">$</span> slack send "#general" "Deploy finished"
+  <nav aria-label="On this page">
+    <a href="#usage">Usage</a><a href="#why">Why</a><a href="#stale">The stale code</a><a href="#insights">What we learned</a><a href="#agents">Agents</a><a href="#commands">Commands</a><a href="#history">History</a><a href="#compare">Alternatives</a>
+  </nav>
+
+  <section>
+  <h2 id="usage">Usage</h2>
+<pre><span class="d"># What needs me?</span>
+<span class="p">$</span> slack news
+<span class="p">$</span> slack read "#eng" --unreplied
+<span class="p">$</span> slack search "deploy"
+
+<span class="d"># Reply in a thread: the first run previews, the second sends</span>
+<span class="p">$</span> slack send "#eng:1700000000.000100" "Deployed, looks good"
+<span class="k">Rerun with --code=3f9c</span>
+<span class="p">$</span> slack send "#eng:1700000000.000100" "Deployed, looks good" --code=3f9c
+<span class="ok">✓ Sent</span>
+
+<span class="d"># Ack without adding a message</span>
+<span class="p">$</span> slack react "#eng:1700000000.000100" white_check_mark
+
+<span class="d"># Ask with one-tap choices, then collect the answer</span>
+<span class="p">$</span> slack ask "@bob" "Ship v2 today?" "Ship it" "Wait"</pre>
+  </section>
+
+  <section>
+  <h2 id="why">Why we built it</h2>
+  <p>This started in March 2026 as a quick tool to read mentions and search Slack from a terminal. Then our coding agents started calling it. Agents post to real channels under real accounts, so most of the codebase now handles safe writes and routing answers back to whichever agent asked the question.</p>
+  <p>It's the Slack interface for <a href="https://github.com/snomiao/agent-yes">agent-yes</a>, though neither tool depends on the other. It works standalone in any shell.</p>
+  </section>
+
+  <section>
+  <h2 id="stale">A confirm code that goes stale</h2>
+  <p>Write commands take two runs. The first prints your active account, the target channel, recent messages and a 4-character confirm code. To actually send, you pass that code to the second run. Nothing is stored between runs; both hash the same state:</p>
+<pre><span class="formula">code = sha256(channel, thread, last message, your text, you)[:4]</span></pre>
+  <p>If someone posts in the channel while you're looking at the preview, the last message changes. The second run computes a different hash, rejects your code and prints an updated preview with the new message included.</p>
+<pre><span class="p">$</span> slack send "#eng" "Deploying v2 now"
 <span class="d">  From: @alice (U00000001) — Acme
-  To:   #general
-  Message: Deploy finished</span>
-<span class="k">Rerun with --code=10f6</span>
+  To:   #eng
+  ...recent messages...</span>
+<span class="k">Rerun with --code=3f9c</span>
 
-<span class="p">$</span> slack send "#general" "Deploy finished" --code=10f6
-<span class="ok">✓ Sent</span></pre>
+<span class="ev">          bob, in #eng: "wait, hold the deploy"</span>
 
-  <h2>What it does</h2>
+<span class="p">$</span> slack send "#eng" "Deploying v2 now" --code=3f9c
+<span class="ev">Code mismatch</span>
+<span class="d">  ...now you see bob's message...</span></pre>
+  <p>Switching accounts invalidates the code the same way. <code>edit</code> and <code>delete</code> hash the target message's current text, so you don't overwrite a change made after you fetched the preview.</p>
+  <p>This is not a security boundary. Any script can parse the output and rerun with <code>--code</code>, and our test suite does. It's there to catch accidental sends and races.</p>
+  <p>Background on the design: <a href="https://lab.agent-yes.com/2026-08-11-slack-term-safe-writes">A confirm code that goes stale</a>.</p>
+  </section>
+
+  <section>
+  <h2 id="insights">What we learned</h2>
+
+  <h3>Most checks only warn</h3>
+  <p>Only a few conditions stop a write: a mismatched code, a URL Slack would mangle, or an agent about to post under a person's account. Everything else prints a warning: a near-duplicate in the same thread, your message already being the last one, an @mention that won't notify anyone, late-night hours for the recipient. <code>send</code> has no <code>--force</code> or <code>--yes</code>. If it did, scripts and agents would hardcode it everywhere.</p>
+
+  <h3>Agents can't post as you by accident</h3>
+  <p>An agent once ran <code>slack ask</code> without <code>--as-bot</code> and the question went out from a person's account. Now, inside an agent session, the CLI refuses to write with a personal token unless you name an identity: <code>slack @deploy-bot send …</code>, <code>--as-bot</code> or <code>--as-user</code>.</p>
+
+  <h3>Answers arrive after the asker has moved on</h3>
+  <p><code>slack ask</code> puts numbered reactions on the question so people can answer with one click. In one count, 13 of 71 questions got answers nobody read, because the agent that asked had moved on. So <code>--waitFor</code> collects an answer later, <code>--pending</code> lists answers nobody has picked up, and <code>--push</code> sends them back to the agent. <code>--edit</code> and <code>--void</code> change or cancel a question.</p>
+
+  <h3>Previews get sanitized</h3>
+  <p>Display names are user-controlled, and they render in your terminal during a preview. We strip ANSI escape sequences and Unicode right-to-left overrides from them, and mask token-like strings in message previews. Files the CLI writes locally also go through secret redaction: gitleaks' rules, URL parameters, <code>sk-</code> keys and 6-digit codes.</p>
+
+  <h3>The relay only passes IDs</h3>
+  <p>Polling every channel hits Slack's rate limits fast. For realtime you can deploy our Cloudflare Worker relay on your own account. Slack sends events to the Worker, which forwards IDs such as channel, timestamp and thread over WebSocket or SSE. The client then fetches the message with your own token. Without a relay, <code>stream</code> falls back to paced polling and prints a warning.</p>
+
+  <h3>Every post is logged</h3>
+  <p>Each send, ask, poll and edit adds a record to a local log with the PID, working directory, git branch and session ID. <code>slack sent</code> queries it to see which agent posted a message, and <code>--push</code> uses it to route answers back.</p>
+
+  <h3>CJK text breaks links</h3>
+  <p>If Chinese or Japanese text follows a URL with no space, Slack absorbs it into the link. <code>send</code> catches that before the confirm step and shows the fix, or wraps the URL with <code>--fix-urls</code>. Japanese display names also resolve as @mentions, <code>ask</code> follows its readers' language, and late-night warnings use the recipient's timezone when Slack has it.</p>
+
+  <h3>Fewer messages</h3>
+  <p>Not everything needs a new message. <code>slack react</code> adds <code>eyes</code> or <code>white_check_mark</code> with no confirm step. <code>pinlog</code> keeps one pinned status message and adds updates as thread replies. <code>tick</code> checks off an item in a posted list.</p>
+  </section>
+
+  <section>
+  <h2 id="agents">Built for agents, usable by people</h2>
+  <p>Output is plain text in a terminal and JSON with <code>--json</code>. Commands return distinct exit codes for scripting, and local state lives in files.</p>
+<pre><span class="d"># Wake on anything that mentions the bot, across channels and threads</span>
+<span class="p">$</span> slack stream --grep "&lt;@U00000001&gt;" --json
+
+<span class="d"># Ask a person, as the bot, and move on</span>
+<span class="p">$</span> slack @deploy-bot ask "@bob" "Ship v2 today?" "Ship it" "Wait"
+
+<span class="d"># Hand each answer to the agent that asked, as it arrives</span>
+<span class="p">$</span> slack @deploy-bot ask --pending --push --watch
+
+<span class="d"># Mark a message as seen</span>
+<span class="p">$</span> slack react "#eng:1700000000.000100" eyes</pre>
+  <p>Create a <code>.slack-term/</code> directory in a repo and commands run there get project-scoped aliases, message prefixes and file-based inbox and outbox queues. It's found by walking up the tree, like <code>.git</code>.</p>
+  </section>
+
+  <section>
+  <h2 id="commands">What it does</h2>
+  <h3>Read</h3>
   <dl>
     <dt>slack news</dt><dd>Your mentions, grouped by day.</dd>
     <dt>slack read "#eng"</dt><dd>Channel and DM history, with threads marked. <code>--unreplied</code> shows what still needs you.</dd>
+    <dt>slack thread</dt><dd>One whole thread.</dd>
     <dt>slack search "deploy"</dt><dd>Full-text search across the workspace.</dd>
-    <dt>slack tail "#eng"</dt><dd>New messages as they arrive, like <code>tail -f</code>.</dd>
-    <dt>slack react &lt;link&gt; eyes</dt><dd>Acknowledge without growing the thread.</dd>
-    <dt>slack ask "@bob" …</dt><dd>Ask a question with one-tap reaction choices, then collect the answer in a script.</dd>
     <dt>slack dump</dt><dd>Export channel history as markdown.</dd>
+    <dt>slack download</dt><dd>Save a file attachment.</dd>
   </dl>
+  <h3>Write, behind the confirm code</h3>
+  <dl>
+    <dt>slack send</dt><dd>Post to a channel, DM or thread. A pasted permalink replies in that thread.</dd>
+    <dt>slack edit / delete</dt><dd>Change or remove a message you sent.</dd>
+    <dt>slack upload</dt><dd>Share one or more files.</dd>
+    <dt>slack schedule</dt><dd>Send later, list and cancel.</dd>
+  </dl>
+  <h3>Coordinate</h3>
+  <dl>
+    <dt>slack react</dt><dd>Acknowledge without growing the thread.</dd>
+    <dt>slack ask</dt><dd>A question with one-tap choices and an answer you can collect in a script.</dd>
+    <dt>slack poll</dt><dd>A reaction vote, counted for you.</dd>
+    <dt>slack todo</dt><dd>Task tracking on reactions, across a team.</dd>
+    <dt>slack pinlog</dt><dd>A pinned status board with a log in its thread.</dd>
+    <dt>slack lists</dt><dd>Read and update Slack Lists.</dd>
+  </dl>
+  <h3>Listen and automate</h3>
+  <dl>
+    <dt>slack tail "#eng"</dt><dd>New messages as they arrive, like <code>tail -f</code>.</dd>
+    <dt>slack stream</dt><dd>Every message matching a regex, across all channels and threads, with a resumable cursor.</dd>
+    <dt>slack relay init</dt><dd>Scaffold the realtime doorbell Worker.</dd>
+    <dt>slack inbox / outbox</dt><dd>Route messages to a directory as files, and queue replies the same way.</dd>
+    <dt>slack sent</dt><dd>Search what this machine posted, and which agent posted it.</dd>
+  </dl>
+  <h3>Set up</h3>
+  <dl>
+    <dt>slack auth</dt><dd>Sign in with a token or import a desktop or browser session. Several workspaces are fine.</dd>
+    <dt>slack @&lt;who&gt;</dt><dd>Act as a named bot or person.</dd>
+    <dt>slack doctor</dt><dd>Check a bot token can carry a two-way DM.</dd>
+  </dl>
+  <p style="margin-top:20px">There's more in the <a href="https://github.com/snomiao/slack-term#usage">README</a>, including drafts, channels and users.</p>
+  </section>
 
-  <h2>Is it for you?</h2>
-  <p class="note">It suits scriptable conversations with a check before sending. The confirm step adds a second command, and you set up a token yourself. For a full-screen chat client or a dedicated archive, the <a href="https://github.com/snomiao/slack-term#comparison-with-other-slack-tools">comparison in the README</a> points to tools built for that.</p>
+  <section>
+  <h2 id="history">How it got here</h2>
+  <p>From the git log.</p>
+  <ol class="time">
+    <li><b>Mar 2026</b>A Rust binary named <code>sl</code> for mentions and search. The confirm hash on <code>send</code> by month's end.</li>
+    <li><b>Apr</b>A TypeScript implementation alongside Rust, published to npm. Multi-workspace profiles and desktop token import.</li>
+    <li><b>May</b><code>edit</code>, <code>upload</code>, <code>schedule</code>, <code>tail</code>, browser cookie extraction and 429 Retry-After handling.</li>
+    <li><b>Jun</b><code>tail --exit-on-message</code> and <code>--watch-thread</code> to block until a reply arrives, plus <code>--as-bot</code> and <code>slack doctor</code> so bot DMs actually notify people.</li>
+    <li><b>Jul</b>Thread context in previews, duplicate and unreplied warnings, <code>react</code>, Japanese @mentions.</li>
+    <li><b>Aug</b>Sender identity bound into confirm codes. Recipient-timezone quiet hours, <code>todo</code>, <code>ask</code> and <code>poll</code>.</li>
+    <li><b>Sep</b>The local <code>slack sent</code> log, cross-platform Chrome cookie decryption, bot agent status and heartbeat.</li>
+    <li><b>Oct</b><code>pinlog</code>, <code>lists</code>, <code>todos</code>, the <code>ask</code> lifecycle, token masking in previews, <code>stream --grep</code> and the Worker relay.</li>
+    <li><b>Nov</b><code>.slack-term/</code> per-directory scopes, in-process secret redaction, <code>@&lt;who&gt;</code> identities with the guard against agents posting as people, language packs, <code>ask --pending --push</code>.</li>
+  </ol>
+  </section>
+
+  <section>
+  <h2 id="compare">Alternatives</h2>
+  <p>Use slack-term if you call Slack from scripts or coding agents and want a preview before writes go out. Every send takes two runs and you have to set up a token, so other tools fit better for interactive chat or simple pipes:</p>
+  <div class="tbl"><table>
+    <thead><tr><th>Tool</th><th>Choose it for</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://docs.slack.dev/tools/slack-cli/">Official Slack CLI</a></td><td>Building and deploying Slack apps.</td></tr>
+      <tr><td><a href="https://github.com/jpbruinsslot/slack-term">Go slack-term</a></td><td>A full-screen terminal chat client. Same name, different project.</td></tr>
+      <tr><td><a href="https://github.com/wee-slack/wee-slack">wee-slack</a></td><td>Slack inside WeeChat, with ongoing chat.</td></tr>
+      <tr><td><a href="https://github.com/bcicen/slackcat">slackcat</a></td><td>Piping files and command output to Slack.</td></tr>
+      <tr><td><a href="https://github.com/rusq/slackdump">slackdump</a></td><td>Archiving and exporting workspace data.</td></tr>
+      <tr><td><a href="https://github.com/therohitdas/slkcli">slkcli</a></td><td>macOS onboarding from the Slack desktop app's credentials.</td></tr>
+    </tbody>
+  </table></div>
+  </section>
 
   <footer>
     <a href="https://github.com/snomiao/slack-term">GitHub</a>
     <a href="https://www.npmjs.com/package/slack-term">npm</a>
+    <a href="https://lab.agent-yes.com/2026-08-11-slack-term-safe-writes">Design notes</a>
     <span>MIT license</span>
     <span>Not affiliated with Slack.</span>
   </footer>
 </main>
 <script>
+  // Mark the section being read in the table of contents.
+  const links = [...document.querySelectorAll("nav a")];
+  const mark = () => {
+    let cur = links[0];
+    for (const a of links) {
+      if (document.querySelector(a.hash).getBoundingClientRect().top <= 120) cur = a;
+    }
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = links[links.length - 1];
+    for (const a of links) {
+      a.classList.toggle("on", a === cur);
+      if (a === cur) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current");
+    }
+  };
+  addEventListener("scroll", mark, { passive: true });
+  addEventListener("resize", mark);
+  mark();
+
   const btn = document.getElementById("copy");
   btn.addEventListener("click", async () => {
     try {
