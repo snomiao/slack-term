@@ -70,6 +70,10 @@ export interface SentRow {
   delivered_at?: number | null;
   delivered_answer?: string | null;
   delivered_cursor?: string | null;
+  /** `ask --pending --push` handed this answer to the asking agent (over ay):
+   *  the same answer is not pushed twice. */
+  pushed_at?: number | null;
+  pushed_answer?: string | null;
 }
 
 export function attributionEnabled(): boolean {
@@ -239,7 +243,9 @@ CREATE TABLE IF NOT EXISTS sent (
   answer_exit INTEGER,
   delivered_at INTEGER,
   delivered_answer TEXT,
-  delivered_cursor TEXT
+  delivered_cursor TEXT,
+  pushed_at INTEGER,
+  pushed_answer TEXT
 );
 CREATE INDEX IF NOT EXISTS sent_msg ON sent(channel, ts);
 CREATE INDEX IF NOT EXISTS sent_at ON sent(sent_at);
@@ -262,7 +268,7 @@ export function openSentLog(): Db | undefined {
     db.exec(SCHEMA);
     // Columns added after the table first shipped. ALTER fails harmlessly when
     // the column is already there.
-    for (const col of ["delivered_answer TEXT", "delivered_cursor TEXT"]) {
+    for (const col of ["delivered_answer TEXT", "delivered_cursor TEXT", "pushed_at INTEGER", "pushed_answer TEXT"]) {
       try { db.exec(`ALTER TABLE sent ADD COLUMN ${col}`); } catch { /* exists */ }
     }
     return db;
@@ -405,6 +411,14 @@ export function markAskDelivered(channel: string, ts: string, answer: string, cu
     `UPDATE sent SET delivered_at = ?, delivered_answer = ?, delivered_cursor = ?
      WHERE kind = 'ask' AND channel = ? AND ts = ? AND collected_at IS NULL`,
     Date.now(), answer, cursor, channel, ts,
+  );
+}
+
+/** `ask --pending --push` told the asking agent this answer. */
+export function markAskPushed(channel: string, ts: string, answer: string): void {
+  updateLog(
+    `UPDATE sent SET pushed_at = ?, pushed_answer = ? WHERE kind = 'ask' AND channel = ? AND ts = ?`,
+    Date.now(), answer, channel, ts,
   );
 }
 

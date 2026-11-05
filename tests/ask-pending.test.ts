@@ -1,11 +1,12 @@
 // `slack ask --pending`: questions this machine asked that were answered but
 // never collected, grouped by the asking session, with whether that agent is
-// still alive, and the `--waitFor` line that collects each. Read-only; it never
-// relays anything into another process. Mock Slack only.
+// still alive, and the `--waitFor` line that collects each. Read-only — unless
+// `--push`, which hands each answer to the live asker over ay and collects it.
+// Mock Slack only; `ay` is a stub on PATH.
 
 import { describe, test, expect, beforeEach, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -242,4 +243,81 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toMatch(/Unknown argument|deliver/i);
   });
+
+  // Answers are pushed by slack-term itself, not a wrapper.
+  describe("--push", () => {
+    const LIVE = { CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_TERM_AGENT_CLI: "test-agent" };
+    /** An `ay` stub: logs each call; `reply` is what it prints. */
+    function stubAy(reply = "sent to pid"): Record<string, string> {
+      const bin = join(tmpHome, "bin");
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(join(bin, "ay"), `#!/bin/sh\nprintf '%s\\n' "$*" >> "${join(tmpHome, "ay.log")}"\necho "${reply}"\n`);
+      chmodSync(join(bin, "ay"), 0o755);
+      return { PATH: `${bin}:${process.env.PATH}` };
+    }
+    const ayCalls = (): string[] => {
+      const f = join(tmpHome, "ay.log");
+      return existsSync(f) ? readFileSync(f, "utf8").trim().split("\n") : [];
+    };
+
+    test("a live asker gets the answer over ay, and the decision is collected (✅, off the list)", async () => {
+      await askLogged(LIVE);
+      const env = stubAy();
+      const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
+      expect(r.exitCode).toBe(0);
+      const calls = ayCalls();
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain(`send ${process.pid} --force [ask-answer] ${LINK} → no`);
+      expect(calls[0]).toContain("collected ✅");
+      expect(r.stdout).toContain(`pushed to pid ${process.pid}, collected ✅`);
+      expect(r.stderr).toContain("1 pushed to the asker");
+      const again = await pending(slackHas(PRESSED_NO), ["--push"], env);
+      expect(again.stderr).toContain("checked 0 uncollected question(s)");
+      expect(ayCalls()).toHaveLength(1);
+    });
+
+    test("an asker that is gone gets nothing; the answer stays listed", async () => {
+      await askLogged();
+      const env = stubAy();
+      const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
+      expect(ayCalls()).toEqual([]);
+      expect(r.stdout).toContain("A: no");
+      expect(r.stderr).toContain("0 pushed to the asker");
+    });
+
+    test("a free-text reply is pushed once and the question stays open", async () => {
+      await askLogged(LIVE);
+      const env = stubAy();
+      const clarify = slackHas({ reply_count: 1 });
+      clarify[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`] = { ok: true, messages: [
+        { type: "message", user: SELF, ts: TS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "背景を教えて", thread_ts: TS },
+      ] };
+      const r = await pending(clarify, ["--push"], env);
+      expect(ayCalls()).toHaveLength(1);
+      expect(ayCalls()[0]).toContain("背景を教えて");
+      expect(ayCalls()[0]).toContain("not a choice: the question stays open");
+      expect(r.writes).toEqual([]);
+      const again = await pending(clarify, ["--push"], env);
+      expect(ayCalls()).toHaveLength(1);
+      expect(again.stderr).toContain("1 unanswered");
+    });
+
+    test("an asker ay cannot reach is tried again next pass", async () => {
+      await askLogged(LIVE);
+      const env = stubAy("no agent matched");
+      const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
+      expect(r.stderr).toContain("did not take the push over ay");
+      expect(r.writes).toEqual([]);
+      const again = await pending(slackHas(PRESSED_NO), ["--push"], stubAy());
+      expect(again.stderr).toContain("1 pushed to the asker");
+    });
+
+    test("--watch needs --push", async () => {
+      const r = await pending(BASE, ["--watch"]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toContain("use it with --push");
+    });
+  });
 });
+
