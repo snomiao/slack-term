@@ -45,6 +45,7 @@ export type SlackMsg = {
   reply_count?: number; latest_reply?: string; username?: string; files?: SlackFile[];
   attachments?: SharedAttachment[];
 };
+export type ThreadOrigin = { host: string; repo: string; worktree: string };
 export type SlackFile = {
   id: string; name?: string; mimetype?: string; filetype?: string; subtype?: string;
   url_private?: string; url_private_download?: string; permalink?: string;
@@ -148,6 +149,31 @@ export function threadHostOf(msgs: SlackMsg[]): string | undefined {
     if (h) return h;
   }
   return undefined;
+}
+
+/** Which lane opened a thread: the identity on its root post (`host:repo#worktree`).
+ *  Only the relay's own bot counts: any other bot can pick its own username, and this
+ *  decides which local lane gets the owner's reply (and which one is woken). A post with
+ *  a custom username has no `user` field, so `bot_id` is what identifies the poster. The
+ *  repo must start with a letter or digit: it can reach `lane wake` as a target or flag. */
+export function threadOriginOf(msgs: SlackMsg[], selfBotId: string | undefined): ThreadOrigin | undefined {
+  const root = msgs[0];
+  const m = selfBotId && root?.bot_id === selfBotId ? root.username?.match(/^([\w-]+):([A-Za-z0-9][\w.-]*)(?:#(.+))?$/) : undefined;
+  return m ? { host: m[1]!, repo: m[2]!, worktree: m[3] ?? "" } : undefined;
+}
+
+/** A reply in a lane's thread goes to that lane. Only an explicit `@route` earlier in the
+ *  thread outranks it; a binding the default agent got by being the fallback does not, and
+ *  neither does an origin on another machine. Returns the route to look up, if any. */
+export function originRoute(o: { origin?: ThreadOrigin | undefined; host: string; explicit?: boolean | undefined; boundCwd?: string | undefined }): string | undefined {
+  const { origin } = o;
+  if (!origin || o.explicit || origin.host.toLowerCase() !== o.host.toLowerCase()) return undefined;
+  const route = origin.worktree ? `${origin.repo}/${origin.worktree}` : origin.repo;
+  if (o.boundCwd) { // already with that lane: keep the same agent when a checkout has several
+    const { repo, branch } = agentNames(o.boundCwd);
+    if (repo === origin.repo.toLowerCase() && (!origin.worktree || branch === origin.worktree.toLowerCase())) return undefined;
+  }
+  return route.toLowerCase();
 }
 
 /** Addressing the relay's own bot ("<@BOT> do x", or a typed "@snobot do x") is the
@@ -348,17 +374,21 @@ export function splitForSlack(text: string, maxChars = 3500): string[] {
 
 type State = {
   cursor: string;                         // newest top-level ts seen
-  threads: Record<string, { pid: number; seen: string; touched: number; cwd?: string }>; // thread_ts → agent (cwd: to wake its lane after it exits)
+  threads: Record<string, { pid: number; seen: string; touched: number; cwd?: string; explicit?: boolean }>; // thread_ts → agent (cwd: to wake its lane after it exits; explicit: the owner chose it with @route)
   agentThread: Record<string, string>;    // pid → latest thread_ts
   ownTs: string[];                        // ts the relay posted (loop guard)
   outboxOffset: Record<string, number>;   // pid → bytes consumed
   replied: Record<string, boolean>;       // pid → wrote outbox since last forward
   delivered: string[];                    // message ts already forwarded (restart-proof dedupe)
   floor: string;                          // never forward anything at/before this ts
+  rootFloor?: string;                     // when this relay began watching roots older than a day
   replySeen: Record<string, string>;      // thread root ts → newest reply ts looked at
 };
 
 const THREAD_TTL_MS = 24 * 3600_000;
+// How far back the poll looks for threads with new replies. A wake frame sent while this
+// machine sleeps is gone, so polling has to find a late reply in an older thread by itself.
+const ROOT_WATCH_MS = 30 * 24 * 3600_000;
 
 function loadState(path: string): State {
   try { return JSON.parse(readFileSync(path, "utf8")) as State; } catch {
@@ -440,6 +470,7 @@ type Creds = {
   ownerName: string;
   selfId: string;       // who the relay posts as (loop guard)
   selfName: string;
+  selfBotId?: string;   // the bot_id on the relay's own posts (bot mode)
   mode: "bot" | "user";
 };
 
@@ -463,7 +494,7 @@ async function resolveCreds(cfg: Config, channel: string): Promise<Creds> {
       try { await conversationsJoin(bot, channel); } catch (e: unknown) { log("bot could not join channel (invite it):", String(e)); }
     }
     const files = user ? { token: user.token, ...(user.cookie ? { cookie: user.cookie } : {}) } : undefined;
-    return { token: bot, ...(files ? { files } : {}), owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, mode: "bot" };
+    return { token: bot, ...(files ? { files } : {}), owner, ownerName: user?.name ?? owner, selfId: b.userId, selfName: b.user, ...(b.botId ? { selfBotId: b.botId } : {}), mode: "bot" };
   }
   if (!user) throw new Error(`no bot token and the user session failed: ${userErr}`);
   if (cfg.team && user.team !== cfg.team) throw new Error(`user session is for team ${user.team}, relay.json expects ${cfg.team}`);
@@ -567,6 +598,7 @@ export async function main(argv: string[]): Promise<void> {
   st.delivered ??= [];
   st.replySeen ??= {};
   st.floor ??= "";
+  st.rootFloor ??= String(Date.now() / 1000);
   const ownTs = new Set(st.ownTs);
   const save = (): void => {
     st.ownTs = [...ownTs].slice(-500);
@@ -701,7 +733,7 @@ export async function main(argv: string[]): Promise<void> {
       .catch((e: unknown) => log("warn post failed", String(e)));
   };
 
-  const deliver = async (m: SlackMsg, threadTs: string, threadHost?: string): Promise<void> => {
+  const deliver = async (m: SlackMsg, threadTs: string, threadHost?: string, origin?: ThreadOrigin): Promise<void> => {
     const tDetect = Date.now();
     if (st.delivered.includes(m.ts)) return; // restart / overlapping polls: never twice
     const text = stripSelfMention(m.text ?? "", creds!.selfId, creds!.selfName)
@@ -712,6 +744,8 @@ export async function main(argv: string[]): Promise<void> {
       log(`skip ts=${m.ts}: ${routeHost ? `routed to ${routeHost}` : threadHost ? `thread belongs to ${threadHost}` : `home is ${home}`}`);
       return;
     }
+    const boundAlive = bound && agents.find((a) => a.pid === bound.pid);
+    const fromOrigin = route ? undefined : originRoute({ origin, host, explicit: bound?.explicit, boundCwd: boundAlive ? boundAlive.cwd : undefined });
     let agent: Agent | undefined;
     if (route) {
       const r = matchAgent(route, agents, defaultAgent()?.pid);
@@ -723,6 +757,8 @@ export async function main(argv: string[]): Promise<void> {
         await post(`no unique agent for \`@${route}\` — try one of: ${names}`, threadTs);
         return;
       }
+    } else if (fromOrigin) {
+      agent = matchAgent(fromOrigin, agents).agent;
     } else if (bound && agents.some((a) => a.pid === bound.pid)) {
       agent = agents.find((a) => a.pid === bound.pid);
     } else if (cfg.defaultAgent) {
@@ -734,7 +770,7 @@ export async function main(argv: string[]): Promise<void> {
       // then deliver as usual — the outbox and envelope are keyed by the new pid.
       const boundGone = bound && !agents.some((a) => a.pid === bound.pid);
       const target = cfg.wake === false ? undefined
-        : wakeTarget({ boundCwd: !route && boundGone ? bound.cwd : undefined, route, defaultAgent: cfg.defaultAgent });
+        : wakeTarget({ boundCwd: !route && !fromOrigin && boundGone ? bound.cwd : undefined, route: route ?? (fromOrigin ? origin!.repo : undefined), defaultAgent: cfg.defaultAgent });
       if (!target) {
         markDelivered(st.delivered, m.ts); save();
         await post(`agent ${bound?.pid ?? cfg.defaultAgent ?? "?"} is not running — address one with \`@name …\``, threadTs);
@@ -806,6 +842,7 @@ export async function main(argv: string[]): Promise<void> {
     const th = (st.threads[threadTs] ??= { pid: agent.pid, seen: threadTs, touched: Date.now() });
     th.pid = agent.pid;
     th.cwd = agent.cwd;
+    if (route) th.explicit = true;
     th.touched = Date.now();
     st.agentThread[String(agent.pid)] = threadTs;
     st.replied[String(agent.pid)] = false;
@@ -832,13 +869,14 @@ export async function main(argv: string[]): Promise<void> {
     const c = creds!;
     agents = await listAgents().catch((e: unknown) => { log("ay ls failed", String(e)); return agents; });
 
-    // 1) one history call over the last day: new top-level messages (past the cursor),
-    //    and every thread whose latest_reply moved — whoever started it (the owner, a
-    //    bystander, or the relay itself). Thread roots older than a day are not watched.
+    // 1) one history call: new top-level messages (past the cursor), and every thread whose
+    //    latest_reply moved — whoever started it (the owner, a bystander, or the relay
+    //    itself). Thread roots older than ROOT_WATCH_MS are reached by wake frames only.
+    const watchAgo = Date.now() / 1000 - ROOT_WATCH_MS / 1000;
     const dayAgo = Date.now() / 1000 - THREAD_TTL_MS / 1000;
     // The floor gates what is forwarded (cursor for top-level, `seen` for replies), not which
     // roots are scanned: a thread started before a restart still gets new replies.
-    const h = (await history(c.token, CHANNEL, 200, String(dayAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
+    const h = (await history(c.token, CHANNEL, 200, String(watchAgo), undefined, c.cookie)) as { messages?: SlackMsg[] };
     const recent = h.messages ?? [];
     const agentFiles = agentUploadIds();
     const woken = [...wokenRoots];
@@ -857,19 +895,23 @@ export async function main(argv: string[]): Promise<void> {
         save();
       }
       if (!m.reply_count || !m.latest_reply) continue;
-      const seen = String(Math.max(Number(st.replySeen[m.ts] ?? 0), Number(st.floor) || 0));
+      // A root the older one-day scan never tracked starts from `rootFloor`: what it missed
+      // before this version is not replayed as new instructions.
+      const oldFloor = Number(m.ts) < dayAgo ? Number(st.rootFloor) || 0 : 0;
+      const seen = String(Math.max(Number(st.replySeen[m.ts] ?? 0), Number(st.floor) || 0, oldFloor));
       if (Number(m.latest_reply) <= Number(seen)) continue;
       const r = (await replies(c.token, CHANNEL, m.ts, 200, c.cookie)) as { messages?: SlackMsg[] };
       const tHost = threadHostOf(r.messages ?? []);
+      const tOrigin = threadOriginOf(r.messages ?? [], c.selfBotId);
       for (const x of r.messages ?? []) {
         if (x.ts === m.ts || Number(x.ts) <= Number(seen)) continue;
-        if (isInstruction(x, c.owner, ownTs, agentFiles) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost);
+        if (isInstruction(x, c.owner, ownTs, agentFiles) && mentionGate(x, { mentionsOnly: !!cfg.mentionsOnly, botId: c.selfId, threadBound: !!st.threads[m.ts] })) await deliver(x, m.ts, tHost, tOrigin);
         st.replySeen[m.ts] = x.ts;
         save();
       }
     }
     for (const [root, th] of Object.entries(st.threads)) if (Date.now() - th.touched > THREAD_TTL_MS) delete st.threads[root];
-    for (const root of Object.keys(st.replySeen)) if (Number(root) < dayAgo && !oldRoots.some((m) => m.ts === root)) delete st.replySeen[root];
+    for (const root of Object.keys(st.replySeen)) if (Number(root) < watchAgo && !oldRoots.some((m) => m.ts === root)) delete st.replySeen[root];
 
     // 3) outbox → thread (macOS's periodic /tmp cleanup can remove an idle outbox dir)
     mkdirSync(outbox, { recursive: true });
