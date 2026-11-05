@@ -1,5 +1,5 @@
 import { describe, expect, test } from "./harness.ts";
-import { adjacentUrls, guardUrlBoundaries, linkifyRichText, urlBoundaryIssues } from "../ts/urlGuard.ts";
+import { adjacentUrls, fixUrlBoundaries, guardUrlBoundaries, linkifyRichText, urlBoundaryIssues } from "../ts/urlGuard.ts";
 
 describe("URL boundaries", () => {
   for (const suffix of ["内容", "）", "」", "。", "、", ">", ">*", "\u00a0内容", "\u3000内容"]) {
@@ -28,7 +28,7 @@ describe("URL boundaries", () => {
   test("override emits a warning naming the URL", () => {
     const warnings: string[] = [];
     guardUrlBoundaries("http://example.com/内容", true, (s) => warnings.push(s));
-    expect(warnings[0]).toContain("Warning: Ambiguous URL boundary");
+    expect(warnings[0]).toContain("⚠ Warning: Ambiguous URL boundary");
     expect(warnings[0]).toContain("http://example.com/内容");
   });
 
@@ -155,4 +155,34 @@ describe("linkifyRichText (drafts)", () => {
   test("text without URLs is a single text element", () => {
     expect(linkifyRichText("hello 世界")).toEqual([{ type: "text", text: "hello 世界" }]);
   });
+});
+
+describe("URL boundaries: trailing punctuation and --fix-urls", () => {
+  test("a URL glued to CJK text is refused and names the URL", () => {
+    expect(() => guardUrlBoundaries("见 https://example.com/a。下一句")).toThrow("https://example.com/a。下一句");
+  });
+  for (const [text, ch] of <[string, string][]>[["(see https://example.com/a)", ")"], ["at https://example.com/a.", "."], ["https://example.com/a, then", ","]]) {
+    test(`a trailing ${JSON.stringify(ch)} warns but does not refuse`, () => {
+      const warnings: string[] = [];
+      expect(() => guardUrlBoundaries(text, false, (s) => warnings.push(s))).not.toThrow();
+      expect(warnings.join("\n")).toContain("<https://example.com/a>");
+      expect(warnings.join("\n")).toContain(ch);
+      expect(urlBoundaryIssues(text).map((i) => i.side)).toEqual(["trailing"]);
+    });
+  }
+  test("a balanced paren is part of the URL", () => {
+    expect(urlBoundaryIssues("https://en.wikipedia.org/wiki/A_(b)")).toEqual([]);
+  });
+  for (const [text, fixed] of <[string, string][]>[
+    ["见 https://example.com/a。下一句", "见 <https://example.com/a>。下一句"],
+    ["(see https://example.com/a)", "(see <https://example.com/a>)"],
+    ["说明：https://example.com/a 后", "说明：<https://example.com/a> 后"],
+    ["ok https://example.com/a done", "ok https://example.com/a done"],
+    ["`https://example.com/内容` <https://x.com/y>内容", "`https://example.com/内容` <https://x.com/y>内容"],
+  ]) {
+    test(`fixUrlBoundaries ${JSON.stringify(text)}`, () => {
+      expect(fixUrlBoundaries(text)).toBe(fixed);
+      expect(() => guardUrlBoundaries(fixUrlBoundaries(text))).not.toThrow();
+    });
+  }
 });
