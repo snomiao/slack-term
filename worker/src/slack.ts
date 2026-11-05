@@ -16,6 +16,9 @@ export type Doorbell = {
    *  ids: which emoji is read from Slack by whoever needs it. */
   kind?: "reaction";
   user?: string;
+  /** Reaction bells only: the event's event_ts. The relay keeps one bell per channel+ts+rid, so a reaction on a
+   *  message that already rang still rings, and a Slack retry of the same event does not ring twice. */
+  rid?: string;
 };
 
 /** Slack rejects replays older than five minutes; so do we. */
@@ -122,7 +125,8 @@ export function doorbellOf(payload: unknown, teamId?: string): Doorbell | null {
     const { channel, ts } = item;
     if (typeof channel !== "string" || !CHANNEL.test(channel) || typeof ts !== "string" || !TS.test(ts)) return null;
     const self = selfPost(p, e);
-    return { channel, ts, kind: "reaction", ...(typeof e.user === "string" && USER.test(e.user) ? { user: e.user } : {}), ...(self ? { self } : {}) };
+    const rid = typeof e.event_ts === "string" && TS.test(e.event_ts) ? e.event_ts : undefined;
+    return { channel, ts, kind: "reaction", ...(typeof e.user === "string" && USER.test(e.user) ? { user: e.user } : {}), ...(self ? { self } : {}), ...(rid ? { rid } : {}) };
   }
   if (e.type !== "message" && e.type !== "app_mention") return null;
   if (typeof e.subtype === "string" && SKIP_SUBTYPES.has(e.subtype)) return null;

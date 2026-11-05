@@ -43,6 +43,12 @@ describe("hub.resumePoint (shared by /ws and /stream)", () => {
     expect(hub.resumePoint("10", null, "e", null, 10)).toEqual({ from: 10, gap: false });
     expect(hub.resumePoint("9", null, "e", null, 10)).toEqual({ from: 9, gap: true });
   });
+  test("bellOf keeps a reaction bell's kind and reactor (stored rows, replayed after a reconnect)", () => {
+    expect(hub.bellOf({ seq: 2, channel: "D00000001", ts: "1.1", thread_ts: null, self: null, kind: "reaction", user: "U00000002", rid: "r:1.2" }))
+      .toEqual({ channel: "D00000001", ts: "1.1", kind: "reaction", user: "U00000002", rid: "r:1.2" });
+    expect(hub.bellOf({ seq: 3, channel: "D00000001", ts: "1.1", thread_ts: null, self: null, kind: null, user: null, rid: "" }))
+      .toEqual({ channel: "D00000001", ts: "1.1" });
+  });
   test("bellOf keeps thread_ts and self only when set", () => {
     expect(hub.bellOf({ seq: 1, channel: "C00000001", ts: "1.1", thread_ts: null, self: null })).toEqual({ channel: "C00000001", ts: "1.1" });
     expect(hub.bellOf({ seq: 1, channel: "C00000001", ts: "1.2", thread_ts: "1.1", self: "U00000001" }))
