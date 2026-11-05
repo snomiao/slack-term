@@ -129,12 +129,26 @@ export class Relay extends DurableObject<Env> {
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS bells (
       seq INTEGER PRIMARY KEY AUTOINCREMENT,
       channel TEXT NOT NULL, ts TEXT NOT NULL, thread_ts TEXT,
-      at INTEGER NOT NULL,
-      UNIQUE (channel, ts)
+      at INTEGER NOT NULL, self TEXT, kind TEXT, user TEXT, rid TEXT NOT NULL DEFAULT '',
+      UNIQUE (channel, ts, rid)
     )`);
     // Added later: a relay deployed before it gets the column on its next start.
-    const cols = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(bells)").toArray().map((c) => c.name);
+    let cols = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(bells)").toArray().map((c) => c.name);
     if (!cols.includes("self")) ctx.storage.sql.exec("ALTER TABLE bells ADD COLUMN self TEXT");
+    // Reaction bells (11-05): UNIQUE (channel, ts) swallowed every reaction on a message that had already rung (an
+    // ask's pills), and kind/user were not stored. SQLite cannot change a UNIQUE constraint: rebuild, keeping seq.
+    cols = ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(bells)").toArray().map((c) => c.name);
+    if (!cols.includes("rid")) {
+      ctx.storage.sql.exec(`CREATE TABLE bells_v2 (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL, ts TEXT NOT NULL, thread_ts TEXT,
+        at INTEGER NOT NULL, self TEXT, kind TEXT, user TEXT, rid TEXT NOT NULL DEFAULT '',
+        UNIQUE (channel, ts, rid)
+      )`);
+      ctx.storage.sql.exec("INSERT INTO bells_v2 (seq, channel, ts, thread_ts, at, self) SELECT seq, channel, ts, thread_ts, at, self FROM bells");
+      ctx.storage.sql.exec("DROP TABLE bells");
+      ctx.storage.sql.exec("ALTER TABLE bells_v2 RENAME TO bells");
+    }
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     ctx.storage.sql.exec("INSERT OR IGNORE INTO meta (k, v) VALUES ('epoch', ?)", crypto.randomUUID());
     this.epoch = ctx.storage.sql.exec<{ v: string }>("SELECT v FROM meta WHERE k = 'epoch'").one().v;
@@ -144,8 +158,9 @@ export class Relay extends DurableObject<Env> {
   async ring(bell: Doorbell): Promise<void> {
     const now = Date.now();
     const rows = this.ctx.storage.sql.exec<{ seq: number }>(
-      "INSERT OR IGNORE INTO bells (channel, ts, thread_ts, self, at) VALUES (?, ?, ?, ?, ?) RETURNING seq",
-      bell.channel, bell.ts, bell.thread_ts ?? null, bell.self ?? null, now,
+      "INSERT OR IGNORE INTO bells (channel, ts, thread_ts, self, kind, user, rid, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq",
+      bell.channel, bell.ts, bell.thread_ts ?? null, bell.self ?? null, bell.kind ?? null, bell.user ?? null,
+      bell.kind === "reaction" ? `r:${bell.rid ?? now}` : "", now,
     ).toArray();
     const seq = rows[0]?.seq;
     if (seq === undefined) return; // a retry of a bell we already have
@@ -182,7 +197,7 @@ export class Relay extends DurableObject<Env> {
 
   private readonly store: hub.Store = {
     rowsAfter: (seq, limit) => this.ctx.storage.sql.exec<hub.Row>(
-      "SELECT seq, channel, ts, thread_ts, self FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", seq, limit,
+      "SELECT seq, channel, ts, thread_ts, self, kind, user, rid FROM bells WHERE seq > ? ORDER BY seq LIMIT ?", seq, limit,
     ).toArray(),
   };
 

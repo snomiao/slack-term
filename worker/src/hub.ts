@@ -27,7 +27,8 @@
 import { type Doorbell as Bell, safeEqual } from "./slack.ts";
 
 export type { Bell };
-export type Row = { seq: number; channel: string; ts: string; thread_ts: string | null; self: string | null };
+export type Row = { seq: number; channel: string; ts: string; thread_ts: string | null; self: string | null;
+  kind?: string | null; user?: string | null; rid?: string | null };
 export type Hello = { seq: number; gap: boolean; retention_sec: number; epoch: string };
 
 /** Per-socket state, kept with serializeAttachment (2 KiB max; this is ~100 B). */
@@ -117,6 +118,7 @@ export function bellOf(r: Row): Bell {
     channel: r.channel, ts: r.ts,
     ...(r.thread_ts ? { thread_ts: r.thread_ts } : {}),
     ...(r.self ? { self: r.self } : {}),
+    ...(r.kind === "reaction" ? { kind: "reaction" as const, ...(r.user ? { user: r.user } : {}), ...(r.rid ? { rid: r.rid } : {}) } : {}),
   };
 }
 
