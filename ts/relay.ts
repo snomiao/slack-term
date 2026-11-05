@@ -137,9 +137,21 @@ export function actsHere(o: { host: string; home?: string | undefined; routeHost
 /** The identity a lane posts under: what the relay uses for its agents' replies, so a
  *  thread a lane opens itself (`slack send --as-bot` inside agent-yes) still says
  *  which machine it belongs to. */
-export function laneIdentity(cwd: string, host = hostname().split(".")[0] ?? "host"): { username: string; icon_emoji: string } {
+export function laneIdentity(
+  cwd: string, host = hostname().split(".")[0] ?? "host",
+  configFile = join(homedir(), ".config", "slack-cli", "relay.json"),
+): { username: string; icon_emoji: string; icon_url?: string } {
   const { repo, branch } = agentNames(cwd);
-  return agentIdentity(host, repo, branch);
+  const id = agentIdentity(host, repo, branch);
+  // The same avatars as the relay's own posts. A post must never fail over a missing or broken config.
+  let icons: Record<string, string> | undefined;
+  try { icons = (JSON.parse(readFileSync(configFile, "utf8")) as { agentIcons?: Record<string, string> }).agentIcons; } catch { /* no config */ }
+  const icon = iconFor(icons, repo);
+  return icon ? { ...id, icon_url: icon } : id;
+}
+
+function iconFor(icons: Record<string, string> | undefined, repo: string): string | undefined {
+  return Object.entries(icons ?? {}).find(([k]) => k.toLowerCase() === repo)?.[1];
 }
 
 /** The host in the identity (`host:repo#worktree`) of the latest agent post in a thread. */
@@ -188,7 +200,7 @@ export function stripSelfMention(text: string, selfId: string, selfName: string)
   return t || (text.trim() ? "(you were mentioned, no text)" : "");
 }
 
-const AGENT_EMOJI = ["robot_face", "gear", "rocket", "brain", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
+const AGENT_EMOJI = ["robot_face", "gear", "rocket", "speech_balloon", "zap", "seedling", "jigsaw", "satellite", "test_tube", "crystal_ball"];
 
 /** Who an agent is, for the post's sender name: `host:repo#worktree` (the checkout's
  *  folder under tree/, which stays put while the lane switches branches), with an emoji
@@ -426,7 +438,7 @@ type Config = {
   transcribe?: boolean;  // false: forward voice messages untranscribed (default on)
   transcribeCmd?: string[]; // speech-to-text command; the audio file path is appended, the transcript read from stdout (default: uv run ts/transcribe.py)
   warnChannel?: string;  // the instance watching this channel posts realtime-degraded warnings there (others only log)
-  agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji)
+  agentIcons?: Record<string, string>; // repo name → public PNG/JPG URL used as that agent's avatar (else an emoji); `slack send --as-bot` in a lane reads it from relay.json too
   channelDefaults?: Record<string, string>;
   channelHomes?: Record<string, string>; // channel id → the host that answers unrouted messages there (others still serve their own threads / `@host:` routes)
   host?: string;         // this machine's name in identities and channelHomes (default: short hostname) // mention mode: channel id → default route; those channels take every owner message
@@ -626,7 +638,7 @@ export async function main(argv: string[]): Promise<void> {
   const identityOf = async (a: Agent): Promise<{ username: string; icon_emoji: string; icon_url?: string }> => {
     const repo = agentNames(a.cwd).repo;
     const id = agentIdentity(host, repo, agentNames(a.cwd).branch);
-    const icon = Object.entries(cfg.agentIcons ?? {}).find(([k]) => k.toLowerCase() === repo)?.[1];
+    const icon = iconFor(cfg.agentIcons, repo);
     return icon ? { ...id, icon_url: icon } : id;
   };
   const post = async (text: string, threadTs?: string, pid?: number, as?: { username: string; icon_emoji: string; icon_url?: string }): Promise<string> => {

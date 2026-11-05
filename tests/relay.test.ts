@@ -1,6 +1,9 @@
 // The relay turns Slack messages into instructions for local agents, so the
 // filter that decides what counts as an instruction is the security boundary:
 // only the token owner's own plain messages, never the relay's own posts.
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test, expect } from "./harness.ts";
 import { stripSelfMention, isSlackFileUrl, audioFiles, slackTranscript, voiceText, wakeTarget, parseWake, wakeNote, sharedText, splitOutbox, liveliest, laneIdentity, actsHere, threadHostOf, redactSecrets, hasSecret, landedInInput, agentIdentity, mentionsUser, mentionGate, readBotToken, markDelivered, isInstruction, parseRoute, matchAgent, agentLabel, forwardText, splitForSlack, RELAY_MARK, FORWARD_PREFIX, type Agent } from "../ts/relay.ts";
 import { threadOriginOf, originRoute } from "../ts/relay.ts";
@@ -304,6 +307,16 @@ describe("same-name agents and lane identity", () => {
   test("two agents in one non-main worktree are not ambiguous", () => {
     const a = { ...stuck, cwd: "/w/acme/bradiy/tree/lane/x" }, b = { ...live, cwd: "/w/acme/bradiy/tree/lane/x" };
     expect(matchAgent("bradiy/lane/x", [a, b]).agent?.pid).toBe(302);
+  });
+  test("laneIdentity uses the repo's avatar from the relay config, and survives a broken one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "lane-icon-"));
+    const cfg = join(dir, "relay.json");
+    writeFileSync(cfg, JSON.stringify({ agentIcons: { Bradiy: "https://example.com/b.png" } }));
+    expect(laneIdentity("/w/acme/bradiy/tree/main", "mac", cfg).icon_url).toBe("https://example.com/b.png");
+    expect(laneIdentity("/w/acme/other/tree/main", "mac", cfg).icon_url).toBeUndefined();
+    writeFileSync(cfg, "{ not json");
+    expect(laneIdentity("/w/acme/bradiy/tree/main", "mac", cfg).icon_url).toBeUndefined();
+    expect(laneIdentity("/w/acme/bradiy/tree/main", "mac", join(dir, "missing.json")).icon_url).toBeUndefined();
   });
   test("laneIdentity matches the relay's agent identity", () => {
     expect(laneIdentity("/Users/alice/ws/acme/bradiy/tree/mac-blueprint", "mac").username).toBe("mac:bradiy#mac-blueprint");
