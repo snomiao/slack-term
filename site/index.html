@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slack-term: Slack from your shell</title>
+<meta name="description" content="A Slack CLI for people and agents. Read, search and reply from the terminal, with a preview and a confirm code before anything is sent.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#1d1c1d">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.png">
+<meta property="og:title" content="slack-term">
+<meta property="og:description" content="Slack from your shell, with a preview and a confirm code before anything is sent.">
+<meta property="og:image" content="https://slack-term.pages.dev/icon.png">
+<meta property="og:url" content="https://slack-term.pages.dev/">
+<style>
+  :root {
+    --bg: #141314; --panel: #1d1c1d; --line: #353335; --text: #efedef; --muted: #a9a5a9;
+    --blue: #36c5f0; --green: #2eb67d; --yellow: #ecb22e; --red: #e01e5a;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Noto Sans Mono CJK SC", monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 var(--mono); }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 16px 40px; }
+  a { color: var(--blue); text-underline-offset: 3px; }
+  a:hover { color: var(--text); }
+  :focus-visible { outline: 2px solid var(--yellow); outline-offset: 2px; }
+
+  header img { display: block; width: 88px; height: 88px; }
+  h1 { font-size: clamp(36px, 9vw, 56px); line-height: 1.1; margin: 24px 0 12px; letter-spacing: -0.03em; }
+  .lede { font-size: 18px; color: var(--muted); margin: 0 0 28px; max-width: 34em; }
+  h2 { font-size: 15px; font-weight: 600; color: var(--muted); margin: 56px 0 16px; }
+  h2::before { content: "# "; color: var(--yellow); }
+
+  .install { display: flex; align-items: center; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 10px 10px 16px; }
+  .install code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; }
+  .install code::before { content: "$ "; color: var(--green); }
+  button { flex: none; font: 13px var(--mono); color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  .alt { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+
+  pre { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; overflow-x: auto; font: 14px/1.65 var(--mono); }
+  .p { color: var(--green); }
+  .d { color: var(--muted); }
+  .k { color: var(--yellow); }
+  .ok { color: var(--green); }
+
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 10px 24px; }
+  dt { color: var(--blue); white-space: nowrap; }
+  dd { margin: 0; color: var(--muted); }
+  dd code { white-space: nowrap; }
+  @media (max-width: 560px) {
+    dl { grid-template-columns: 1fr; gap: 2px; }
+    dd { margin-bottom: 12px; }
+  }
+
+  .note { color: var(--muted); margin: 0 0 12px; }
+  footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line); font-size: 14px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 20px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.svg" alt="" width="88" height="88">
+    <h1>slack-term</h1>
+    <p class="lede">Slack from your shell. Read, search and reply from a terminal or an agent script, and see exactly what will be sent before it goes.</p>
+  </header>
+
+  <div class="install">
+    <code id="cmd">npm install -g slack-term</code>
+    <button type="button" id="copy">copy</button>
+  </div>
+  <p class="alt">Also with bun or pnpm, or as a native Rust build. Both give you the same <code>slack</code> command.</p>
+
+  <h2>Nothing sends by accident</h2>
+  <p class="note">A write shows who you are, where it goes and what it says, then waits for a confirm code. Change the account or the text and the code stops working.</p>
+<pre><span class="p">$</span> slack send "#general" "Deploy finished"
+<span class="d">  From: @alice (U00000001) — Acme
+  To:   #general
+  Message: Deploy finished</span>
+<span class="k">Rerun with --code=10f6</span>
+
+<span class="p">$</span> slack send "#general" "Deploy finished" --code=10f6
+<span class="ok">✓ Sent</span></pre>
+
+  <h2>What it does</h2>
+  <dl>
+    <dt>slack news</dt><dd>Your mentions, grouped by day.</dd>
+    <dt>slack read "#eng"</dt><dd>Channel and DM history, with threads marked. <code>--unreplied</code> shows what still needs you.</dd>
+    <dt>slack search "deploy"</dt><dd>Full-text search across the workspace.</dd>
+    <dt>slack tail "#eng"</dt><dd>New messages as they arrive, like <code>tail -f</code>.</dd>
+    <dt>slack react &lt;link&gt; eyes</dt><dd>Acknowledge without growing the thread.</dd>
+    <dt>slack ask "@bob" …</dt><dd>Ask a question with one-tap reaction choices, then collect the answer in a script.</dd>
+    <dt>slack dump</dt><dd>Export channel history as markdown.</dd>
+  </dl>
+
+  <h2>Is it for you?</h2>
+  <p class="note">It suits scriptable conversations with a check before sending. The confirm step adds a second command, and you set up a token yourself. For a full-screen chat client or a dedicated archive, the <a href="https://github.com/snomiao/slack-term#comparison-with-other-slack-tools">comparison in the README</a> points to tools built for that.</p>
+
+  <footer>
+    <a href="https://github.com/snomiao/slack-term">GitHub</a>
+    <a href="https://www.npmjs.com/package/slack-term">npm</a>
+    <span>MIT license</span>
+    <span>Not affiliated with Slack.</span>
+  </footer>
+</main>
+<script>
+  const btn = document.getElementById("copy");
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(document.getElementById("cmd").textContent);
+      btn.textContent = "copied";
+    } catch {
+      btn.textContent = "press ⌘C";
+    }
+    setTimeout(() => { btn.textContent = "copy"; }, 1500);
+  });
+</script>
+</body>
+</html>
