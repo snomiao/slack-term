@@ -78,6 +78,14 @@
   td:first-child { white-space: nowrap; }
   td { color: var(--muted); min-width: 150px; }
   h2 { scroll-margin-top: 16px; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  /* Wide screens: the page's nav becomes a table of contents beside the text. */
+  @media (min-width: 1180px) {
+    nav { position: fixed; top: 56px; left: calc(50% - 380px - 190px); width: 170px; margin: 0; flex-direction: column; flex-wrap: nowrap; gap: 2px; border-left: 2px solid var(--line); }
+    nav a { padding: 4px 0 4px 12px; margin-left: -2px; border-left: 2px solid transparent; color: var(--muted); text-decoration: none; }
+    nav a.on { color: var(--text); border-left-color: var(--yellow); }
+  }
 </style>
 </head>
 <body>
@@ -259,6 +267,23 @@
   </footer>
 </main>
 <script>
+  // Mark the section being read in the table of contents.
+  const links = [...document.querySelectorAll("nav a")];
+  const mark = () => {
+    let cur = links[0];
+    for (const a of links) {
+      if (document.querySelector(a.hash).getBoundingClientRect().top <= 120) cur = a;
+    }
+    if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) cur = links[links.length - 1];
+    for (const a of links) {
+      a.classList.toggle("on", a === cur);
+      if (a === cur) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current");
+    }
+  };
+  addEventListener("scroll", mark, { passive: true });
+  addEventListener("resize", mark);
+  mark();
+
   const btn = document.getElementById("copy");
   btn.addEventListener("click", async () => {
     try {
