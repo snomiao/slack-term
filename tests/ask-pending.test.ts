@@ -52,6 +52,9 @@ let tmpHome: string;
 beforeEach(() => {
   if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
   tmpHome = mkdtempSync(join(tmpdir(), "slack-pending-"));
+  // The asking agent runs in a checkout below HOME, never in HOME itself: a lane is
+  // found by its directory, and HOME is a shared directory that names no lane.
+  mkdirSync(join(tmpHome, "repo"), { recursive: true });
 });
 afterAll(() => { rmSync(tmpHome, { recursive: true, force: true }); });
 
@@ -67,7 +70,7 @@ function run(args: string[], baseUrl: string, env: Record<string, string> = {}):
     CLAUDE_CODE_SESSION_ID: SESSION, CLAUDE_PID: DEAD_PID, AI_AGENT: "claude-code_9-9-9_agent", ...env,
   };
   return new Promise((resolve, reject) => {
-    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env: full, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: join(tmpHome, "repo"), env: full, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d: Buffer) => { stdout += String(d); });
@@ -318,7 +321,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       const env = { ...stubAy(), TMPDIR: "/nonexistent-tmp" };
       const bin = join(tmpHome, "bin", "ay");
       const log = join(tmpHome, "ay.log");
-      writeFileSync(bin, `#!/bin/sh\nif [ "$1" = ls ]; then echo '[{"pid":${process.pid},"cwd":"${realpathSync(tmpHome)}","started_at":1}]'; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\necho "sent to pid"\n`);
+      writeFileSync(bin, `#!/bin/sh\nif [ "$1" = ls ]; then echo '[{"pid":${process.pid},"cwd":"${realpathSync(join(tmpHome, "repo"))}","started_at":1}]'; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\necho "sent to pid"\n`);
       const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
       expect(ayCalls()).toHaveLength(1);
       expect(ayCalls()[0]).toContain(`send ${process.pid} --force`);
