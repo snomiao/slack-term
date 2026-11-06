@@ -6,7 +6,7 @@
 
 import { describe, test, expect, beforeEach, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -276,11 +276,11 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       expect(ayCalls()).toHaveLength(1);
     });
 
-    test("an asker that is gone gets nothing; the answer stays listed", async () => {
+    test("an asker that is gone, with no live agent in its directory, gets nothing; the answer stays listed", async () => {
       await askLogged();
       const env = stubAy();
       const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
-      expect(ayCalls()).toEqual([]);
+      expect(ayCalls().filter((c) => c.startsWith("send"))).toEqual([]);
       expect(r.stdout).toContain("A: no");
       expect(r.stderr).toContain("0 pushed to the asker");
     });
@@ -311,6 +311,52 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       expect(r.writes).toEqual([]);
       const again = await pending(slackHas(PRESSED_NO), ["--push"], stubAy());
       expect(again.stderr).toContain("1 pushed to the asker");
+    });
+
+    test("a gone asker's answer goes to the live agent in its directory; collected", async () => {
+      await askLogged();
+      const env = { ...stubAy(), TMPDIR: "/nonexistent-tmp" };
+      const bin = join(tmpHome, "bin", "ay");
+      const log = join(tmpHome, "ay.log");
+      writeFileSync(bin, `#!/bin/sh\nif [ "$1" = ls ]; then echo '[{"pid":${process.pid},"cwd":"${realpathSync(tmpHome)}","started_at":1}]'; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\necho "sent to pid"\n`);
+      const r = await pending(slackHas(PRESSED_NO), ["--push"], env);
+      expect(ayCalls()).toHaveLength(1);
+      expect(ayCalls()[0]).toContain(`send ${process.pid} --force`);
+      expect(ayCalls()[0]).toContain(`asked by pid ${DEAD_PID}, now gone`);
+      expect(r.stderr).toContain("1 pushed to the asker");
+    });
+
+    test("--undelivered lists what reached nobody, and why", async () => {
+      await askLogged();
+      const r = await pending(slackHas(PRESSED_NO), ["--push", "--undelivered"], stubAy());
+      expect(r.stdout).toContain("A: no");
+      expect(r.stdout).toContain(`undelivered: the asker (pid ${DEAD_PID}) is gone`);
+      expect(r.stderr).toContain("1 undelivered");
+    });
+
+    test("--undelivered leaves out an answer already pushed", async () => {
+      await askLogged(LIVE);
+      const clarify = slackHas({ reply_count: 1 });
+      clarify[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`] = { ok: true, messages: [
+        { type: "message", user: SELF, ts: TS, text: QUESTION },
+        { type: "message", user: BOB, ts: "1700000100.000200", text: "背景を教えて", thread_ts: TS },
+      ] };
+      await pending(clarify, ["--push"], stubAy());
+      const later = { ...clarify, ...slackHas({ reply_count: 1, ...PRESSED_NO }) };
+      later[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`] = clarify[`conversations.replies__channel=${CHAN}&limit=30&ts=${TS}`]!;
+      const r = await pending(later, ["--undelivered"]);
+      expect(r.stdout).toContain("A: no"); // the later pill is new: not yet pushed
+      const none = await pending(clarify, ["--undelivered"]);
+      expect(none.stdout.trim()).toBe("");
+    });
+
+    test("a question settled in Slack is not read again by later push passes", async () => {
+      await askLogged(LIVE);
+      const stamped = askBuildResolvedText(`<@${BOB}> ok?`, { answer: "no", how: "リアクション 2️⃣" }, "bob");
+      const first = await pending(slackHas({ text: stamped }), ["--push"], stubAy());
+      expect(first.stderr).toContain("1 ✅ already collected");
+      const again = await pending(slackHas({ text: stamped }), ["--push"], stubAy());
+      expect(again.stderr).toContain("checked 0 uncollected question(s)");
     });
 
     test("--watch needs --push", async () => {

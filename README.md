@@ -189,8 +189,11 @@ slack ask --pending                    # last 7 days; --since 2h, --channel, --j
 # Push instead of waiting to be asked: each answer goes to the agent that asked
 # (`ay send` to its pid from the sent-log, or a parent ay knows), then a decision
 # is collected (✅, off the list); a free-text reply is pushed once and the
-# question stays open. Askers that are gone get nothing — the list keeps them.
+# question stays open. A gone asker's answer goes to the newest live agent in the
+# same directory (a restarted lane); with none, it stays listed.
 slack ask --pending --push
+# The sweep: answers that have reached nobody yet.
+slack ask --pending --undelivered
 # As a service: a pass every --interval (min), and one per question as soon as
 # the relay rings for it (SLACK_RELAY_URL / SLACK_RELAY_TOKEN: a reaction on it
 # or a reply in its thread). Prints only what it pushed.

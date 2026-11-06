@@ -74,6 +74,9 @@ export interface SentRow {
    *  the same answer is not pushed twice. */
   pushed_at?: number | null;
   pushed_answer?: string | null;
+  /** The `slack @<who>` identity it was asked as: a push pass reads the
+   *  question with that token, whichever identity the pass itself runs as. */
+  identity?: string | null;
 }
 
 export function attributionEnabled(): boolean {
@@ -245,7 +248,8 @@ CREATE TABLE IF NOT EXISTS sent (
   delivered_answer TEXT,
   delivered_cursor TEXT,
   pushed_at INTEGER,
-  pushed_answer TEXT
+  pushed_answer TEXT,
+  identity TEXT
 );
 CREATE INDEX IF NOT EXISTS sent_msg ON sent(channel, ts);
 CREATE INDEX IF NOT EXISTS sent_at ON sent(sent_at);
@@ -268,7 +272,7 @@ export function openSentLog(): Db | undefined {
     db.exec(SCHEMA);
     // Columns added after the table first shipped. ALTER fails harmlessly when
     // the column is already there.
-    for (const col of ["delivered_answer TEXT", "delivered_cursor TEXT", "pushed_at INTEGER", "pushed_answer TEXT"]) {
+    for (const col of ["delivered_answer TEXT", "delivered_cursor TEXT", "pushed_at INTEGER", "pushed_answer TEXT", "identity TEXT"]) {
       try { db.exec(`ALTER TABLE sent ADD COLUMN ${col}`); } catch { /* exists */ }
     }
     return db;
@@ -302,12 +306,12 @@ export function recordSent(r: RecordSent): boolean {
   try {
     const a = r.attribution;
     db.prepare(
-      `INSERT INTO sent (kind, team, channel, target, ts, thread_ts, permalink, text, sent_at, pid, agent_pid, host, cwd, git_branch, cli, session_id, as_bot)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO sent (kind, team, channel, target, ts, thread_ts, permalink, text, sent_at, pid, agent_pid, host, cwd, git_branch, cli, session_id, as_bot, identity)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       r.kind, r.team ?? null, r.channel, r.target ?? null, r.ts, r.threadTs ?? null, r.permalink ?? null, r.text,
       Date.now(), a.pid, a.agentPid ?? null, a.host || null, a.cwd, a.gitBranch ?? null, a.cli ?? null, a.sessionId ?? null,
-      r.asBot ? 1 : 0,
+      r.asBot ? 1 : 0, process.env.SLACK_TERM_IDENTITY || null,
     );
     return true;
   } catch (e: unknown) {
@@ -419,6 +423,20 @@ export function markAskPushed(channel: string, ts: string, answer: string): void
   updateLog(
     `UPDATE sent SET pushed_at = ?, pushed_answer = ? WHERE kind = 'ask' AND channel = ? AND ts = ?`,
     Date.now(), answer, channel, ts,
+  );
+}
+
+/** Which `slack @<who>` can read an ask logged before identities were recorded. */
+export function markAskIdentity(channel: string, ts: string, identity: string): void {
+  updateLog(`UPDATE sent SET identity = ? WHERE kind = 'ask' AND channel = ? AND ts = ?`, identity, channel, ts);
+}
+
+/** A push pass found the question already settled in Slack (✅ stamped
+ *  elsewhere, or voided): nothing is left to look at, so later passes skip it. */
+export function markAskSettled(channel: string, ts: string, exit: number): void {
+  updateLog(
+    `UPDATE sent SET collected_at = COALESCE(collected_at, ?), answer_exit = ? WHERE kind = 'ask' AND channel = ? AND ts = ?`,
+    Date.now(), exit, channel, ts,
   );
 }
 
