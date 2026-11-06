@@ -8,7 +8,8 @@
 // agent's pid, so slack-term can tell it directly.
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, resolve } from "node:path";
 import { pidAlive } from "./sentlog.ts";
 
 /** ay rejects messages over 1024 chars. */
@@ -21,12 +22,13 @@ function clip(s: string, n: number): string {
 }
 
 /** The one-line message the asker receives: link, answer, how, question. */
-export function askPushMessage(p: { link: string; answer: string; how: string; question: string; freeText: boolean; collected?: boolean }): string {
+export function askPushMessage(p: { link: string; answer: string; how: string; question: string; freeText: boolean; collected?: boolean; goneAsker?: number }): string {
   const head = `[ask-answer] ${p.link} →`;
   const ans = clip(p.answer, 300);
   let tail = p.how ? ` (${p.how})` : "";
   if (p.freeText) tail += " — a free-text reply, not a choice: the question stays open";
   else if (p.collected) tail += " — collected ✅";
+  if (p.goneAsker) tail += ` — asked by pid ${p.goneAsker}, now gone: sent to this lane by its directory`;
   const q = clip(p.question, PUSH_MAX - head.length - ans.length - tail.length - 8);
   return `${head} ${ans}${tail}. Q: ${q}`.slice(0, PUSH_MAX);
 }
@@ -59,6 +61,30 @@ export function notifyAgent(pid: number, msg: string, run: Run = runSync, parent
     if (r.status === 0 || /QUEUED|sent to pid|NOT SUBMITTED/.test(out)) return pid;
   }
   return undefined;
+}
+
+/** Agents ay knows, or none when ay is missing or says something else. */
+export function liveAgents(run: Run = runSync): { pid: number; cwd: string; started_at?: number }[] {
+  const r = run(process.env.SLACK_TERM_AY || "ay", ["ls", "--json"]);
+  try {
+    const v = JSON.parse(r.stdout ?? "") as { pid?: unknown; cwd?: unknown; started_at?: unknown }[];
+    return Array.isArray(v)
+      ? v.flatMap((a) => (typeof a.pid === "number" && typeof a.cwd === "string" ? [{ pid: a.pid, cwd: a.cwd, ...(typeof a.started_at === "number" ? { started_at: a.started_at } : {}) }] : []))
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The live agent that took over a gone asker's lane: a lane restarts in the
+ *  same directory, with a new pid. The newest one there wins. A shared
+ *  directory (temp, home) says nothing about who asked, so it matches nobody. */
+export function laneAgent(cwd: string, agents: { pid: number; cwd: string; started_at?: number }[], alive: (pid: number) => boolean = pidAlive): number | undefined {
+  const dir = resolve(cwd);
+  const tmp = resolve(tmpdir());
+  if (dir === resolve(homedir()) || dir === tmp || dir.startsWith(`${tmp}/`)) return undefined;
+  const here = agents.filter((a) => resolve(a.cwd.replace(/^~(?=\/|$)/, homedir())) === dir && alive(a.pid));
+  return here.sort((a, b) => (b.started_at ?? 0) - (a.started_at ?? 0))[0]?.pid;
 }
 
 /** One push pass at a time per machine: a watcher and a one-off run must not

@@ -16,7 +16,7 @@ import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAut
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { phiDelay, runStream, webClient, type StreamMatch } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
-import { acquirePushLock, askPushMessage, notifyAgent } from "./askPush.ts";
+import { acquirePushLock, askPushMessage, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
 
@@ -72,7 +72,7 @@ import {
 } from "./poll.ts";
 import { seedReactionsInOrder } from "./reactionSeed.ts";
 import { buildListSchema, cellValue, completedColumn, findColumn, parseColumnSpec, parseListSchema, parseSets, type ListColumn } from "./lists.ts";
-import { attributionEnabled, attributionMetadata, captureAttribution, markAskCollected, markAskDelivered, markAskPushed, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, senderAlive, uncollectedAsks, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
+import { attributionEnabled, attributionMetadata, captureAttribution, markAskCollected, markAskDelivered, markAskIdentity, markAskPushed, markAskSettled, parseSince, querySent, recordSent, SENT_LOG_UNAVAILABLE, sentDbPath, senderAlive, uncollectedAsks, type RecordSent, type SentKind, type SentRow } from "./sentlog.ts";
 import {
   authTest,
   authScopes,
@@ -4253,7 +4253,51 @@ interface AskPendingItem {
   cursor?: string;
   /** Set by `--push`: the pid that took the answer, and whether it was collected. */
   pushed?: { pid: number; collected: boolean };
+  /** Set by `--push`: why this answer reached nobody. */
+  undelivered?: string;
 }
+
+/** An ask logged before identities were recorded, from another bot's DM: this
+ *  run's bot gets channel_not_found. Finds the configured bot that can read it,
+ *  once per channel in a pass (`known`). */
+async function askFindIdentity(row: SentRow, botToken: string | undefined, known: Map<string, string | undefined>): Promise<string | undefined> {
+  if (known.has(row.channel)) return known.get(row.channel);
+  const loc = { channelId: row.channel, ts: row.ts, threadTs: row.thread_ts ?? undefined };
+  const canRead = async (token: string | undefined): Promise<boolean | undefined> => {
+    if (!token) return false;
+    try {
+      await askFetchAt(token, loc);
+      return true;
+    } catch (e: unknown) {
+      if (e instanceof RateLimitError) throw e;
+      return /channel_not_found|not_in_channel/.test(e instanceof Error ? e.message : String(e)) ? false : undefined;
+    }
+  };
+  let who: string | undefined;
+  if ((await canRead(botToken)) === false) {
+    for (const [name, id] of listIdentities()) {
+      if (id.kind !== "bot" || name === process.env.SLACK_TERM_IDENTITY) continue;
+      const env = { ...process.env };
+      if ("error" in applyIdentity(name, env)) continue;
+      if (await canRead(env.SLACK_BOT_TOKEN)) { who = name; break; }
+    }
+  }
+  known.set(row.channel, who);
+  return who;
+}
+
+/** The tokens a logged question is read with: those of the identity it was
+ *  asked as, when that is not the one this run acts as. */
+function askRowTokens(row: SentRow, tokens: { user?: string; bot?: string; cookie?: string }): { user?: string; bot?: string; cookie?: string } | string {
+  if (!row.identity || row.identity === process.env.SLACK_TERM_IDENTITY) return tokens;
+  const env = { ...process.env };
+  const r = applyIdentity(row.identity, env);
+  if ("error" in r) return r.error;
+  if (r.kind === "bot") return { bot: env.SLACK_BOT_TOKEN!, user: env.SLACK_TOKEN! };
+  if (!env.SLACK_TOKEN) return `asked as @${row.identity}, a profile identity: run the pass as that identity`;
+  return { user: env.SLACK_TOKEN };
+}
+
 
 /** `slack ask --pending [--since 7d] [--json]` — questions THIS machine asked
  *  that somebody answered and nobody collected, grouped by the asking session,
@@ -4275,6 +4319,8 @@ async function cmdAskPending(
     sinceMs: number; json: boolean; channel?: string; push?: boolean; selfArgs?: string[];
     /** `--watch`: only these questions (`channel:ts`), and print only what was pushed. */
     only?: Set<string>; watch?: boolean;
+    /** Show only answers that reached nobody. */
+    undelivered?: boolean;
   },
 ): Promise<void> {
   // Never blocks: one look per question and no waiting out 429s. A throttled
@@ -4301,6 +4347,10 @@ async function cmdAskPending(
     : tokens.bot ? (await selfIdentity(tokens.bot))?.team ?? "" : "";
   const otherTeams = new Map<string, number>();
 
+  const channelBots = new Map<string, string | undefined>();
+  // Newest first: a pass stopped by a rate limit has then looked at the
+  // questions most likely to be waited on, and an old backlog cannot starve them.
+  rows.reverse();
   for (const [i, row] of rows.entries()) {
     if (row.team && currentTeam && row.team !== currentTeam) {
       otherTeams.set(row.team, (otherTeams.get(row.team) ?? 0) + 1);
@@ -4308,17 +4358,26 @@ async function cmdAskPending(
     }
     const link = row.permalink || `${row.channel}:${row.ts}`;
     const asBot = !!row.as_bot;
-    const token = asBot ? tokens.bot : tokens.user;
-    if (!token) {
-      problems.push(`${link}: ${asBot ? "asked with --as-bot, but there is no bot token" : "no user token"}`);
-      continue;
-    }
-    const cookie = asBot ? undefined : tokens.cookie;
     // Resume from where the last delivery to a caller ended (an exit 5
     // free-text reply), so that reply is not reported again — and the collect
     // line carries the same cursor, so `--waitFor` does not re-deliver it.
     const after = row.delivered_cursor ?? undefined;
     try {
+      if (!row.identity && asBot) {
+        const who = await askFindIdentity(row, tokens.bot, channelBots);
+        if (who) {
+          row.identity = who;
+          if (opts.push) markAskIdentity(row.channel, row.ts, who);
+        }
+      }
+      const rowTokens = askRowTokens(row, tokens);
+      if (typeof rowTokens === "string") { problems.push(`${link}: ${rowTokens}`); continue; }
+      const token = asBot ? rowTokens.bot : rowTokens.user;
+      if (!token) {
+        problems.push(`${link}: ${asBot ? "asked with --as-bot, but there is no bot token" : "no user token"}`);
+        continue;
+      }
+      const cookie = asBot ? undefined : rowTokens.cookie;
       const loc = { channelId: row.channel, ts: row.ts, threadTs: row.thread_ts ?? undefined };
       const got = await askFetchAt(token, loc, cookie);
       if (!got.msg) { problems.push(`${link}: message not found (deleted?)`); continue; }
@@ -4326,15 +4385,16 @@ async function cmdAskPending(
       const parsed = q.parsed;
       // ✅ already stamped: some `--wait`/`--waitFor` collected it (another
       // machine, another token, or a build before collection was logged).
-      if (parsed.kind === "resolved") { count.resolved++; continue; }
-      if (parsed.kind === "void") { count.void++; continue; }
+      // A push pass runs for good: what is settled is not read again.
+      if (parsed.kind === "resolved") { count.resolved++; if (opts.push) markAskSettled(row.channel, row.ts, 0); continue; }
+      if (parsed.kind === "void") { count.void++; if (opts.push) markAskSettled(row.channel, row.ts, ASK_EXIT_VOID); continue; }
       if (parsed.kind === "other") { problems.push(`${link}: cannot be read as a \`slack ask\` question — ${askExplainReject(q.text)}`); continue; }
       if (!q.audience.size && !q.broadcast) { problems.push(`${link}: the question is addressed to nobody`); continue; }
       const ctx = askWaitCtxFrom(q, parsed, loc, { timeout: 0, link, asBot, json: false, cookie, after });
       const poller = askPoller(token, ctx, true);
       const found = await poller.poll();
       const unchosen = poller.state.unchosen;
-      if (poller.state.voided) { count.void++; continue; }
+      if (poller.state.voided) { count.void++; if (opts.push) markAskSettled(row.channel, row.ts, ASK_EXIT_VOID); continue; }
       const collect = askResumeCommand(link, asBot, after);
       if (poller.state.explainNow.length) {
         count.explain++;
@@ -4362,9 +4422,10 @@ async function cmdAskPending(
   }
 
   if (opts.push) askPushAll(pending, opts.selfArgs ?? [], problems);
+  const reachedNobody = (it: AskPendingItem): boolean => !it.pushed && it.row.pushed_answer !== it.answer;
 
   // A watcher's log carries what it did, not the whole list on every pass.
-  const shown = opts.watch ? pending.filter((it) => it.pushed) : pending;
+  const shown = opts.watch ? pending.filter((it) => it.pushed) : opts.undelivered ? pending.filter(reachedNobody) : pending;
   if (opts.watch && !shown.length && !problems.length) return;
   if (opts.json) {
     for (const it of shown) {
@@ -4376,6 +4437,7 @@ async function cmdAskPending(
         delivered_at: r.delivered_at ?? null,
         collect: it.collect,
         ...(opts.push ? { pushed: it.pushed ?? null } : {}),
+        ...(it.undelivered ? { undelivered: it.undelivered } : {}),
       }));
     }
   } else {
@@ -4396,6 +4458,7 @@ async function cmdAskPending(
         console.log(`    Q: ${stripTerminalControls(askFlatten(it.question))}`);
         console.log(`    A: ${stripTerminalControls(askFlatten(it.answer))}  — ${stripTerminalControls(it.how)}${it.freeText ? " — not a decision" : ""}`);
         console.log(`    collect: ${stripTerminalControls(it.collect)}`);
+        if (it.undelivered) console.log(`    undelivered: ${stripTerminalControls(it.undelivered)}`);
         if (it.pushed) console.log(`    pushed to pid ${it.pushed.pid}${it.pushed.collected ? ", collected ✅" : ""}`);
       }
     }
@@ -4413,6 +4476,7 @@ async function cmdAskPending(
     (count.explain ? `, ${count.explain} with an ℹ️ explain request` : "") +
     (count.throttled ? `, ${count.throttled} not checked (rate-limited)` : "") +
     (opts.push ? `, ${pending.filter((it) => it.pushed).length} pushed to the asker` : "") +
+    (opts.undelivered ? `, ${pending.filter(reachedNobody).length} undelivered` : "") +
     ` — checked ${rows.length} uncollected question(s) (log: ${sentDbPath()})`,
   );
 }
@@ -4491,22 +4555,42 @@ function askPushAll(items: AskPendingItem[], selfArgs: string[], problems: strin
     return;
   }
   try {
+    let agents: ReturnType<typeof liveAgents> | undefined;
     for (const it of items) {
       const r = it.row;
-      if (!it.alive || r.pushed_answer === it.answer) continue;
-      const msg = askPushMessage({ link: it.link, answer: it.answer, how: it.how, question: it.question, freeText: it.freeText, collected: !it.freeText });
-      const pid = notifyAgent(r.agent_pid ?? r.pid, msg);
-      if (pid === undefined) {
-        problems.push(`${it.link}: the asker (pid ${r.agent_pid ?? r.pid}) did not take the push over ay — tried again next pass`);
+      const already = r.pushed_answer === it.answer;
+      let pid = r.agent_pid ?? r.pid;
+      // A decision already pushed whose collect failed last pass is only
+      // collected now: the asker has it, the pill still shows open.
+      if (!already) {
+        const asker = pid;
+        const target = it.alive ? asker : laneAgent(r.cwd, agents ??= liveAgents());
+        if (target === undefined) {
+          it.undelivered = `the asker (pid ${asker}) is gone and no live agent runs in ${r.cwd}`;
+          continue;
+        }
+        const msg = askPushMessage({
+          link: it.link, answer: it.answer, how: it.how, question: it.question, freeText: it.freeText, collected: !it.freeText,
+          ...(it.alive ? {} : { goneAsker: asker }),
+        });
+        const took = notifyAgent(target, msg);
+        if (took === undefined) {
+          it.undelivered = `pid ${target} did not take the push over ay — tried again next pass`;
+          problems.push(`${it.link}: ${it.undelivered}`);
+          continue;
+        }
+        pid = took;
+        markAskPushed(r.channel, r.ts, it.answer);
+      } else if (it.freeText) {
         continue;
       }
-      markAskPushed(r.channel, r.ts, it.answer);
       let collected = false;
       if (it.freeText) {
         markAskDelivered(r.channel, r.ts, it.answer, it.cursor ?? "");
       } else {
         const after = r.delivered_cursor ? [`--after=${r.delivered_cursor}`] : [];
-        const c = spawnSync(process.execPath, [...process.argv.slice(1, 2), ...selfArgs, "ask", `--waitFor=${it.link}`, "--timeout", "0", ...(r.as_bot ? ["--as-bot"] : []), ...after],
+        const who = r.identity && r.identity !== process.env.SLACK_TERM_IDENTITY ? [`@${r.identity}`] : [];
+        const c = spawnSync(process.execPath, [...process.argv.slice(1, 2), ...who, ...selfArgs, "ask", `--waitFor=${it.link}`, "--timeout", "0", ...(r.as_bot ? ["--as-bot"] : []), ...after],
           { encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
         collected = c.status === 0;
         if (!collected) problems.push(`${it.link}: pushed, but collecting it exited ${c.status ?? "on a signal"} — collect by hand: ${it.collect}`);
@@ -6977,7 +7061,8 @@ async function main(): Promise<void> {
         .option("edit", { type: "string", describe: "Change an open question you posted: --edit=<permalink> [\"new question\" [choices…]] [--body …]. Rebuilt with the ask layout so collect still reads it. Options can change only while nobody has answered (then: --void=<link> --reask). Same --code gate." })
         .option("ls", { type: "boolean", default: false, describe: "List the questions you posted (local sent-log) with their LIVE state: --state open|answered|void|all (default open), --stale 24h, --channel, --json. With --stale it prints the --void command that would retire them." })
         .option("pending", { type: "boolean", default: false, describe: "List questions THIS machine asked (local sent-log) that somebody answered but nobody collected, grouped by the asking session, with whether that agent is still alive and the --waitFor line that collects each. Read-only unless --push: --since 7d, --channel, --json. Never waits out a rate limit: a throttled pass says how many it skipped." })
-        .option("push", { type: "boolean", default: false, describe: "With --pending: send each answer to the agent that asked (ay send to the pid in the sent-log, or up to 3 of its parents), then collect a decision (✅, off this list); a free-text reply is marked delivered, the question stays open. Askers that are gone get nothing. Each answer is pushed once." })
+        .option("push", { type: "boolean", default: false, describe: "With --pending: send each answer to the agent that asked (ay send to the pid in the sent-log, or up to 3 of its parents), then collect a decision (✅, off this list); a free-text reply is marked delivered, the question stays open. A gone asker's answer goes to the newest live agent in the same directory (a restarted lane), else it stays listed. Each answer is pushed once." })
+        .option("undelivered", { type: "boolean", default: false, describe: "With --pending: the sweep — only answers that have reached nobody yet. With --push, also why (asker gone and no live agent in its directory, or ay refused)." })
         .option("watch", { type: "boolean", default: false, describe: "With --pending --push: keep running — a pass every --interval, and one for a question as soon as the relay rings for it (SLACK_RELAY_URL / SLACK_RELAY_TOKEN). Prints only what it pushed." })
         .option("interval", { type: "number", default: 10, describe: "With --watch: minutes between full passes" })
         .option("since", { type: "string", default: "7d", describe: "With --pending: how far back to look (30m, 2h, 7d, or an ISO date)" })
@@ -7027,7 +7112,7 @@ async function main(): Promise<void> {
               console.error("Error: --watch keeps pushing answers — use it with --push.");
               process.exit(ASK_EXIT_ERROR);
             }
-            const p: Parameters<typeof cmdAskPending>[1] = { sinceMs, json: !!argv.json, push: !!argv.push };
+            const p: Parameters<typeof cmdAskPending>[1] = { sinceMs, json: !!argv.json, push: !!argv.push, undelivered: !!argv.undelivered };
             if (argv.channel) p.channel = String(argv.channel);
             // The collect run must read with the same workspace this one does.
             if (argv.workspace) p.selfArgs = ["-w", String(argv.workspace)];
