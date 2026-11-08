@@ -300,6 +300,8 @@ describe("ask --pending", { timeout: 90_000 }, () => {
       expect(ayCalls()).toHaveLength(1);
       expect(ayCalls()[0]).toContain("背景を教えて");
       expect(ayCalls()[0]).toContain("not a choice: the question stays open");
+      // The reply is years older than the push: it says so, with its time.
+      expect(ayCalls()[0]).toContain("[ask-answer, late: answered 2023-11-14 22:15 UTC]");
       expect(r.writes).toEqual([]);
       const again = await pending(clarify, ["--push"], env);
       expect(ayCalls()).toHaveLength(1);

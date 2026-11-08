@@ -16,7 +16,7 @@ import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAut
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { phiDelay, runStream, webClient, type StreamMatch } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
-import { acquirePushLock, askPushMessage, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
+import { acquirePushLock, askPushMessage, askPushTag, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
 
@@ -4251,6 +4251,8 @@ interface AskPendingItem {
   collect: string;
   /** Where a delivery of this free-text reply ends (`--after` for the next look). */
   cursor?: string;
+  /** When the answer was given (a reply's ts); unknown for a pill press. */
+  answeredTs?: string;
   /** Set by `--push`: the pid that took the answer, and whether it was collected. */
   pushed?: { pid: number; collected: boolean };
   /** Set by `--push`: why this answer reached nobody. */
@@ -4402,9 +4404,9 @@ async function cmdAskPending(
       }
       const base = { row, link, question: parsed.question, collect, alive: senderAlive(row) };
       if (found) {
-        pending.push({ ...base, answer: found.answer, how: found.how, freeText: false });
+        pending.push({ ...base, answer: found.answer, how: found.how, freeText: false, ...(found.ts ? { answeredTs: found.ts } : {}) });
       } else if (unchosen && !unchosen.ambiguous && unchosen.text !== row.delivered_answer) {
-        pending.push({ ...base, answer: unchosen.text, how: "reply (not a choice)", freeText: true, cursor: askNextCursor(row.ts, after, unchosen.ts) });
+        pending.push({ ...base, answer: unchosen.text, how: "reply (not a choice)", freeText: true, cursor: askNextCursor(row.ts, after, unchosen.ts), answeredTs: unchosen.ts });
       } else if (unchosen?.ambiguous) {
         count.ambiguous++;
       } else {
@@ -4572,6 +4574,7 @@ function askPushAll(items: AskPendingItem[], selfArgs: string[], problems: strin
         const msg = askPushMessage({
           link: it.link, answer: it.answer, how: it.how, question: it.question, freeText: it.freeText, collected: !it.freeText,
           ...(it.alive ? {} : { goneAsker: asker }),
+          tag: askPushTag(r.sent_at, it.answeredTs ? Number(it.answeredTs) * 1000 : undefined),
         });
         const took = notifyAgent(target, msg);
         if (took === undefined) {
