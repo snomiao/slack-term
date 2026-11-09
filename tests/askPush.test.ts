@@ -1,7 +1,7 @@
 import { describe, test, expect } from "./harness.ts";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { askPushMessage, laneAgent, notifyAgent, PUSH_MAX } from "../ts/askPush.ts";
+import { askPushMessage, askPushTag, laneAgent, notifyAgent, PUSH_MAX } from "../ts/askPush.ts";
 
 const LINK = "https://acme.slack.com/archives/C00000001/p1700000000000100";
 
@@ -15,6 +15,23 @@ describe("askPushMessage", () => {
     const m = askPushMessage({ link: LINK, answer: "a".repeat(2000), how: "reply", question: "q".repeat(5000), freeText: true });
     expect(m.length).toBeLessThanOrEqual(PUSH_MAX);
     expect(m).toContain("not a choice");
+  });
+});
+
+describe("askPushTag", () => {
+  const NOW = Date.parse("2026-11-08T12:00:00Z");
+  test("a fresh answer is plain", () => {
+    expect(askPushTag(NOW - 10 * 60_000, NOW - 60_000, NOW)).toBe("[ask-answer]");
+    expect(askPushTag(NOW - 10 * 60_000, undefined, NOW)).toBe("[ask-answer]");
+  });
+  test("an old reply says when it was given", () => {
+    expect(askPushTag(Date.parse("2026-11-02T04:41:00Z"), Date.parse("2026-11-02T04:43:00Z"), NOW)).toBe("[ask-answer, late: answered 2026-11-02 04:43 UTC]");
+  });
+  test("an old pill press, which has no time, says when it was asked", () => {
+    expect(askPushTag(Date.parse("2026-11-02T04:41:00Z"), undefined, NOW)).toBe("[ask-answer, late: asked 2026-11-02 04:41 UTC, pressed since]");
+  });
+  test("the tag leads the message", () => {
+    expect(askPushMessage({ link: "L", answer: "a", how: "", question: "q", freeText: false, tag: "[ask-answer, late: x]" })).toMatch(/^\[ask-answer, late: x\] L → a/);
   });
 });
 

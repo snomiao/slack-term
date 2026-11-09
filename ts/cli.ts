@@ -16,7 +16,7 @@ import { cmdAuthLogin, cmdAuthLoginChrome, cmdAuthChrome, cmdAuthFirefox, cmdAut
 import { cmdTail, parseSince as parseDuration } from "./tail.ts";
 import { phiDelay, runStream, webClient, type StreamMatch } from "./stream.ts";
 import { relaySubscriber, relayTransport } from "./relay.ts";
-import { acquirePushLock, askPushMessage, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
+import { acquirePushLock, askPushMessage, askPushTag, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
 
@@ -4251,6 +4251,8 @@ interface AskPendingItem {
   collect: string;
   /** Where a delivery of this free-text reply ends (`--after` for the next look). */
   cursor?: string;
+  /** When the answer was given (a reply's ts); unknown for a pill press. */
+  answeredTs?: string;
   /** Set by `--push`: the pid that took the answer, and whether it was collected. */
   pushed?: { pid: number; collected: boolean };
   /** Set by `--push`: why this answer reached nobody. */
@@ -4321,8 +4323,12 @@ async function cmdAskPending(
     only?: Set<string>; watch?: boolean;
     /** Show only answers that reached nobody. */
     undelivered?: boolean;
+    /** `--watch`: questions already looked at in this round (`channel:ts`),
+     *  skipped unless asked within the last day. */
+    skip?: Set<string>;
   },
-): Promise<void> {
+): Promise<{ checked: string[]; throttled: boolean }> {
+  const checked: string[] = [];
   // Never blocks: one look per question and no waiting out 429s. A throttled
   // pass says how many it skipped; the next pass picks them up.
   setRateLimitWait(0);
@@ -4331,8 +4337,10 @@ async function cmdAskPending(
     console.error(`Error: ${SENT_LOG_UNAVAILABLE}\n  (${sentDbPath()})`);
     process.exit(ASK_EXIT_ERROR);
   }
+  const recent = Date.now() - 24 * 3600_000;
   const rows = all.filter((r) =>
-    (!opts.channel || r.channel === opts.channel || r.target === opts.channel) && (!opts.only || opts.only.has(`${r.channel}:${r.ts}`)));
+    (!opts.channel || r.channel === opts.channel || r.target === opts.channel) && (!opts.only || opts.only.has(`${r.channel}:${r.ts}`)) &&
+    (!opts.skip || r.sent_at >= recent || !opts.skip.has(`${r.channel}:${r.ts}`)));
   const pending: AskPendingItem[] = [];
   const count = { unanswered: 0, ambiguous: 0, resolved: 0, void: 0, explain: 0, throttled: 0 };
   /** Open questions someone pressed ℹ️ on — reported only: the thread note is
@@ -4358,6 +4366,7 @@ async function cmdAskPending(
     }
     const link = row.permalink || `${row.channel}:${row.ts}`;
     const asBot = !!row.as_bot;
+    checked.push(`${row.channel}:${row.ts}`);
     // Resume from where the last delivery to a caller ended (an exit 5
     // free-text reply), so that reply is not reported again — and the collect
     // line carries the same cursor, so `--waitFor` does not re-deliver it.
@@ -4402,9 +4411,9 @@ async function cmdAskPending(
       }
       const base = { row, link, question: parsed.question, collect, alive: senderAlive(row) };
       if (found) {
-        pending.push({ ...base, answer: found.answer, how: found.how, freeText: false });
+        pending.push({ ...base, answer: found.answer, how: found.how, freeText: false, ...(found.ts ? { answeredTs: found.ts } : {}) });
       } else if (unchosen && !unchosen.ambiguous && unchosen.text !== row.delivered_answer) {
-        pending.push({ ...base, answer: unchosen.text, how: "reply (not a choice)", freeText: true, cursor: askNextCursor(row.ts, after, unchosen.ts) });
+        pending.push({ ...base, answer: unchosen.text, how: "reply (not a choice)", freeText: true, cursor: askNextCursor(row.ts, after, unchosen.ts), answeredTs: unchosen.ts });
       } else if (unchosen?.ambiguous) {
         count.ambiguous++;
       } else {
@@ -4413,6 +4422,7 @@ async function cmdAskPending(
     } catch (e: unknown) {
       if (e instanceof RateLimitError) {
         // Probing on would only collect more 429s for the same method.
+        checked.pop(); // not looked at: the next round starts with it
         count.throttled = rows.length - i;
         problems.push(`rate-limited by Slack (${e.message}): ${count.throttled} question(s) not checked this pass`);
         break;
@@ -4426,7 +4436,8 @@ async function cmdAskPending(
 
   // A watcher's log carries what it did, not the whole list on every pass.
   const shown = opts.watch ? pending.filter((it) => it.pushed) : opts.undelivered ? pending.filter(reachedNobody) : pending;
-  if (opts.watch && !shown.length && !problems.length) return;
+  const result = { checked, throttled: count.throttled > 0 };
+  if (opts.watch && !shown.length && !problems.length) return result;
   if (opts.json) {
     for (const it of shown) {
       const r = it.row;
@@ -4479,6 +4490,7 @@ async function cmdAskPending(
     (opts.undelivered ? `, ${pending.filter(reachedNobody).length} undelivered` : "") +
     ` — checked ${rows.length} uncollected question(s) (log: ${sentDbPath()})`,
   );
+  return result;
 }
 
 /** `ask --pending --push --watch`: a push pass every `intervalMs`, and — when
@@ -4486,7 +4498,7 @@ async function cmdAskPending(
  *  soon as the relay rings for it (a reaction on it, or a reply in its
  *  thread), so a pressed pill reaches the asker in seconds. The relay only
  *  sees the relay app's channels; the interval covers the rest. */
-async function askPushWatch(run: (only?: Set<string>) => Promise<void>, sinceMs: () => number, intervalMs: number): Promise<never> {
+async function askPushWatch(run: (only?: Set<string>) => Promise<unknown>, sinceMs: () => number, intervalMs: number | (() => number)): Promise<never> {
   let busy = false;
   const queued = new Set<string>();
   let full = true;
@@ -4538,7 +4550,7 @@ async function askPushWatch(run: (only?: Set<string>) => Promise<void>, sinceMs:
   for (;;) {
     full = true;
     await kick();
-    await new Promise((r) => setTimeout(r, intervalMs));
+    await new Promise((r) => setTimeout(r, typeof intervalMs === "number" ? intervalMs : intervalMs()));
   }
 }
 
@@ -4572,6 +4584,7 @@ function askPushAll(items: AskPendingItem[], selfArgs: string[], problems: strin
         const msg = askPushMessage({
           link: it.link, answer: it.answer, how: it.how, question: it.question, freeText: it.freeText, collected: !it.freeText,
           ...(it.alive ? {} : { goneAsker: asker }),
+          tag: askPushTag(r.sent_at, it.answeredTs ? Number(it.answeredTs) * 1000 : undefined),
         });
         const took = notifyAgent(target, msg);
         if (took === undefined) {
@@ -7123,10 +7136,21 @@ async function main(): Promise<void> {
                 process.exit(ASK_EXIT_ERROR);
               }
               const since = String(argv.since);
+              // A round: full passes until every question has been looked at
+              // once. A pass cut short by a rate limit leaves the rest to the
+              // next one instead of starting over from the newest (which left
+              // most of a long backlog unread on every pass).
+              const round = new Set<string>();
               await askPushWatch(
-                (only) => cmdAskPending(tokens, { ...p, sinceMs: parseSince(since) ?? sinceMs, watch: true, ...(only ? { only } : {}) }),
+                async (only) => {
+                  const r = await cmdAskPending(tokens, { ...p, sinceMs: parseSince(since) ?? sinceMs, watch: true, ...(only ? { only } : { skip: round }) });
+                  if (only) return;
+                  if (r.throttled) for (const k of r.checked) round.add(k);
+                  else round.clear();
+                },
                 () => parseSince(since) ?? sinceMs,
-                min * 60_000,
+                // Mid-round, the next pass comes sooner: a 429 window is a minute.
+                () => (round.size ? Math.min(2, min) : min) * 60_000,
               );
             }
             try {

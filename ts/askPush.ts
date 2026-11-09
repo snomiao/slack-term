@@ -21,9 +21,27 @@ function clip(s: string, n: number): string {
   return one.length <= n ? one : `${one.slice(0, n - 1)}…`;
 }
 
+/** An answer this much older than its push is labelled late. */
+export const PUSH_LATE_MS = 60 * 60_000;
+
+function utc(ms: number): string {
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/** `[ask-answer]`, or — for an answer that is not new (a backfill, a lane that
+ *  was down) — `[ask-answer, late: …]` with when it was given. A pill press
+ *  carries no time in Slack, so a late one says when the question was asked. */
+export function askPushTag(askedAtMs: number, answeredAtMs: number | undefined, nowMs = Date.now()): string {
+  const since = answeredAtMs ?? askedAtMs;
+  if (nowMs - since < PUSH_LATE_MS) return "[ask-answer]";
+  return answeredAtMs !== undefined
+    ? `[ask-answer, late: answered ${utc(answeredAtMs)}]`
+    : `[ask-answer, late: asked ${utc(askedAtMs)}, pressed since]`;
+}
+
 /** The one-line message the asker receives: link, answer, how, question. */
-export function askPushMessage(p: { link: string; answer: string; how: string; question: string; freeText: boolean; collected?: boolean; goneAsker?: number }): string {
-  const head = `[ask-answer] ${p.link} →`;
+export function askPushMessage(p: { link: string; answer: string; how: string; question: string; freeText: boolean; collected?: boolean; goneAsker?: number; tag?: string }): string {
+  const head = `${p.tag ?? "[ask-answer]"} ${p.link} →`;
   const ans = clip(p.answer, 300);
   let tail = p.how ? ` (${p.how})` : "";
   if (p.freeText) tail += " — a free-text reply, not a choice: the question stays open";
