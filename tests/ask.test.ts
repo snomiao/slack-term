@@ -855,8 +855,8 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
   });
 });
 
-describe("ask self-DM warning (CLI)", { timeout: 60_000 }, () => {
-  test("warns when the question would go to your own DM", async () => {
+describe("ask: asking yourself is refused (CLI)", { timeout: 60_000 }, () => {
+  test("a question in your own DM is refused, nothing posted", async () => {
     const inline: InlineFixtures = {
       ...AUTH,
       "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
@@ -864,7 +864,26 @@ describe("ask self-DM warning (CLI)", { timeout: 60_000 }, () => {
     const m = await startMock({ inline });
     try {
       const r = await run(["ask", "@me", "やっていい?", "--channel-id", "D00000001"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
       expect(r.stderr).toContain("DM to yourself");
+      expect(r.stderr).toContain("Ask as the bot instead");
+      expect(m.requests.filter((q) => q.method === "chat.postMessage")).toEqual([]);
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("tagging yourself as a person in another DM is refused (the asker would be the one asked)", async () => {
+    const inline: InlineFixtures = {
+      ...AUTH,
+      "conversations.info__channel=D00000002": { ok: true, channel: { id: "D00000002", is_im: true, user: BOB, name: "" } },
+    };
+    const m = await startMock({ inline });
+    try {
+      const r = await run(["ask", "@bob", "@me やっていい?", "--channel-id", "D00000002"], m.baseUrl);
+      expect(r.exitCode).toBe(3);
+      expect(r.stderr).toContain("the asker and the one asked are the same person");
+      expect(m.requests.filter((q) => q.method === "chat.postMessage")).toEqual([]);
     } finally {
       await m.stop();
     }

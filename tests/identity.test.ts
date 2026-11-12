@@ -64,10 +64,20 @@ describe("userSessionRefusal (the 11-02 'posted as a person' trap)", () => {
   test("inside an agent, a write as the user session is refused", () => {
     expect(userSessionRefusal({ ...base, agent: "AY_AGENT_ID" })).toContain("refusing to post as the user session from inside an agent");
   });
-  test("…unless it names who, or says --as-bot / --as-user, or the token is a bot's", () => {
-    for (const o of [{ who: "deploy-bot" }, { asBot: true }, { asUser: true }, { activeIsBot: true }]) {
+  test("…unless it names who, or says --as-bot, or the token is a bot's", () => {
+    for (const o of [{ who: "deploy-bot" }, { who: "alice" }, { asBot: true }, { activeIsBot: true }]) {
       expect(userSessionRefusal({ ...base, agent: "AY_AGENT_ID", ...o })).toBeNull();
     }
+  });
+  test("inside an agent, --as-user is not enough: it must name the person", () => {
+    const r = userSessionRefusal({ ...base, agent: "AY_AGENT_ID", asUser: true, identities: ["alice", "deploy-bot"], userIdentities: ["alice"] });
+    expect(r).toContain("--as-user is not accepted from an agent");
+    expect(r).toContain("slack @alice ask");
+    expect(userSessionRefusal({ ...base, agent: "AY_AGENT_ID", asUser: true })).toContain("kind: user");
+  });
+  test("outside an agent, --as-user still works, unless several persons are configured", () => {
+    expect(userSessionRefusal({ ...base, asUser: true, identities: ["alice", "deploy-bot"], userIdentities: ["alice"] })).toBeNull();
+    expect(userSessionRefusal({ ...base, asUser: true, identities: ["alice", "bob"], userIdentities: ["alice", "bob"] })).toContain("several person identities are configured (@alice | @bob)");
   });
   test("reads are never refused", () => expect(userSessionRefusal({ ...base, isWrite: false, agent: "CLAUDECODE" })).toBeNull());
   test("outside an agent: refused only when several identities exist", () => {

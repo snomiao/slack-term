@@ -12,6 +12,7 @@
 // And the trap it closes (11-02: an agent's `slack ask` without --as-bot was
 // posted AS a person): a write that would go out as a person's session is refused
 // from inside an agent, or when several identities exist, unless it names one.
+// From an agent, --as-user is not enough (11-12): it must name the person.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -124,21 +125,38 @@ export function inAgent(env: NodeJS.ProcessEnv = process.env): string | undefine
 }
 
 /** Why a write that would post as a PERSON's session is refused, or null.
- *  Allowed when it names an identity (`@who`), says --as-bot or --as-user, or
- *  the active token is a bot's anyway. */
+ *  Allowed when it names an identity (`@who`), says --as-bot, or the active
+ *  token is a bot's anyway. `--as-user` is a person's own switch: inside an
+ *  agent it no longer counts (11-12: lanes added it by habit, and their posts
+ *  went out under the person's name). An agent that must act as a person names
+ *  that person's identity (`slack @alice …`), so the command line says who, and
+ *  the sent log records it. With two or more person identities, a bare
+ *  --as-user does not say which one. */
 export function userSessionRefusal(o: {
   isWrite: boolean; who?: string | undefined; asBot: boolean; asUser: boolean; activeIsBot: boolean;
-  agent?: string | undefined; identities: string[]; cmd: string;
+  agent?: string | undefined; identities: string[]; userIdentities?: string[]; cmd: string;
 }): string | null {
-  if (!o.isWrite || o.who || o.asBot || o.asUser || o.activeIsBot) return null;
+  if (!o.isWrite || o.who || o.asBot || o.activeIsBot) return null;
+  const users = o.userIdentities ?? [];
+  if (o.asUser && !o.agent && users.length < 2) return null;
   const names = o.identities.map((n) => `@${n}`).join(" | ");
   const pick = names ? `  Name who acts:   slack ${o.identities[0] ? `@${o.identities[0]}` : "@<who>"} ${o.cmd} …   (${names})` : "  Add identities to .slack-term/settings.yml, then: slack @<who> " + o.cmd + " …";
   if (o.agent) {
+    const person = users.length
+      ? `  As a person, on purpose:  slack @${users[0]} ${o.cmd} …   (${users.map((n) => `@${n}`).join(" | ")})`
+      : "  As a person, on purpose:  add them to `identities:` (kind: user), then slack @<name> " + o.cmd + " …";
     return [
       `Error: refusing to post as the user session from inside an agent (${o.agent} is set): \`${o.cmd}\` would go out as a PERSON.`,
+      ...(o.asUser ? ["  --as-user is not accepted from an agent: it hides whose name the post goes out under."] : []),
       pick,
       "  As the app:      add --as-bot",
-      "  As the person, on purpose:  add --as-user",
+      person,
+    ].join("\n");
+  }
+  if (o.asUser) {
+    return [
+      `Error: --as-user, but several person identities are configured (${users.map((n) => `@${n}`).join(" | ")}): name the one \`${o.cmd}\` acts as.`,
+      `  slack @${users[0]} ${o.cmd} …`,
     ].join("\n");
   }
   if (o.identities.length >= 2) {

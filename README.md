@@ -385,12 +385,14 @@ identities:
   alice:      { kind: user, profile: acme }
 ```
 
-**A write that would go out as a person's session is refused** (exit 2) unless it names `@who`, `--as-bot` or `--as-user`, in two cases:
+**A write that would go out as a person's session is refused** (exit 2) unless it names `@who` or `--as-bot`, in two cases:
 
-- from inside an agent (`AY_AGENT_ID`, `AGENT_YES_PID` or `CLAUDECODE` set);
-- when two or more identities are configured.
+- from inside an agent (`AY_AGENT_ID`, `AGENT_YES_PID` or `CLAUDECODE` set). `--as-user` is not accepted here: an agent that must act as a person names that person's identity (`slack @alice send …`), so the command says whose name the post goes out under and the sent log records it;
+- when two or more identities are configured. Outside an agent `--as-user` also passes, unless two or more of them are persons.
 
-This closes the trap where an agent's `slack ask` without `--as-bot` was posted as the person.
+This closes the trap where an agent's `slack ask` without `--as-bot` was posted as the person. The default for an agent is the bot: `slack @<bot> ask @alice …`.
+
+`ask` also refuses a question whose asker is the one asked: one in your own DM, or one that tags yourself while posting as you. Ask yourself through the bot instead.
 
 ### Language packs (locales/*.json)
 

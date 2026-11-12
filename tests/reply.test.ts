@@ -344,8 +344,15 @@ describe("slack @<who>, and the agent trap (CLI)", { timeout: 90_000 }, () => {
     expect(r.stderr).toContain("slack @sybot send");
     expect(mock.requests.slice(before).filter((q) => q.method.startsWith("chat."))).toEqual([]);
   });
-  test("--as-user lets it through to the gate", async () => {
+  test("inside an agent, --as-user is refused too (nothing sent)", async () => {
+    const before = mock.requests.length;
     const r = await run(["send", `C00000001:${ROOT_TS}`, "hi", "--as-user"], idDir(), { AY_AGENT_ID: "x" });
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain("--as-user is not accepted from an agent");
+    expect(mock.requests.slice(before).filter((q) => q.method.startsWith("chat."))).toEqual([]);
+  });
+  test("outside an agent, --as-user lets it through to the gate", async () => {
+    const r = await run(["send", `C00000001:${ROOT_TS}`, "hi", "--as-user"], idDir());
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toMatch(/--code=[0-9a-f]{4}/);
   });
