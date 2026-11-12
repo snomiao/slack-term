@@ -130,15 +130,14 @@ export function inAgent(env: NodeJS.ProcessEnv = process.env): string | undefine
  *  agent it no longer counts (11-12: lanes added it by habit, and their posts
  *  went out under the person's name). An agent that must act as a person names
  *  that person's identity (`slack @alice …`), so the command line says who, and
- *  the sent log records it. With two or more person identities, a bare
- *  --as-user does not say which one. */
+ *  the sent log records it. A person at a terminal keeps --as-user as is. */
 export function userSessionRefusal(o: {
   isWrite: boolean; who?: string | undefined; asBot: boolean; asUser: boolean; activeIsBot: boolean;
   agent?: string | undefined; identities: string[]; userIdentities?: string[]; cmd: string;
 }): string | null {
   if (!o.isWrite || o.who || o.asBot || o.activeIsBot) return null;
   const users = o.userIdentities ?? [];
-  if (o.asUser && !o.agent && users.length < 2) return null;
+  if (o.asUser && !o.agent) return null; // a person at a terminal: their own call
   const names = o.identities.map((n) => `@${n}`).join(" | ");
   const pick = names ? `  Name who acts:   slack ${o.identities[0] ? `@${o.identities[0]}` : "@<who>"} ${o.cmd} …   (${names})` : "  Add identities to .slack-term/settings.yml, then: slack @<who> " + o.cmd + " …";
   if (o.agent) {
@@ -151,12 +150,6 @@ export function userSessionRefusal(o: {
       pick,
       "  As the app:      add --as-bot",
       person,
-    ].join("\n");
-  }
-  if (o.asUser) {
-    return [
-      `Error: --as-user, but several person identities are configured (${users.map((n) => `@${n}`).join(" | ")}): name the one \`${o.cmd}\` acts as.`,
-      `  slack @${users[0]} ${o.cmd} …`,
     ].join("\n");
   }
   if (o.identities.length >= 2) {

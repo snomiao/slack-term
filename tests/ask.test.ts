@@ -5,7 +5,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,6 +40,8 @@ function run(args: string[], baseUrl: string, extraEnv: Record<string, string> =
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
+    // Run as a person at a terminal unless a test says it is an agent.
+    AY_AGENT_ID: _a, AGENT_YES_PID: _p, CLAUDECODE: _cc, SLACK_TERM_HOME: _g,
     ...rest
   } = process.env as Record<string, string>;
   const env = {
@@ -176,12 +178,12 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
-  test("tagging only yourself is refused — you would be asking yourself", async () => {
+  test("tagging only yourself grants nothing — your reactions are the seeds", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
       const r = await run(["ask", "#chan", "@user1 やっていい?", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(3);
-      expect(r.stderr).toContain("the asker and the one asked are the same person");
+      expect(r.stderr).toContain("no one is tagged");
     } finally {
       await m.stop();
     }
@@ -855,32 +857,49 @@ describe("ask --wait (CLI)", { timeout: 90_000 }, () => {
   });
 });
 
-describe("ask: asking yourself is refused (CLI)", { timeout: 60_000 }, () => {
-  test("a question in your own DM is refused, nothing posted", async () => {
-    const inline: InlineFixtures = {
-      ...AUTH,
-      "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
-    };
-    const m = await startMock({ inline });
+describe("ask: asking yourself (CLI)", { timeout: 60_000 }, () => {
+  // An agent acting as a person must name them (`slack @alice …`).
+  const agentEnv = (): Record<string, string> => {
+    const g = join(tmpHome, "agent-global");
+    mkdirSync(g, { recursive: true });
+    writeFileSync(join(g, "settings.yml"), "identities:\n  alice:\n    kind: user\n    env: SLACK_MCP_XOXP_TOKEN\n");
+    return { AY_AGENT_ID: "x", SLACK_TERM_HOME: g };
+  };
+  const selfDm: InlineFixtures = {
+    ...AUTH,
+    "conversations.info__channel=D00000001": { ok: true, channel: { id: "D00000001", is_im: true, user: SELF, name: "" } },
+  };
+
+  test("a person at a terminal is only warned about their own DM", async () => {
+    const m = await startMock({ inline: selfDm });
     try {
       const r = await run(["ask", "@me", "やっていい?", "--channel-id", "D00000001"], m.baseUrl);
+      expect(r.stderr).toContain("Warning: \"@me\" is a DM to yourself");
+    } finally {
+      await m.stop();
+    }
+  });
+
+  test("an agent asking in the person's own DM is refused, nothing posted", async () => {
+    const m = await startMock({ inline: selfDm });
+    try {
+      const r = await run(["@alice", "ask", "@me", "やっていい?", "--channel-id", "D00000001"], m.baseUrl, agentEnv());
       expect(r.exitCode).toBe(3);
-      expect(r.stderr).toContain("DM to yourself");
-      expect(r.stderr).toContain("Ask as the bot instead");
+      expect(r.stderr).toContain("Error: \"@me\" is a DM to yourself");
       expect(m.requests.filter((q) => q.method === "chat.postMessage")).toEqual([]);
     } finally {
       await m.stop();
     }
   });
 
-  test("tagging yourself as a person in another DM is refused (the asker would be the one asked)", async () => {
+  test("an agent tagging the person whose session it holds is refused (the asker would be the one asked)", async () => {
     const inline: InlineFixtures = {
       ...AUTH,
       "conversations.info__channel=D00000002": { ok: true, channel: { id: "D00000002", is_im: true, user: BOB, name: "" } },
     };
     const m = await startMock({ inline });
     try {
-      const r = await run(["ask", "@bob", "@user1 やっていい?", "--channel-id", "D00000002"], m.baseUrl);
+      const r = await run(["@alice", "ask", "@bob", "@user1 やっていい?", "--channel-id", "D00000002"], m.baseUrl, agentEnv());
       expect(r.exitCode).toBe(3);
       expect(r.stderr).toContain("the asker and the one asked are the same person");
       expect(m.requests.filter((q) => q.method === "chat.postMessage")).toEqual([]);

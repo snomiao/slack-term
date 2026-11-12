@@ -75,9 +75,8 @@ describe("userSessionRefusal (the 11-02 'posted as a person' trap)", () => {
     expect(r).toContain("slack @alice ask");
     expect(userSessionRefusal({ ...base, agent: "AY_AGENT_ID", asUser: true })).toContain("kind: user");
   });
-  test("outside an agent, --as-user still works, unless several persons are configured", () => {
-    expect(userSessionRefusal({ ...base, asUser: true, identities: ["alice", "deploy-bot"], userIdentities: ["alice"] })).toBeNull();
-    expect(userSessionRefusal({ ...base, asUser: true, identities: ["alice", "bob"], userIdentities: ["alice", "bob"] })).toContain("several person identities are configured (@alice | @bob)");
+  test("outside an agent, --as-user still works as before", () => {
+    expect(userSessionRefusal({ ...base, asUser: true, identities: ["alice", "bob"], userIdentities: ["alice", "bob"] })).toBeNull();
   });
   test("reads are never refused", () => expect(userSessionRefusal({ ...base, isWrite: false, agent: "CLAUDECODE" })).toBeNull());
   test("outside an agent: refused only when several identities exist", () => {

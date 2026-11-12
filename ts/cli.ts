@@ -3693,14 +3693,15 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // Same silent-delivery footgun as `send`: Slack never notifies you about your
   // own message, so a question asked in your own DM is delivered and then never
   // seen — and `--wait` would sit there until it timed out.
-  // Refused, not warned (11-12): nobody else can answer it, and an agent
-  // holding the person's session posted it under their name.
+  // From an agent it is refused (11-12: an agent holding the person's session
+  // posted it under their name); a person at a terminal is only warned.
+  const agent = inAgent();
   if (!args.asBot && !!selfId && counterpart === selfId) {
     console.error(
-      `Error: "${args.target}" is a DM to yourself — you would be asking yourself, and Slack will NOT notify you of your own message.\n` +
-      `  Ask as the bot instead:  slack @<bot> ask '${args.target}' '...'   (or --as-bot)`,
+      `${agent ? "Error" : "Warning"}: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
+      `  To reach yourself with a notification, ask as the bot:  slack @<bot> ask '${args.target}' '...'   (or --as-bot)`,
     );
-    process.exit(ASK_EXIT_ERROR);
+    if (agent) process.exit(ASK_EXIT_ERROR);
   }
 
   // --- who may answer -------------------------------------------------------
@@ -3733,11 +3734,11 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // and posting anyway would silently drop someone the caller meant to ask.
   askRefuseUnresolved(unresolved);
 
-  // Asking yourself as a person (11-12: an agent with the person's session
-  // tagged that person in the bot's DM, so the question went out under the
-  // name of the one it asked). The bot asks the person; a person asks others.
+  // An agent asking the person whose session it holds (11-12: it tagged that
+  // person in the bot's DM, so the question went out under the name of the
+  // one it asked). The bot asks the person; a person asks others.
   const taggedSelf = !!selfId && (resolved.some((r) => r.userId === selfId) || new RegExp(`<@${selfId}(?:\\|[^>]*)?>`).test(`${question}\n${body}`));
-  if (!args.asBot && taggedSelf) {
+  if (agent && !args.asBot && taggedSelf) {
     console.error(
       `Error: \`ask\` would post as you (${selfId}) a question addressed to you — the asker and the one asked are the same person.\n` +
       `  To ask yourself, ask as the bot:  slack @<bot> ask '${args.target}' '${args.question}'   (or --as-bot)\n` +
