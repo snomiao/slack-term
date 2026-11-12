@@ -3693,11 +3693,15 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // Same silent-delivery footgun as `send`: Slack never notifies you about your
   // own message, so a question asked in your own DM is delivered and then never
   // seen — and `--wait` would sit there until it timed out.
+  // From an agent it is refused (11-12: an agent holding the person's session
+  // posted it under their name); a person at a terminal is only warned.
+  const agent = inAgent();
   if (!args.asBot && !!selfId && counterpart === selfId) {
     console.error(
-      `Warning: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
-      `  To reach yourself with a notification, ask as the bot:  slack ask '${args.target}' '...' --as-bot`,
+      `${agent ? "Error" : "Warning"}: "${args.target}" is a DM to yourself — Slack will NOT notify you of your own message.\n` +
+      `  To reach yourself with a notification, ask as the bot:  slack @<bot> ask '${args.target}' '...'   (or --as-bot)`,
     );
+    if (agent) process.exit(ASK_EXIT_ERROR);
   }
 
   // --- who may answer -------------------------------------------------------
@@ -3730,6 +3734,18 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
   // and posting anyway would silently drop someone the caller meant to ask.
   askRefuseUnresolved(unresolved);
 
+  // An agent asking the person whose session it holds (11-12: it tagged that
+  // person in the bot's DM, so the question went out under the name of the
+  // one it asked). The bot asks the person; a person asks others.
+  const taggedSelf = !!selfId && (resolved.some((r) => r.userId === selfId) || new RegExp(`<@${selfId}(?:\\|[^>]*)?>`).test(`${question}\n${body}`));
+  if (agent && !args.asBot && taggedSelf) {
+    console.error(
+      `Error: \`ask\` would post as you (${selfId}) a question addressed to you — the asker and the one asked are the same person.\n` +
+      `  To ask yourself, ask as the bot:  slack @<bot> ask '${args.target}' '${args.question}'   (or --as-bot)\n` +
+      `  To ask someone else as yourself, tag them, not you.`,
+    );
+    process.exit(ASK_EXIT_ERROR);
+  }
   const broadcast = broadcastKinds.size > 0;
   // Tagging yourself grants nothing — your own reactions are the seeds.
   const audience = new Set(resolved.map((r) => r.userId).filter((id) => id !== selfId));
@@ -6130,7 +6146,7 @@ async function main(): Promise<void> {
       process.exit(1);
     })
     .option("workspace", { alias: "w", type: "string", describe: "Workspace name" })
-    .option("as-user", { type: "boolean", describe: "Act as the user session on purpose (needed for writes from inside an agent, or when several identities exist)" })
+    .option("as-user", { type: "boolean", describe: "Act as the user session on purpose (not accepted for writes from inside an agent: name the person with slack @<who>)" })
     .middleware(async (argv) => {
       const cmd = String((argv._ ?? [])[0] ?? "");
       // `@bot`: commands that have --as-bot act as the bot; `@user`: never.
@@ -6159,11 +6175,13 @@ async function main(): Promise<void> {
           console.error(refusal);
           process.exit(2);
         }
+        const ids = listIdentities();
         const user = userSessionRefusal({
           isWrite: isWriteCommand(argv._ ?? []) && !isReadMode(argv._ ?? [], argv as Record<string, unknown>),
           who, asBot: argv["as-bot"] === true, asUser: argv["as-user"] === true,
           activeIsBot: active.startsWith("xoxb-"),
-          agent: inAgent(), identities: [...listIdentities().keys()].sort(),
+          agent: inAgent(), identities: [...ids.keys()].sort(),
+          userIdentities: [...ids].filter(([, id]) => id.kind === "user").map(([n]) => n).sort(),
           cmd: (argv._ ?? []).slice(0, 2).join(" "),
         });
         if (user) {
