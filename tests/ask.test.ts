@@ -176,12 +176,12 @@ describe("ask requires an addressee (CLI)", { timeout: 60_000 }, () => {
     }
   });
 
-  test("tagging only yourself grants nothing — your reactions are the seeds", async () => {
+  test("tagging only yourself is refused — you would be asking yourself", async () => {
     const m = await startMock({ inline: { ...AUTH } });
     try {
       const r = await run(["ask", "#chan", "@user1 やっていい?", "--channel-id", CHAN], m.baseUrl);
       expect(r.exitCode).toBe(3);
-      expect(r.stderr).toContain("no one is tagged");
+      expect(r.stderr).toContain("the asker and the one asked are the same person");
     } finally {
       await m.stop();
     }
@@ -880,7 +880,7 @@ describe("ask: asking yourself is refused (CLI)", { timeout: 60_000 }, () => {
     };
     const m = await startMock({ inline });
     try {
-      const r = await run(["ask", "@bob", "@me やっていい?", "--channel-id", "D00000002"], m.baseUrl);
+      const r = await run(["ask", "@bob", "@user1 やっていい?", "--channel-id", "D00000002"], m.baseUrl);
       expect(r.exitCode).toBe(3);
       expect(r.stderr).toContain("the asker and the one asked are the same person");
       expect(m.requests.filter((q) => q.method === "chat.postMessage")).toEqual([]);
