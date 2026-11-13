@@ -75,7 +75,9 @@ export function parseSse(buf: string, emit: (event: string, data: string, id: st
 }
 
 /** The subprotocol the relay's /ws speaks; it echoes this one back. */
-export const WS_PROTOCOL = "slack-term-relay.v1";
+export const WS_PROTOCOL = "slack-hub-relay.v1";
+/** Also offered, so a relay deployed before the slack-hub rename still accepts us. */
+export const LEGACY_WS_PROTOCOL = "slack-term-relay.v1";
 
 /** The subprotocol that carries the bearer token: subprotocols must be HTTP
  *  tokens, so the token is base64url-encoded. */
@@ -152,7 +154,7 @@ function wsSubscribe(
     if (signal.aborted) return resolve(true);
     let ws: WebSocketLike;
     try {
-      ws = new WS(`${base.replace(/^http/i, "ws")}/ws${resumeQuery(after)}`, [WS_PROTOCOL, bearerProtocol(token)]);
+      ws = new WS(`${base.replace(/^http/i, "ws")}/ws${resumeQuery(after)}`, [WS_PROTOCOL, LEGACY_WS_PROTOCOL, bearerProtocol(token)]);
     } catch {
       return resolve(false);
     }

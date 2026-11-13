@@ -204,7 +204,7 @@ slack ask --pending --push --watch --interval 10
 
 # Who sent what: every send/ask/poll/edit is logged locally with its sender —
 # pid, cwd, git branch, agent CLI and session id — and the same attribution rides
-# along as invisible Slack message metadata (event_type `slack_term_sent`).
+# along as invisible Slack message metadata (event_type `slack_hub_sent`).
 slack sent                                     # newest first, sender on its own line
 slack sent "deploy" --since 2h --kind ask      # substring of the text
 slack sent --session 4f1c --cwd ~/ws/app --json

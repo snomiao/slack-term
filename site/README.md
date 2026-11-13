@@ -1,4 +1,4 @@
-# slack-term.pages.dev
+# slack-hub.pages.dev
 
 The landing page. Static files, no build step. To deploy (Cloudflare Pages, direct upload):
 

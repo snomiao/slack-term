@@ -238,8 +238,9 @@ export class Relay extends DurableObject<Env> {
       const [client, server] = Object.values(new WebSocketPair()) as [WebSocket, WebSocket];
       this.ctx.acceptWebSocket(server);
       hub.open(this.sock(server), from, hello, this.store, now);
-      const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").some((p) => p.trim() === hub.PROTOCOL);
-      return new Response(null, { status: 101, webSocket: client, headers: offered ? { "sec-websocket-protocol": hub.PROTOCOL } : {} });
+      const offered = (req.headers.get("sec-websocket-protocol") ?? "").split(",").map((p) => p.trim());
+      const pick = hub.PROTOCOLS.find((p) => offered.includes(p));
+      return new Response(null, { status: 101, webSocket: client, headers: pick ? { "sec-websocket-protocol": pick } : {} });
     }
 
     const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();

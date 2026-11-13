@@ -2,10 +2,10 @@ import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import {
-  bearerProtocol, relaySubscriber, relayTransport, WS_PROTOCOL,
+  bearerProtocol, LEGACY_WS_PROTOCOL, relaySubscriber, relayTransport, WS_PROTOCOL,
   type Doorbell, type Hello, type RelayHandlers, type WebSocketCtor, type WebSocketLike,
 } from "../ts/relay.ts";
-import { base64url, PROTOCOL, protocolAuthorized } from "../worker/src/hub.ts";
+import { base64url, LEGACY_PROTOCOL, PROTOCOL, protocolAuthorized } from "../worker/src/hub.ts";
 
 /** An in-memory WebSocket the test drives from the "server" side. */
 class FakeWs implements WebSocketLike {
@@ -57,6 +57,8 @@ describe("relay WebSocket auth scheme", () => {
   });
   test("protocolAuthorized rejects a wrong or missing token, or a missing protocol", () => {
     expect(protocolAuthorized(`${PROTOCOL}, ${bearerProtocol("tok-2")}`, "tok-1")).toBe(false);
+    // a client from before the slack-hub rename offers only the old name
+    expect(protocolAuthorized(`${LEGACY_PROTOCOL}, ${bearerProtocol("tok-1")}`, "tok-1")).toBe(true);
     expect(protocolAuthorized(bearerProtocol("tok-1"), "tok-1")).toBe(false);
     expect(protocolAuthorized(PROTOCOL, "tok-1")).toBe(false);
     expect(protocolAuthorized(null, "tok-1")).toBe(false);
@@ -78,7 +80,7 @@ describe("relaySubscriber over WebSocket (fake socket)", () => {
     const p = relaySubscriber("https://relay.example/", "tok-1", 60_000, { WebSocket: Fake, ackDelayMs: 20 })({ seq: 4, epoch: "e 1" }, ac.signal, r);
     const ws = last();
     expect(ws.url).toBe("wss://relay.example/ws?after=4&epoch=e%201");
-    expect(ws.protocols).toEqual([WS_PROTOCOL, bearerProtocol("tok-1")]);
+    expect(ws.protocols).toEqual([WS_PROTOCOL, LEGACY_WS_PROTOCOL, bearerProtocol("tok-1")]);
     expect(ws.protocols.join()).not.toContain("tok-1");
     ws.open();
     ws.push({ type: "hello", seq: 4, gap: false, retention_sec: 3600, epoch: "e 1" });
@@ -289,7 +291,7 @@ describe.skipIf(typeof Bun === "undefined")("relaySubscriber against a real WebS
       const r = rec();
       await relaySubscriber(`http://127.0.0.1:${server.port}`, "tok-1", 5_000, { ackDelayMs: 1 })({ seq: 7, epoch: "e" }, new AbortController().signal, r);
       expect(got.url).toBe("/ws?after=7&epoch=e");
-      expect(got.protocol).toBe(`${PROTOCOL}, ${bearerProtocol("tok-1")}`);
+      expect(got.protocol).toBe(`${PROTOCOL}, ${LEGACY_PROTOCOL}, ${bearerProtocol("tok-1")}`);
       expect(r.hellos).toEqual([{ seq: 7, gap: true, retention_sec: 3600, epoch: "e", via: "websocket" }]);
       expect(r.bells).toEqual([[8, { channel: "C00000001", ts: "8.000001" }]]);
       expect(got.msgs).toEqual([JSON.stringify({ type: "ack", seq: 8 })]);

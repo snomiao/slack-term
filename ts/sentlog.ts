@@ -9,7 +9,7 @@
 // Two places, on purpose:
 //   - a local SQLite log (~/.config/slack-cli/sent.sqlite), which `slack sent`
 //     and `slack ask --pending` read;
-//   - Slack message `metadata` (event_type `slack_term_sent`), invisible to
+//   - Slack message `metadata` (event_type `slack_hub_sent`), invisible to
 //     readers but returned by the API, so a machine WITHOUT the log can still
 //     attribute a message.
 //
@@ -181,7 +181,7 @@ function gitBranch(cwd: string): string | undefined {
 
 /** Slack message metadata: invisible in the client, returned by the API
  *  (`include_all_metadata`). Only defined fields — Slack rejects nulls. */
-export const METADATA_EVENT_TYPE = "slack_term_sent";
+export const METADATA_EVENT_TYPE = "slack_hub_sent";
 
 export function attributionMetadata(kind: SentKind, a: Attribution): { event_type: string; event_payload: Record<string, string | number> } {
   const p: Record<string, string | number> = { kind, pid: a.pid, host: a.host, cwd: a.cwd };

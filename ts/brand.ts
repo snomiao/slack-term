@@ -7,9 +7,8 @@
 //                                 an existing slack-term one is used when the
 //                                 slack-hub one does not exist yet
 //
-// Wire identifiers (the relay subprotocol `slack-term-relay.v1`, the message
-// metadata event_type `slack_term_sent`) are NOT renamed: deployed relays and
-// messages already posted carry them.
+// The relay subprotocol is slack-hub-relay.v1; client and worker also accept
+// the pre-rename slack-term-relay.v1 so either side can be upgraded first.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -37,4 +36,11 @@ export function namedDir(base: string): string {
 /** The scope dir in `parent`: .slack-hub, or a legacy .slack-term already there. */
 export function scopeDirIn(parent: string): string {
   return preferExisting(join(parent, SCOPE_DIR), join(parent, LEGACY_SCOPE_DIR));
+}
+
+/** Installed under the old npm name? CI also publishes each release as the
+ *  deprecated `slack-term` package; tell an interactive user once per run. */
+export function renameNotice(pkgName: string, isTTY = Boolean(process.stderr.isTTY)): string | undefined {
+  if (pkgName !== LEGACY_NAME || !isTTY) return undefined;
+  return "slack: the slack-term npm package was renamed to slack-hub — run: npm uninstall -g slack-term && npm install -g slack-hub";
 }

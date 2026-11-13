@@ -92,7 +92,7 @@ describe("sender attribution (send/ask/edit)", { timeout: 60_000 }, () => {
       expect(r.exitCode).toBe(0);
       const post = m.requests.find((q) => q.method === "chat.postMessage")!;
       const meta = JSON.parse(post.body).metadata;
-      expect(meta.event_type).toBe("slack_term_sent");
+      expect(meta.event_type).toBe("slack_hub_sent");
       expect(meta.event_payload).toMatchObject({
         kind: "send", cli: "claude-code", session_id: SESSION, agent_pid: 4242, cwd: expect.stringContaining("slack-sent-"),
       });

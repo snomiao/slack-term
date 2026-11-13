@@ -40,3 +40,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
         run: bunx semantic-release
+
+      # Mirror each release to the old npm name, `slack-term` (renamed to
+      # slack-hub). Same code, with npm/slack-term-README.md as its README
+      # (a migration guide). The CLI prints a rename notice when installed under
+      # this name. OIDC trusted publishing is set up for both packages; it covers
+      # `npm publish` only, so `npm deprecate` has to be run with a user login.
+      - name: Publish slack-term (deprecated alias)
+        env:
+          NPM_CONFIG_PROVENANCE: "true"
+        run: |
+          v=$(node -p "require('./package.json').version")
+          if ! git tag --points-at HEAD | grep -qx "v$v"; then echo "no release on this commit"; exit 0; fi
+          if npm view "slack-term@$v" version >/dev/null 2>&1; then echo "slack-term@$v already published"; exit 0; fi
+          cp npm/slack-term-README.md README.md
+          npm pkg set name=slack-term description="DEPRECATED: renamed to slack-hub — npm i -g slack-hub. $(node -p "require('./package.json').description")"
+          npm publish --access public

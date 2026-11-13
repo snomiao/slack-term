@@ -60,7 +60,11 @@ export interface Store {
 }
 
 /** The subprotocol a client must offer; the server echoes it back. */
-export const PROTOCOL = "slack-term-relay.v1";
+export const PROTOCOL = "slack-hub-relay.v1";
+/** Pre-rename name, still accepted from clients older than the slack-hub rename. */
+export const LEGACY_PROTOCOL = "slack-term-relay.v1";
+/** Accepted subprotocols, preferred first. */
+export const PROTOCOLS: readonly string[] = [PROTOCOL, LEGACY_PROTOCOL];
 /** The other offered subprotocol carries the bearer: `bearer.<base64url(token)>`.
  *  A header, not the URL: query strings end up in logs. */
 export const BEARER_PREFIX = "bearer.";
@@ -92,7 +96,7 @@ export function protocolAuthorized(header: string | null, token: string): boolea
   let ours = false;
   for (const p of header.split(",")) {
     const v = p.trim();
-    if (v === PROTOCOL) ours = true;
+    if (PROTOCOLS.includes(v)) ours = true;
     if (safeEqual(v, want)) ok = true;
   }
   return ok && ours;
