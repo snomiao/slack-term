@@ -25,17 +25,17 @@ byte-for-byte by [`tests/parity.sh`](tests/parity.sh).
 
 ## Comparison with other Slack tools
 
-`slack-term` focuses on everyday workspace interaction through shell commands:
+`slack-hub` focuses on everyday workspace interaction through shell commands:
 read, search, reply, and coordinate work from a terminal or an agent script.
 The alternatives below serve different workflows; links point to their upstream
 documentation.
 
 | Tool | Main workflow | How it compares with this project |
 | --- | --- | --- |
-| **`slack-term` (this project)** | Workspace messaging and automation | TypeScript and Rust implementations; explicit user-token setup; message previews and confirm codes for `send`, `edit`, and `delete`; `ask` waits for answers and `todo` tracks tasks through reactions. |
+| **`slack-hub` (this project)** | Workspace messaging and automation | TypeScript and Rust implementations; explicit user-token setup; message previews and confirm codes for `send`, `edit`, and `delete`; `ask` waits for answers and `todo` tracks tasks through reactions. |
 | [`slkcli`](https://github.com/therohitdas/slkcli) | Slack commands for macOS users and agents | Extracts credentials from the Slack desktop app for convenient onboarding. This project offers an explicit-token setup suitable for other platforms, at the cost of configuring an app and scopes. |
 | [Official Slack CLI](https://docs.slack.dev/tools/slack-cli/) | Building, running, and deploying Slack apps | Choose it for Slack app development. This project's commands focus on interacting with messages in an existing workspace. |
-| [Go `slack-term`](https://github.com/jpbruinsslot/slack-term) | Interactive terminal chat | Provides a full-screen terminal client. This project uses individual shell commands, which fit scripts and quick queries. The two projects are unrelated despite sharing a name. |
+| [Go `slack-term`](https://github.com/jpbruinsslot/slack-term) | Interactive terminal chat | Provides a full-screen terminal client. This project uses individual shell commands, which fit scripts and quick queries. The two projects are unrelated (this one was formerly also named slack-term). |
 | [`wee-slack`](https://github.com/wee-slack/wee-slack) | Slack inside WeeChat | Offers ongoing chat with threads, reactions, and synchronized read markers. Choose it if you already use WeeChat; this project runs as a standalone CLI. |
 | [`slackcat`](https://github.com/bcicen/slackcat) | Posting files and piped command output | Focuses on sending stdin, files, and streaming logs to Slack. This project also covers reading, searching, and following conversations. |
 | [`slackdump`](https://github.com/rusq/slackdump) | Archiving and exporting Slack data | Offers dedicated archives, export formats, and a local viewer. This project's `dump` provides markdown history exports alongside everyday messaging commands. |
@@ -53,11 +53,14 @@ may be a better fit.
 One package, no native binaries, any platform with Node 18+.
 
 ```sh
-npm install -g slack-term
-# or: bun add -g slack-term  |  pnpm add -g slack-term
+npm install -g slack-hub
+# or: bun add -g slack-hub  |  pnpm add -g slack-hub
 ```
 
-> **Note:** Previously published as `@snomiao/slack` (now deprecated).
+> **Note:** Previously published as `slack-term` and, before that, `@snomiao/slack` (both deprecated).
+> Coming from `slack-term`: `npm uninstall -g slack-term && npm install -g slack-hub`. The `slack`
+> command is unchanged, and existing `.slack-term/`, `~/.config/slack-term/`, `~/.slack-term/.env.local`
+> and `SLACK_TERM_*` env vars keep working; the new names (`.slack-hub/`, `SLACK_HUB_*`, …) win when both exist.
 
 ### Rust (cargo)
 
@@ -126,12 +129,12 @@ slack react "<permalink>" eyes --remove   # take a reaction back
 # A ➕ "その他 (other)" pill always follows the choices: pressing it means "none of
 # these" and the answer comes as a reply (exit 5), not as the ➕ itself. (Pills posted
 # before ➕ carry ❓ there; they are still read, collected and voided the same way.)
-# --explain (or SLACK_TERM_ASK_EXPLAIN=1) adds an ℹ️ "説明して (explain)" pill after ➕:
+# --explain (or SLACK_HUB_ASK_EXPLAIN=1) adds an ℹ️ "説明して (explain)" pill after ➕:
 # pressing it asks YOU to explain in the thread and is never an answer — the question
 # stays open. --wait/--waitFor say so on stderr and may post ONE thread note (once per
 # question) saying an explanation is coming; --explain-exit makes that exit 7.
 # --pending only reports a ℹ️ press — it posts nothing.
-# The instructions are posted in ja or en: --lang / SLACK_TERM_LANG, else the
+# The instructions are posted in ja or en: --lang / SLACK_HUB_LANG, else the
 # answerers' Slack locale, else the question's own language, else $LANG, else ja.
 slack ask "@bob" "本番に出してよい?" "出してよい" "待って"
 # --wait blocks until answered and prints ONLY the answer on stdout, so it composes:
@@ -205,9 +208,9 @@ slack ask --pending --push --watch --interval 10
 slack sent                                     # newest first, sender on its own line
 slack sent "deploy" --since 2h --kind ask      # substring of the text
 slack sent --session 4f1c --cwd ~/ws/app --json
-# Log: ~/.config/slack-cli/sent.sqlite (SLACK_TERM_SENT_DB overrides).
-# Opt out of both with SLACK_TERM_ATTRIBUTION=off. Agent CLIs other than Claude
-# Code are found by process name; set SLACK_TERM_AGENT_SESSION / _CLI / _PID to
+# Log: ~/.config/slack-cli/sent.sqlite (SLACK_HUB_SENT_DB overrides).
+# Opt out of both with SLACK_HUB_ATTRIBUTION=off. Agent CLIs other than Claude
+# Code are found by process name; set SLACK_HUB_AGENT_SESSION / _CLI / _PID to
 # name the session explicitly.
 
 # Task tracking on top of reactions — :pushpin: marks a message as a task,
@@ -321,12 +324,12 @@ Notes:
   are **never** cached — they are exactly the values that change, and Slack's search index
   already lags. A corrupt or unwritable cache is ignored and the command runs uncached.
 
-### .slack-term/ — aliases and settings per directory
+### .slack-hub/ — aliases and settings per directory
 
-`slack init` makes a `.slack-term/` in the current directory. `slack` uses the nearest one walking up from where it runs, like `.git`. So each repo, or each agent lane's `tree/<lane>`, has its own aliases and reply prefix, with no pid or env var needed. Without one, it uses `~/.config/slack-term/`. The dir holds a `.gitignore` of `*`, so nothing in it is committed.
+`slack init` makes a `.slack-hub/` in the current directory. `slack` uses the nearest one walking up from where it runs, like `.git`. So each repo, or each agent lane's `tree/<lane>`, has its own aliases and reply prefix, with no pid or env var needed. Without one, it uses `~/.config/slack-hub/`. The dir holds a `.gitignore` of `*`, so nothing in it is committed.
 
 ```sh
-slack init --prefix "[design]"                 # .slack-term/{README.md,.gitignore,settings.yml,inbox,outbox,sent,archived}
+slack init --prefix "[design]"                 # .slack-hub/{README.md,.gitignore,settings.yml,inbox,outbox,sent,archived}
 slack alias set board <permalink>              # a reply's permalink names its thread ROOT
 slack alias ls                                 # name  channel  thread_ts  file
 slack read board                               # the thread
@@ -347,7 +350,7 @@ slack edit <permalink> 'new text'              # in a [lane] scope the lane tag 
 
 **Inbox and outbox.** These are files, one per message, written atomically:
 
-- **Inbox:** `slack stream --inbox` writes each match into `inbox/` of every registered `.slack-term/` that subscribes its thread. `slack init` registers the dir in `~/.config/slack-term/scopes`. An entry is text only: who, where, the text, the permalink, and a count of files (attachments are never downloaded).
+- **Inbox:** `slack stream --inbox` writes each match into `inbox/` of every registered `.slack-hub/` that subscribes its thread. `slack init` registers the dir in `~/.config/slack-hub/scopes`. An entry is text only: who, where, the text, the permalink, and a count of files (attachments are never downloaded).
 - **Redaction:** secrets in the text are replaced with `[redacted:<rule>]` before the entry is written (gitleaks' rules plus ours, `ts/redact.ts`). `slack read <permalink>` fetches the original live.
 - **Handled:** `slack done <file|ts>` moves an entry to `archived/`. So does a reply sent with `outbox add … --in-reply-to <ts>` and then `outbox flush`, which records each sent reply's ts and permalink in `sent/`.
 
@@ -376,7 +379,7 @@ slack @form-bot ask @alice "ship?" yes no
 slack @alice read '#general'                    # as a person's session
 ```
 
-The names live in `identities:` in `.slack-term/settings.yml` or `~/.config/slack-term/settings.yml`. Each name points to **where** a token lives (an env var, optionally in an env file, or a `slack auth` profile), never the token itself:
+The names live in `identities:` in `.slack-hub/settings.yml` or `~/.config/slack-hub/settings.yml`. Each name points to **where** a token lives (an env var, optionally in an env file, or a `slack auth` profile), never the token itself:
 
 ```yaml
 identities:
@@ -396,12 +399,12 @@ From inside an agent, `ask` also refuses a question whose asker is the one asked
 
 ### Language packs (locales/*.json)
 
-slack-term's own text (help, errors, logs, hints) is English. Language packs hold only two things: text it posts to **people**, and patterns it looks for in **their** messages.
+slack-hub's own text (help, errors, logs, hints) is English. Language packs hold only two things: text it posts to **people**, and patterns it looks for in **their** messages.
 
 - `ask`'s copy is `ask.*`. It follows the readers' Slack locale, then the question's language, then the system locale, and finally `en`. Keys marked `(WIRE)` are matched back on questions already posted, so never reword them.
 - `choice_patterns` are regexes (flags `iu`). Every pack's patterns are applied, so a "(yes/no)?" question is spotted in any language. `send`/`reply` then print a hint to use `slack ask` instead (a hint only, never a block).
 - Packs are read at call time and cached by mtime, so an edit takes effect on the next command with no rebuild.
-- A `.slack-term/locales/<lang>.json` overrides the package's keys. A new file there adds a language.
+- A `.slack-hub/locales/<lang>.json` overrides the package's keys. A new file there adds a language.
 
 ### pinlog — a pinned status board that keeps a log
 
@@ -523,7 +526,7 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
   id and bot id; with `--as-user`, the bot's posts too) — the same text from anyone
   else still matches.
 - **Resumable.** A per-channel cursor (plus one per active thread) is saved under
-  `$XDG_STATE_HOME/slack-term/stream/` (one file per identity + grep + channels + `--replies-to`;
+  `$XDG_STATE_HOME/slack-hub/stream/` (one file per identity + grep + channels + `--replies-to`;
   override with `--state`). A restart continues where it stopped: nothing lost,
   nothing repeated. The first run starts *now*; `--since` replays from a point,
   ignoring the saved cursor. Delivery is at-least-once only in one corner — a crash
@@ -568,7 +571,7 @@ slack stream --grep '<@U00000001>' --replies-to self --json   # + every reply in
 
 #### Setting up the relay
 
-No clone needed — the relay ships in the npm package as `slack-term/worker`:
+No clone needed — the relay ships in the npm package as `slack-hub/worker`:
 
 ```sh
 slack relay init my-relay      # writes package.json, wrangler.jsonc, src/index.ts, .gitignore, README.md
@@ -588,7 +591,7 @@ Object binding and a `new_sqlite_classes: ["Relay"]` migration in wrangler confi
 
 ```ts
 // src/index.ts
-export { default, Relay } from "slack-term/worker";
+export { default, Relay } from "slack-hub/worker";
 ```
 
 Endpoints, privacy and protocol: [worker/README.md](worker/README.md), which also
@@ -706,11 +709,11 @@ A write-up of the design decisions behind the confirm gate lives on the agent-ye
   approach). See [`docs/comparison-slkcli.md`](docs/comparison-slkcli.md) for
   a full UX side-by-side.
 - [`docs/ecosystem.md`](docs/ecosystem.md) — survey of other terminal Slack
-  tools (official, `slack-term`, `wee-slack`, `slackcat`, `slackdump`, …).
+  tools (official, `slack-hub`, `wee-slack`, `slackcat`, `slackdump`, …).
 
 ## License
 
-`ts/vendor/gitleaks.toml` is gitleaks' default rule set (v8.30.1, MIT, © 2019 Zachary Rice, `ts/vendor/gitleaks.LICENSE`). slack-term runs it in-process (`ts/redact.ts`) to redact secrets from anything it writes to disk.
+`ts/vendor/gitleaks.toml` is gitleaks' default rule set (v8.30.1, MIT, © 2019 Zachary Rice, `ts/vendor/gitleaks.LICENSE`). slack-hub runs it in-process (`ts/redact.ts`) to redact secrets from anything it writes to disk.
 
 MIT
 

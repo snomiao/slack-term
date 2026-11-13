@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <!-- slack-term: a chat hash in Slack's four colours on a terminal, with a prompt cursor. Our own mark, not Slack's logo. -->
+  <!-- slack-hub: a chat hash in Slack's four colours on a terminal, with a prompt cursor. Our own mark, not Slack's logo. -->
   <rect width="256" height="256" rx="56" fill="#1d1c1d"/>
   <g stroke-width="22" stroke-linecap="round">
     <path d="M98 50 L84 150" stroke="#36c5f0"/>

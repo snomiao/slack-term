@@ -37,7 +37,7 @@ type RunResult = { exitCode: number; stdout: string; stderr: string };
 function run(args: string[], baseUrl: string): Promise<RunResult> {
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
-    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_TERM_ASK_EXPLAIN: _e,
+    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_HUB_ASK_EXPLAIN: _e,
     ...rest
   } = process.env as Record<string, string>;
   const env = { ...rest, HOME: tmpHome, SLACK_API_BASE: `${baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake" };

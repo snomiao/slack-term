@@ -1,5 +1,5 @@
 {
-  "$comment": "slack-term language pack. Strings slack ask posts into Slack, and the patterns the choice-question hint looks for. Loaded at call time: edit and rerun, no rebuild. A .slack-term/locales/<lang>.json overrides keys here. ask.* marked WIRE are matched back exactly on questions already posted: never reword them.",
+  "$comment": "slack-hub language pack. Strings slack ask posts into Slack, and the patterns the choice-question hint looks for. Loaded at call time: edit and rerun, no rebuild. A .slack-hub/locales/<lang>.json overrides keys here. ask.* marked WIRE are matched back exactly on questions already posted: never reword them.",
   "lang": "en",
   "locale_prefixes": [
     "en"

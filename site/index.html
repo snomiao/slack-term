@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>slack-term: a Slack CLI</title>
+<title>slack-hub: a Slack CLI</title>
 <meta name="description" content="A Slack CLI for people and coding agents. Read, search and reply from a shell. Every post shows a preview and needs a confirm code.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#1d1c1d">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.png">
-<meta property="og:title" content="slack-term">
+<meta property="og:title" content="slack-hub">
 <meta property="og:description" content="A Slack CLI for people and coding agents. Every post shows a preview and needs a confirm code.">
 <meta property="og:image" content="https://slack-term.pages.dev/icon.png">
 <meta property="og:url" content="https://slack-term.pages.dev/">
@@ -92,12 +92,12 @@
 <main>
   <header>
     <img src="icon.svg" alt="" width="88" height="88">
-    <h1>slack-term</h1>
+    <h1>slack-hub</h1>
     <p class="lede">Use Slack from a shell, or let your coding agents do it. Every post shows a preview first.</p>
   </header>
 
   <div class="install">
-    <code id="cmd">npm install -g slack-term</code>
+    <code id="cmd">npm install -g slack-hub</code>
     <button type="button" id="copy">copy</button>
   </div>
   <p class="alt">Also with bun or pnpm. A smaller native Rust build covers the core commands.</p>
@@ -195,7 +195,7 @@
 
 <span class="d"># Mark a message as seen</span>
 <span class="p">$</span> slack react "#eng:1700000000.000100" eyes</pre>
-  <p>Create a <code>.slack-term/</code> directory in a repo and commands run there get project-scoped aliases, message prefixes and file-based inbox and outbox queues. It's found by walking up the tree, like <code>.git</code>.</p>
+  <p>Create a <code>.slack-hub/</code> directory in a repo and commands run there get project-scoped aliases, message prefixes and file-based inbox and outbox queues. It's found by walking up the tree, like <code>.git</code>.</p>
   </section>
 
   <section>
@@ -239,7 +239,7 @@
     <dt>slack @&lt;who&gt;</dt><dd>Act as a named bot or person.</dd>
     <dt>slack doctor</dt><dd>Check a bot token can carry a two-way DM.</dd>
   </dl>
-  <p style="margin-top:20px">There's more in the <a href="https://github.com/snomiao/slack-term#usage">README</a>, including drafts, channels and users.</p>
+  <p style="margin-top:20px">There's more in the <a href="https://github.com/snomiao/slack-hub#usage">README</a>, including drafts, channels and users.</p>
   </section>
 
   <section>
@@ -254,18 +254,18 @@
     <li><b>Aug</b>Sender identity bound into confirm codes. Recipient-timezone quiet hours, <code>todo</code>, <code>ask</code> and <code>poll</code>.</li>
     <li><b>Sep</b>The local <code>slack sent</code> log, cross-platform Chrome cookie decryption, bot agent status and heartbeat.</li>
     <li><b>Oct</b><code>pinlog</code>, <code>lists</code>, <code>todos</code>, the <code>ask</code> lifecycle, token masking in previews, <code>stream --grep</code> and the Worker relay.</li>
-    <li><b>Nov</b><code>.slack-term/</code> per-directory scopes, in-process secret redaction, <code>@&lt;who&gt;</code> identities with the guard against agents posting as people, language packs, <code>ask --pending --push</code>.</li>
+    <li><b>Nov</b><code>.slack-hub/</code> per-directory scopes, in-process secret redaction, <code>@&lt;who&gt;</code> identities with the guard against agents posting as people, language packs, <code>ask --pending --push</code>.</li>
   </ol>
   </section>
 
   <section>
   <h2 id="compare">Alternatives</h2>
-  <p>Use slack-term if you call Slack from scripts or coding agents and want a preview before writes go out. Every send takes two runs and you have to set up a token, so other tools fit better for interactive chat or simple pipes:</p>
+  <p>Use slack-hub if you call Slack from scripts or coding agents and want a preview before writes go out. Every send takes two runs and you have to set up a token, so other tools fit better for interactive chat or simple pipes:</p>
   <div class="tbl"><table>
     <thead><tr><th>Tool</th><th>Choose it for</th></tr></thead>
     <tbody>
       <tr><td><a href="https://docs.slack.dev/tools/slack-cli/">Official Slack CLI</a></td><td>Building and deploying Slack apps.</td></tr>
-      <tr><td><a href="https://github.com/jpbruinsslot/slack-term">Go slack-term</a></td><td>A full-screen terminal chat client. Same name, different project.</td></tr>
+      <tr><td><a href="https://github.com/jpbruinsslot/slack-term">Go slack-term</a></td><td>A full-screen terminal chat client. A different project (this one was formerly also named slack-term).</td></tr>
       <tr><td><a href="https://github.com/wee-slack/wee-slack">wee-slack</a></td><td>Slack inside WeeChat, with ongoing chat.</td></tr>
       <tr><td><a href="https://github.com/bcicen/slackcat">slackcat</a></td><td>Piping files and command output to Slack.</td></tr>
       <tr><td><a href="https://github.com/rusq/slackdump">slackdump</a></td><td>Archiving and exporting workspace data.</td></tr>
@@ -275,8 +275,8 @@
   </section>
 
   <footer>
-    <a href="https://github.com/snomiao/slack-term">GitHub</a>
-    <a href="https://www.npmjs.com/package/slack-term">npm</a>
+    <a href="https://github.com/snomiao/slack-hub">GitHub</a>
+    <a href="https://www.npmjs.com/package/slack-hub">npm</a>
     <a href="https://lab.agent-yes.com/2026-08-11-slack-term-safe-writes">Design notes</a>
     <span>MIT license</span>
     <span>Not affiliated with Slack.</span>

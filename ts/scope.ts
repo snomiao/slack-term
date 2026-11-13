@@ -1,9 +1,9 @@
-// `.slack-term/` — per-directory state, found like `.git`: the nearest one
+// `.slack-hub/` — per-directory state, found like `.git`: the nearest one
 // walking up from the cwd is the scope, so each lane's tree (or repo) owns its
 // own aliases and settings without a pid, an env var or a daemon. No
-// `.slack-term/` anywhere up the tree falls back to ~/.config/slack-term/.
+// `.slack-hub/` anywhere up the tree falls back to ~/.config/slack-hub/.
 //
-//   .slack-term/
+//   .slack-hub/
 //     README.md            what this is (written on init)
 //     .gitignore           "*" — nothing in here is ever committed
 //     settings.yml         written by people: prefix, channel, as_bot, subscriptions
@@ -17,25 +17,28 @@
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { hubEnv, LEGACY_SCOPE_DIR, namedDir, SCOPE_DIR, scopeDirIn } from "./brand.ts";
 
-export const SCOPE_DIR = ".slack-term";
+export { SCOPE_DIR };
 export const SCOPE_SUBDIRS = ["inbox", "archived", "outbox", "sent"] as const;
 
 export type Scope = { dir: string; global: boolean };
 
-/** The global fallback: ~/.config/slack-term (SLACK_TERM_HOME overrides, for tests). */
+/** The global fallback: ~/.config/slack-hub (SLACK_HUB_HOME overrides, for tests). */
 export function globalScopeDir(): string {
-  return process.env.SLACK_TERM_HOME ?? join(homedir(), ".config", "slack-term");
+  return hubEnv("HOME") ?? namedDir(join(homedir(), ".config"));
 }
 
-/** The nearest `.slack-term/` at or above `cwd`, else the global one. */
+/** The nearest `.slack-hub/` at or above `cwd`, else the global one. */
 export function findScope(cwd = process.cwd()): Scope {
   let d = resolve(cwd);
   for (;;) {
-    const c = join(d, SCOPE_DIR);
-    try {
-      if (statSync(c).isDirectory()) return { dir: c, global: false };
-    } catch { /* not here */ }
+    for (const name of [SCOPE_DIR, LEGACY_SCOPE_DIR]) {
+      const c = join(d, name);
+      try {
+        if (statSync(c).isDirectory()) return { dir: c, global: false };
+      } catch { /* not here */ }
+    }
     const up = dirname(d);
     if (up === d) break;
     d = up;
@@ -43,12 +46,12 @@ export function findScope(cwd = process.cwd()): Scope {
   return { dir: globalScopeDir(), global: true };
 }
 
-const README = `# .slack-term/
+const README = `# .slack-hub/
 
-State for [slack-term](https://github.com/snomiao/slack-term) in this directory.
-\`slack\` uses the nearest \`.slack-term/\` walking up from where it runs (like
+State for [slack-hub](https://github.com/snomiao/slack-hub) in this directory.
+\`slack\` uses the nearest \`.slack-hub/\` walking up from where it runs (like
 \`.git\`), so everything below this directory shares it. Without one it uses
-~/.config/slack-term/.
+~/.config/slack-hub/.
 
 Nothing here is committed: \`.gitignore\` holds \`*\`.
 
@@ -87,7 +90,7 @@ subscriptions count, \`slack alias set\` refuses (the owner uses \`--shared\`), 
     slack alias who <channel> <ts>         # which dirs subscribe a thread
 `;
 
-const SETTINGS = `# slack-term settings for this directory. settings.local.yml (written by
+const SETTINGS = `# slack-hub settings for this directory. settings.local.yml (written by
 # \`slack alias\`) has the same keys and wins over this file.
 #
 # prefix: "[lane]"      # put in front of every \`slack reply\`; never doubled
@@ -125,9 +128,9 @@ export type Settings = {
   owner?: string;
 };
 
-/** Create (or complete) `<parent>/.slack-term/`. Idempotent: existing files are kept. */
+/** Create (or complete) `<parent>/.slack-hub/`. Idempotent: existing files are kept. */
 export function initScope(parent: string, settings: Omit<Settings, "subscriptions"> = {}): { dir: string; created: string[] } {
-  const dir = join(resolve(parent), SCOPE_DIR);
+  const dir = scopeDirIn(resolve(parent));
   const created: string[] = [];
   mkdirSync(dir, { recursive: true });
   for (const sub of SCOPE_SUBDIRS) {
@@ -386,13 +389,13 @@ export class RestrictedError extends Error {
   }
 }
 
-// --- the registry: every .slack-term/ on this machine, for the relay fan-out ---
+// --- the registry: every .slack-hub/ on this machine, for the relay fan-out ---
 
 function registryPath(): string {
   return join(globalScopeDir(), "scopes");
 }
 
-/** Remember `dir` (a .slack-term/ path) so a stream can deliver into it. */
+/** Remember `dir` (a .slack-hub/ path) so a stream can deliver into it. */
 export function registerScope(dir: string): void {
   const p = registryPath();
   withFileLock(p, () => {

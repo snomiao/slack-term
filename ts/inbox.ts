@@ -1,4 +1,4 @@
-// .slack-term/ inbox and outbox: one file per message, written tmp + rename.
+// .slack-hub/ inbox and outbox: one file per message, written tmp + rename.
 //
 // inbox/<channel>-<ts>.yml  a text-only notification (who, where, text,
 //   permalink; attachments only counted). Secrets are redacted before it is

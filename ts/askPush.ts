@@ -3,14 +3,15 @@
 //
 // Why: a pill pressed while the asker had moved on was never read back
 // (2026-09-27: 13 of 71 asks). `--pending` lists them, but only to whoever
-// runs it; a wrapper outside slack-term pushed them over `ay`, and that now
+// runs it; a wrapper outside slack-hub pushed them over `ay`, and that now
 // lives here instead. The sent-log already holds the asking
-// agent's pid, so slack-term can tell it directly.
+// agent's pid, so slack-hub can tell it directly.
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pidAlive } from "./sentlog.ts";
+import { hubEnv } from "./brand.ts";
 
 /** ay rejects messages over 1024 chars. */
 export const PUSH_MAX = 1000;
@@ -72,7 +73,7 @@ export function parentPid(pid: number): number {
  *  them as failures re-sent the same answer on every pass. */
 export function notifyAgent(pid: number, msg: string, run: Run = runSync, parent = parentPid): number | undefined {
   for (let i = 0; i < 4 && pid > 1; i++, pid = parent(pid)) {
-    const r = run(process.env.SLACK_TERM_AY || "ay", ["send", String(pid), "--force", msg]);
+    const r = run(hubEnv("AY") || "ay", ["send", String(pid), "--force", msg]);
     if (r.error) return undefined; // no ay on this machine
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     if (/no agent matched/i.test(out)) continue;
@@ -83,7 +84,7 @@ export function notifyAgent(pid: number, msg: string, run: Run = runSync, parent
 
 /** Agents ay knows, or none when ay is missing or says something else. */
 export function liveAgents(run: Run = runSync): { pid: number; cwd: string; started_at?: number }[] {
-  const r = run(process.env.SLACK_TERM_AY || "ay", ["ls", "--json"]);
+  const r = run(hubEnv("AY") || "ay", ["ls", "--json"]);
   try {
     const v = JSON.parse(r.stdout ?? "") as { pid?: unknown; cwd?: unknown; started_at?: unknown }[];
     return Array.isArray(v)

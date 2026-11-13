@@ -1,4 +1,5 @@
 import { askString } from "./locales.ts";
+import { hubEnv } from "./brand.ts";
 
 // The `ask` message format — builder and parser in one place, on purpose.
 //
@@ -91,7 +92,7 @@ export type AskLangSource = "flag" | "env" | "readers" | "content" | "system" | 
 
 /** Pick the language the body's own copy is written in. In order:
  *
- *  1. `--lang`, else `SLACK_TERM_LANG` — explicit. A value naming no supported
+ *  1. `--lang`, else `SLACK_HUB_LANG` — explicit. A value naming no supported
  *     language is an error (null): a typo must not quietly post in the wrong one.
  *  2. The READERS' Slack locale (`users.info?include_locale`) — the people the
  *     question is addressed to, who are the ones who have to read the copy.
@@ -109,7 +110,7 @@ export function askResolveLang(
   opts: { flag?: string | undefined; readerLocales?: (string | undefined)[]; content?: string[] },
   env: NodeJS.ProcessEnv = process.env,
 ): { lang: AskLang; source: AskLangSource } | null {
-  for (const [raw, source] of [[opts.flag, "flag"], [env.SLACK_TERM_LANG, "env"]] as const) {
+  for (const [raw, source] of [[opts.flag, "flag"], [hubEnv("LANG", env), "env"]] as const) {
     if (raw === undefined || raw.trim() === "") continue;
     const v = raw.trim().toLowerCase();
     return (ASK_LANGS as readonly string[]).includes(v) ? { lang: v as AskLang, source } : null;

@@ -1,4 +1,4 @@
-// Secret redaction for anything slack-term writes to disk (the .slack-term/
+// Secret redaction for anything slack-hub writes to disk (the .slack-hub/
 // inbox/outbox): each secret becomes `[redacted:<rule id>]`, and the original
 // never touches the file. `slack read` fetches the real text live.
 //

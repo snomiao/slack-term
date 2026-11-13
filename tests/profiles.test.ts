@@ -372,9 +372,9 @@ describe("profiles", () => {
     expect(() => resolveToken()).toThrow(/No Slack token found/);
   });
 
-  test("resolveToken reads from the global ~/.slack-term/.env.local", () => {
+  test("resolveToken reads from the global ~/.slack-hub/.env.local", () => {
     // Place the env file under $HOME so the walk falls through to the global check.
-    const dir = join(process.env.HOME!, ".slack-term");
+    const dir = join(process.env.HOME!, ".slack-hub");
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, ".env.local"), "SLACK_TOKEN='xoxp-global'\n");
     expect(resolveToken()).toBe("xoxp-global");

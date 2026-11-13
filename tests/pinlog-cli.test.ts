@@ -60,7 +60,7 @@ function run(m: MockHandle, args: string[], env: Record<string, string> = {}): P
     HOME: tmpHome,
     SLACK_API_BASE: `${m.baseUrl}/api`,
     SLACK_MCP_XOXP_TOKEN: "xoxp-fake",
-    SLACK_TERM_ATTRIBUTION: "off",
+    SLACK_HUB_ATTRIBUTION: "off",
     // Never quiet unless a test says so (start > end is false and hour < 0 never holds).
     SLACK_QUIET_START: "0",
     SLACK_QUIET_END: "0",

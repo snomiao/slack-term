@@ -39,7 +39,7 @@ describe("slack relay (CLI)", { timeout: 60_000 }, () => {
     const r = await run(["relay", "init"], { SLACK_BOT_TOKEN: "xoxb-fake" });
     expect(r.stderr).not.toContain("refusing");
     expect(r.exitCode).toBe(0);
-    const out = join(home, "slack-term-relay");
+    const out = join(home, "slack-hub-relay");
     expect(readdirSync(out).sort()).toEqual([".gitignore", "README.md", "package.json", "src", "wrangler.jsonc"]);
     const token = /RELAY_TOKEN[^\n]*\n {2}([0-9a-f]{64})\n/.exec(r.stdout)?.[1];
     expect(token).toBeDefined();
@@ -48,7 +48,7 @@ describe("slack relay (CLI)", { timeout: 60_000 }, () => {
     }
     expect(r.stdout).toContain("npx wrangler deploy");
     // Nothing written outside the folder (no profile, no wizard state).
-    expect(readdirSync(home).filter((f) => f !== ".bun" && f !== "Library").sort()).toEqual(["slack-term-relay"]); // .bun, Library (macOS): the runtime's own caches
+    expect(readdirSync(home).filter((f) => f !== ".bun" && f !== "Library").sort()).toEqual(["slack-hub-relay"]); // .bun, Library (macOS): the runtime's own caches
 
     writeFileSync(join(out, "README.md"), "mine");
     const again = await run(["relay", "init"]);
@@ -58,7 +58,7 @@ describe("slack relay (CLI)", { timeout: 60_000 }, () => {
 
     const forced = await run(["relay", "init", "--force"]);
     expect(forced.exitCode).toBe(0);
-    expect(readFileSync(join(out, "README.md"), "utf8")).toContain("# slack-term-relay");
+    expect(readFileSync(join(out, "README.md"), "utf8")).toContain("# slack-hub-relay");
   });
 
   test("init <dir> --name", async () => {

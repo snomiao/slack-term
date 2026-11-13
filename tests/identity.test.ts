@@ -8,20 +8,20 @@ import { applyIdentity, inAgent, listIdentities, splitWho, userSessionRefusal } 
 const fakeBot = ["xox", "b-", "0000000000-0000000000000-", "faketokenfaketokenfake00"].join("");
 const fakeUser = ["xox", "p-", "0000000000-0000000000-0000000000000-", "0".repeat(32)].join("");
 let root: string;
-const prevHome = process.env.SLACK_TERM_HOME;
+const prevHome = process.env.SLACK_HUB_HOME;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "ident-"));
-  process.env.SLACK_TERM_HOME = join(root, "global");
-  mkdirSync(join(root, "lane", ".slack-term"), { recursive: true });
+  process.env.SLACK_HUB_HOME = join(root, "global");
+  mkdirSync(join(root, "lane", ".slack-hub"), { recursive: true });
   writeFileSync(join(root, "bot.env"), `# a comment\nexport SLACK_BOT_TOKEN="${fakeBot}"\n`);
   writeFileSync(join(root, "user.env"), `SLACK_TOKEN=${fakeUser}\n`);
-  writeFileSync(join(root, "lane", ".slack-term", "settings.yml"),
+  writeFileSync(join(root, "lane", ".slack-hub", "settings.yml"),
     `identities:\n  deploy-bot:\n    kind: bot\n    env_file: ${join(root, "bot.env")}\n  alice:\n    kind: user\n    env_file: ${join(root, "user.env")}\n  acme-alice:\n    kind: user\n    profile: acme\n  broken:\n    kind: bot\n    env_file: ${join(root, "user.env")}\n    env: SLACK_TOKEN\n`);
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-  if (prevHome === undefined) delete process.env.SLACK_TERM_HOME;
-  else process.env.SLACK_TERM_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.SLACK_HUB_HOME;
+  else process.env.SLACK_HUB_HOME = prevHome;
 });
 
 describe("splitWho", () => {

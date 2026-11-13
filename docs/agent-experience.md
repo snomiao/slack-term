@@ -10,8 +10,8 @@ API receiver. Receiving new requests/context remains a separate concern.
 | Session status and title | Yes, implemented | Current session APIs, with command lifetime and explicit completion handling. |
 | Dynamic suggested prompts | Later | Useful for contextual entry points; fixed prompts suffice initially. |
 | Agent event receiver | Later | Receives new app events; independent of the command heartbeat and user-oriented `tail`. |
-| Slack MCP alongside slack-term | Yes | Agents with an approved connection can use its user-context tools. |
-| Replace slack-term with MCP | No | Preserve shell workflows, bot identity, confirmation gates, `ask`/`poll`, `todo`, and scheduling. |
+| Slack MCP alongside slack-hub | Yes | Agents with an approved connection can use its user-context tools. |
+| Replace slack-hub with MCP | No | Preserve shell workflows, bot identity, confirmation gates, `ask`/`poll`, `todo`, and scheduling. |
 
 The Agent messaging experience (`agent_view`) uses the regular Messages tab and
 threaded conversations; the older `assistant_view` uses Chat/History tabs. A

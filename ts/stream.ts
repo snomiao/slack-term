@@ -208,7 +208,7 @@ export type StreamOpts = {
 };
 
 /** Where the real-time setup is documented — the polling warning points here. */
-export const RELAY_DOCS = "https://github.com/snomiao/slack-term/blob/main/worker/README.md";
+export const RELAY_DOCS = "https://github.com/snomiao/slack-hub/blob/main/worker/README.md";
 
 export const PHI = 1.618;
 /** Relay bells handled per turn of the loop before the poll gets a look in. */

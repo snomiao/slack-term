@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "slack-term-relay",
+      "name": "slack-hub-relay",
       "devDependencies": {
         "@cloudflare/workers-types": "^4",
         "typescript": "^5.6",

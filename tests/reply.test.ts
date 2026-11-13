@@ -1,5 +1,5 @@
 // CLI: `slack init` / `alias` / `reply` / `read <alias>` / `send --to`, against
-// the mock server, from a directory holding its own .slack-term/.
+// the mock server, from a directory holding its own .slack-hub/.
 import { describe, test, expect, beforeAll, afterAll } from "./harness.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -61,8 +61,8 @@ afterAll(async () => {
 
 type RunResult = { exitCode: number; stdout: string; stderr: string };
 function run(args: string[], cwd = lane, extraEnv: Record<string, string> = {}, input?: string): Promise<RunResult> {
-  const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_TERM_HOME: _g, ...rest } = process.env as Record<string, string>;
-  const env = { ...rest, HOME: tmpHome, SLACK_TERM_HOME: join(tmpHome, "global"), SLACK_API_BASE: `${mock.baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", ...extraEnv };
+  const { SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h, SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_HUB_HOME: _g, ...rest } = process.env as Record<string, string>;
+  const env = { ...rest, HOME: tmpHome, SLACK_HUB_HOME: join(tmpHome, "global"), SLACK_API_BASE: `${mock.baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", ...extraEnv };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd, env, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
     if (input !== undefined) { child.stdin!.write(input); child.stdin!.end(); }
@@ -87,11 +87,11 @@ const REPLY_LINK = `https://acme.slack.com/archives/C00000001/p${REPLY_TS.replac
 const posts = (from: number) => mock.requests.slice(from).filter((q) => q.method === "chat.postMessage").map((q) => JSON.parse(q.body) as { channel: string; thread_ts?: string; text: string });
 
 describe("slack init / alias / reply (CLI)", { timeout: 90_000 }, () => {
-  test("init writes .slack-term/ with the prefix", async () => {
+  test("init writes .slack-hub/ with the prefix", async () => {
     const r = await run(["init", "--prefix", "[design]"]);
     expect(r.exitCode).toBe(0);
-    expect(readFileSync(join(lane, ".slack-term", ".gitignore"), "utf8")).toBe("*\n");
-    expect(readFileSync(join(lane, ".slack-term", "settings.yml"), "utf8")).toContain('prefix: "[design]"');
+    expect(readFileSync(join(lane, ".slack-hub", ".gitignore"), "utf8")).toBe("*\n");
+    expect(readFileSync(join(lane, ".slack-hub", "settings.yml"), "utf8")).toContain('prefix: "[design]"');
   });
 
   test("alias set on a reply's bare permalink names its thread root", async () => {
@@ -176,7 +176,7 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     mkdirSync(ib(), { recursive: true });
     expect((await run(["init", "--prefix", "[ib]"], ib())).exitCode).toBe(0);
     expect((await run(["alias", "set", "board", `C00000001:${ROOT_TS}`], ib())).exitCode).toBe(0);
-    writeFileSync(join(ib(), ".slack-term", "inbox", `C00000001-${REPLY_TS}.yml`),
+    writeFileSync(join(ib(), ".slack-hub", "inbox", `C00000001-${REPLY_TS}.yml`),
       `ts: "${REPLY_TS}"\nchannel: C00000001\nthread_ts: "${ROOT_TS}"\nuser: U00000002\nuser_name: bob\ntext: a follow-up\npermalink: ${REPLY_LINK}\nalias: board\nreceived_at: 2026-11-02T00:00:00Z\n`);
     const ls = await run(["inbox", "ls"], ib());
     expect(ls.stdout).toBe(`${REPLY_TS}\tbob\tboard\ta follow-up\n`);
@@ -196,9 +196,9 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     const r = await run(["outbox", "flush", `--code=${code(dry.stderr)}`], ib());
     expect(r.exitCode).toBe(0);
     expect(posts(before)).toEqual([expect.objectContaining({ channel: "C00000001", thread_ts: ROOT_TS, text: "[ib] fixed" })]);
-    expect(readdirSync(join(ib(), ".slack-term", "outbox"))).toEqual([]);
-    expect(readdirSync(join(ib(), ".slack-term", "sent")).length).toBe(1);
-    expect(readdirSync(join(ib(), ".slack-term", "archived"))).toEqual([`C00000001-${REPLY_TS}.yml`]);
+    expect(readdirSync(join(ib(), ".slack-hub", "outbox"))).toEqual([]);
+    expect(readdirSync(join(ib(), ".slack-hub", "sent")).length).toBe(1);
+    expect(readdirSync(join(ib(), ".slack-hub", "archived"))).toEqual([`C00000001-${REPLY_TS}.yml`]);
   });
 
   test("outbox flush: a URL glued to the text before it is refused and stays queued", async () => {
@@ -209,8 +209,8 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     expect(r.stderr).toContain("refused (stays queued)");
     expect(r.stderr).toContain("Ambiguous URL boundary");
     expect(posts(before)).toEqual([]);
-    expect(readdirSync(join(ib(), ".slack-term", "outbox")).length).toBe(1);
-    for (const f of readdirSync(join(ib(), ".slack-term", "outbox"))) rmSync(join(ib(), ".slack-term", "outbox", f));
+    expect(readdirSync(join(ib(), ".slack-hub", "outbox")).length).toBe(1);
+    for (const f of readdirSync(join(ib(), ".slack-hub", "outbox"))) rmSync(join(ib(), ".slack-hub", "outbox", f));
   });
 
   test("done: a missing ref exits 2", async () => {
@@ -218,7 +218,7 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
   });
 
   test("restricted: lane alias set refuses, --shared works, reply elsewhere refuses", async () => {
-    writeFileSync(join(ib(), ".slack-term", "settings.yml"), `prefix: "[ib]"\nrestrict_to_subscriptions: true\nowner: ${ib()}\n`);
+    writeFileSync(join(ib(), ".slack-hub", "settings.yml"), `prefix: "[ib]"\nrestrict_to_subscriptions: true\nowner: ${ib()}\n`);
     const set = await run(["alias", "set", "x", `C00000001:${OTHER_ROOT}`], ib());
     expect(set.exitCode).toBe(2);
     expect(set.stderr).toContain("restricted");
@@ -247,8 +247,8 @@ describe("inbox / outbox / restrict (CLI)", { timeout: 120_000 }, () => {
     const r = await run(["alias", "import", tsv, "--channel", "D00000001", "--lane-dir", `guide=${guide}`], tmpHome);
     expect(r.stdout).toContain("imported 2 subscription(s)");
     expect(r.stderr).toContain(`skipped 1 line(s) for lane "nobody"`);
-    expect(existsSync(join(guide, ".slack-term", ".gitignore"))).toBe(true);
-    expect(readFileSync(join(guide, ".slack-term", "settings.yml"), "utf8")).toContain(`t-${OTHER_ROOT}`);
+    expect(existsSync(join(guide, ".slack-hub", ".gitignore"))).toBe(true);
+    expect(readFileSync(join(guide, ".slack-hub", "settings.yml"), "utf8")).toContain(`t-${OTHER_ROOT}`);
   });
 });
 
@@ -315,7 +315,7 @@ describe("thread --since --format tsv, inbox listen filters (CLI)", { timeout: 9
     const d = join(tmpHome, "tree", "listen");
     mkdirSync(d, { recursive: true });
     await run(["init"], d);
-    const put = (ts: string, thread: string, user: string, alias: string) => writeFileSync(join(d, ".slack-term", "inbox", `C00000001-${ts}.yml`),
+    const put = (ts: string, thread: string, user: string, alias: string) => writeFileSync(join(d, ".slack-hub", "inbox", `C00000001-${ts}.yml`),
       `ts: "${ts}"\nchannel: C00000001\nthread_ts: "${thread}"\nuser: ${user}\ntext: hi\npermalink: x\nalias: ${alias}\nreceived_at: 2026-11-02T00:00:00Z\n`);
     put("1700000000.000201", ROOT_TS, "U00000002", "a");
     put("1700000000.000202", ROOT_TS, "U00000003", "a");
@@ -334,7 +334,7 @@ describe("slack @<who>, and the agent trap (CLI)", { timeout: 90_000 }, () => {
     mkdirSync(idDir(), { recursive: true });
     await run(["init"], idDir());
     writeFileSync(join(tmpHome, "sybot.env"), `SLACK_BOT_TOKEN=${fakeBot}\n`);
-    writeFileSync(join(idDir(), ".slack-term", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n`);
+    writeFileSync(join(idDir(), ".slack-hub", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n`);
   });
   test("inside an agent, send without who/--as-bot/--as-user is refused (nothing sent)", async () => {
     const before = mock.requests.length;
@@ -371,7 +371,7 @@ describe("slack @<who>, and the agent trap (CLI)", { timeout: 90_000 }, () => {
     expect(r.stderr).toContain("unknown identity @nobody. Known: @sybot");
   });
   test("two identities, no @who, outside an agent: refused, listing them", async () => {
-    writeFileSync(join(idDir(), ".slack-term", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n  alice:\n    kind: user\n    profile: acme\n`);
+    writeFileSync(join(idDir(), ".slack-hub", "settings.yml"), `identities:\n  sybot:\n    kind: bot\n    env_file: ${join(tmpHome, "sybot.env")}\n  alice:\n    kind: user\n    profile: acme\n`);
     const r = await run(["send", `C00000001:${ROOT_TS}`, "hi"], idDir());
     expect(r.exitCode).toBe(2);
     expect(r.stderr).toContain("several identities are configured (@alice | @sybot)");
@@ -383,8 +383,8 @@ describe("inbox nudge --eyes (CLI)", { timeout: 60_000 }, () => {
     const d = join(tmpHome, "tree", "nudge");
     mkdirSync(d, { recursive: true });
     await run(["init"], d);
-    writeFileSync(join(d, ".slack-term", "settings.yml"), "nudge_after_min: 1\n");
-    const f = join(d, ".slack-term", "inbox", `C00000001-${REPLY_TS}.yml`);
+    writeFileSync(join(d, ".slack-hub", "settings.yml"), "nudge_after_min: 1\n");
+    const f = join(d, ".slack-hub", "inbox", `C00000001-${REPLY_TS}.yml`);
     writeFileSync(f, `ts: "${REPLY_TS}"\nchannel: C00000001\nuser: U00000002\ntext: hi\npermalink: x\nalias: a\nreceived_at: 2026-11-02T00:00:00Z\n`);
     const { utimesSync } = await import("node:fs");
     const old = (Date.now() - 5 * 60_000) / 1000;
@@ -433,7 +433,7 @@ describe("[tool]'s asks: stdin -, send --json, @bot upload, channel invite (CLI)
     mkdirSync(d, { recursive: true });
     await run(["init"], d);
     writeFileSync(join(tmpHome, "upbot.env"), `SLACK_BOT_TOKEN=${fakeBot}\n`);
-    writeFileSync(join(d, ".slack-term", "settings.yml"), `identities:\n  upbot:\n    kind: bot\n    env_file: ${join(tmpHome, "upbot.env")}\n`);
+    writeFileSync(join(d, ".slack-hub", "settings.yml"), `identities:\n  upbot:\n    kind: bot\n    env_file: ${join(tmpHome, "upbot.env")}\n`);
     writeFileSync(join(d, "a.txt"), "hello");
     const before = mock.requests.length;
     const r = await run(["@upbot", "upload", `C00000001:${ROOT_TS}`, join(d, "a.txt")], d);

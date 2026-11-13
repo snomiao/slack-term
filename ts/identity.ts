@@ -1,10 +1,10 @@
 // `slack @<who> <command> …` — name the identity a command acts as (11-02):
 // a bot (`@deploy-bot`, `@ops-bot`) or a person (`@alice`). Replaces --as-bot /
 // --as-user and env-file juggling. The names map to WHERE a token lives (an
-// env var, optionally in an env file, or a slack-term profile) — never to the
+// env var, optionally in an env file, or a slack-hub profile) — never to the
 // token itself, which stays in the env/vault:
 //
-//   identities:                       # .slack-term/settings.yml or ~/.config/slack-term/settings.yml
+//   identities:                       # .slack-hub/settings.yml or ~/.config/slack-hub/settings.yml
 //     deploy-bot: { kind: bot,  env_file: ~/.config/slack-cli/deploy-bot.env }   # SLACK_BOT_TOKEN in it
 //     ops-bot:    { kind: bot,  env_file: ~/.config/slack-cli/ops-bot.env }
 //     alice:      { kind: user, profile: acme }                                # slack auth profile
@@ -24,7 +24,7 @@ export type Identity = {
   env?: string;
   /** An env file to read that var from; else the process environment. */
   env_file?: string;
-  /** A user: a slack-term workspace profile (`slack auth ls`). */
+  /** A user: a slack-hub workspace profile (`slack auth ls`). */
   profile?: string;
 };
 
@@ -89,13 +89,13 @@ function readEnvFile(path: string): Record<string, string> {
  *  error naming the known identities. */
 export function applyIdentity(who: string, env: NodeJS.ProcessEnv = process.env, ids = listIdentities()): { kind: "bot" | "user" } | { error: string } {
   const id = ids.get(who);
-  const known = [...ids.keys()].sort().map((n) => `@${n}`).join(", ") || "(none: add `identities:` to .slack-term/settings.yml)";
+  const known = [...ids.keys()].sort().map((n) => `@${n}`).join(", ") || "(none: add `identities:` to .slack-hub/settings.yml)";
   if (!id) return { error: `unknown identity @${who}. Known: ${known}` };
   if (id.kind === "user" && id.profile && !id.env && !id.env_file) {
     env.SLACK_WORKSPACE = id.profile;
     delete env.SLACK_TOKEN;
     delete env.SLACK_BOT_TOKEN;
-    env.SLACK_TERM_IDENTITY = who;
+    env.SLACK_HUB_IDENTITY = who;
     return { kind: "user" };
   }
   const name = id.env ?? (id.kind === "bot" ? "SLACK_BOT_TOKEN" : "SLACK_TOKEN");
@@ -115,7 +115,7 @@ export function applyIdentity(who: string, env: NodeJS.ProcessEnv = process.env,
     env.SLACK_TOKEN = token;
     delete env.SLACK_BOT_TOKEN;
   }
-  env.SLACK_TERM_IDENTITY = who;
+  env.SLACK_HUB_IDENTITY = who;
   return { kind: id.kind };
 }
 
@@ -139,7 +139,7 @@ export function userSessionRefusal(o: {
   const users = o.userIdentities ?? [];
   if (o.asUser && !o.agent) return null; // a person at a terminal: their own call
   const names = o.identities.map((n) => `@${n}`).join(" | ");
-  const pick = names ? `  Name who acts:   slack ${o.identities[0] ? `@${o.identities[0]}` : "@<who>"} ${o.cmd} …   (${names})` : "  Add identities to .slack-term/settings.yml, then: slack @<who> " + o.cmd + " …";
+  const pick = names ? `  Name who acts:   slack ${o.identities[0] ? `@${o.identities[0]}` : "@<who>"} ${o.cmd} …   (${names})` : "  Add identities to .slack-hub/settings.yml, then: slack @<who> " + o.cmd + " …";
   if (o.agent) {
     const person = users.length
       ? `  As a person, on purpose:  slack @${users[0]} ${o.cmd} …   (${users.map((n) => `@${n}`).join(" | ")})`

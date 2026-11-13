@@ -1,4 +1,4 @@
-# slack-term relay
+# slack-hub relay
 
 A Cloudflare Worker that turns Slack's **Events API** into a resumable stream of
 *doorbells* for `slack stream`. Slack posts each event to the Worker; the Worker
@@ -109,17 +109,17 @@ a hibernating object runs no timers.
 
 ### Without cloning (recommended)
 
-The relay ships in the npm package as `slack-term/worker`. Scaffold a Worker
+The relay ships in the npm package as `slack-hub/worker`. Scaffold a Worker
 folder with the CLI:
 
 ```sh
-slack relay init my-relay        # or: npx slack-term relay init my-relay
+slack relay init my-relay        # or: npx slack-hub relay init my-relay
 cd my-relay && npm install
 npx wrangler login               # or CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID (below)
 npx wrangler deploy
 ```
 
-`init` writes `package.json` (slack-term as `^` the CLI's version, wrangler
+`init` writes `package.json` (slack-hub as `^` the CLI's version, wrangler
 pinned), `wrangler.jsonc` (the same config as this folder's, with `--name` or
 the folder's name), `src/index.ts`, `.gitignore` and a `README.md`. It makes no
 network calls and refuses to overwrite existing files unless `--force`. It
@@ -130,15 +130,15 @@ as described below (run them from the new folder, with `npx wrangler`).
 Already have a Worker project? `src/index.ts` is just
 
 ```ts
-export { default, Relay } from "slack-term/worker";
+export { default, Relay } from "slack-hub/worker";
 ```
 
 with a `RELAY` Durable Object binding to class `Relay` and a
 `new_sqlite_classes: ["Relay"]` migration — copy them from
 [`wrangler.jsonc`](wrangler.jsonc). `Env` is exported too, for typing.
-`@cloudflare/workers-types` is an optional peer dependency of slack-term.
+`@cloudflare/workers-types` is an optional peer dependency of slack-hub.
 
-To update, bump `slack-term` in the folder's package.json and redeploy.
+To update, bump `slack-hub` in the folder's package.json and redeploy.
 
 ### From a clone of this repo (contributors)
 

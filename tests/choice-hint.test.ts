@@ -27,18 +27,18 @@ describe("choice-question hint: negatives", () => {
   ]) test(t, () => expect(choiceQuestionLang(t)).toBeUndefined());
 });
 
-describe("packs hot-reload, and .slack-term/locales overrides", () => {
-  test("a pack added or edited under .slack-term/locales takes effect on the next call", async () => {
+describe("packs hot-reload, and .slack-hub/locales overrides", () => {
+  test("a pack added or edited under .slack-hub/locales takes effect on the next call", async () => {
     const { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } = await import("node:fs");
     const { join } = await import("node:path");
     const { tmpdir } = await import("node:os");
     const dir = mkdtempSync(join(tmpdir(), "packs-"));
     const prev = process.cwd();
     try {
-      mkdirSync(join(dir, ".slack-term", "locales"), { recursive: true });
+      mkdirSync(join(dir, ".slack-hub", "locales"), { recursive: true });
       process.chdir(dir);
       expect(choiceQuestionLang("Tu viens (oui/non) ?")).toBeUndefined();
-      const fr = join(dir, ".slack-term", "locales", "fr.json");
+      const fr = join(dir, ".slack-hub", "locales", "fr.json");
       writeFileSync(fr, JSON.stringify({ lang: "fr", choice_patterns: ["\\(\\s*oui\\s*/\\s*non\\s*\\)"] }));
       expect(choiceQuestionLang("Tu viens (oui/non) ?")).toBe("fr");
       writeFileSync(fr, JSON.stringify({ lang: "fr", choice_patterns: [] }));

@@ -1,5 +1,5 @@
 // Language packs: locales/<lang>.json in the package, overridden key by key by
-// the nearest .slack-term/locales/<lang>.json. They hold only what slack-term
+// the nearest .slack-hub/locales/<lang>.json. They hold only what slack-hub
 // posts to PEOPLE (slack ask's copy) and the patterns it looks for in their
 // messages (the choice-question hint); the CLI's own text is English, in code.
 //

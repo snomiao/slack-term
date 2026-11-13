@@ -1,4 +1,4 @@
-# slack-term dev rules
+# slack-hub dev rules
 
 ## No real workspace data in this repo
 

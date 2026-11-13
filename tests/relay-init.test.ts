@@ -1,5 +1,5 @@
 // `slack relay init` / `slack relay health` (ts/relayInit.ts), and the
-// `slack-term/worker` package export the scaffold depends on.
+// `slack-hub/worker` package export the scaffold depends on.
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "./harness.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -46,17 +46,17 @@ describe("scaffold contents", () => {
     expect(got.observability).toEqual({ enabled: false });
   });
 
-  test("package.json: private, slack-term pinned to this version, wrangler pinned", () => {
+  test("package.json: private, slack-hub pinned to this version, wrangler pinned", () => {
     const p = JSON.parse(relayFiles("r")["package.json"]!) as Record<string, any>;
     expect(p.private).toBe(true);
-    expect(p.dependencies).toEqual({ "slack-term": `^${rootPkg.version}` });
+    expect(p.dependencies).toEqual({ "slack-hub": `^${rootPkg.version}` });
     expect(p.devDependencies).toEqual({ wrangler: WRANGLER_VERSION });
     expect(p.engines.node).toBe(">=22");
-    expect(JSON.parse(relayFiles("r", { slackTerm: "file:../x" })["package.json"]!).dependencies["slack-term"]).toBe("file:../x");
+    expect(JSON.parse(relayFiles("r", { slackHub: "file:../x" })["package.json"]!).dependencies["slack-hub"]).toBe("file:../x");
   });
 
   test("src/index.ts re-exports the handler and the Durable Object class", () => {
-    expect(relayFiles("r")["src/index.ts"]).toContain('export { default, Relay } from "slack-term/worker";');
+    expect(relayFiles("r")["src/index.ts"]).toContain('export { default, Relay } from "slack-hub/worker";');
   });
 
   test(".gitignore keeps secrets and build output out", () => {
@@ -85,7 +85,7 @@ describe("scaffold contents", () => {
 
 describe("worker names", () => {
   test("valid names", () => {
-    for (const n of ["a", "slack-term-relay", "r2", "a".repeat(63)]) expect(validWorkerName(n)).toBe(true);
+    for (const n of ["a", "slack-hub-relay", "r2", "a".repeat(63)]) expect(validWorkerName(n)).toBe(true);
     for (const n of ["", "-a", "a-", "A", "a_b", "a".repeat(64)]) expect(validWorkerName(n)).toBe(false);
   });
   test("derived from the folder's basename", () => {
@@ -149,7 +149,7 @@ describe("initRelay", () => {
     expect(readFileSync(join(dir, "src", "index.ts"), "utf8")).toBe("mine");
 
     expect(initRelay(dir, { force: true }, fixed).ok).toBe(true);
-    expect(readFileSync(join(dir, "src", "index.ts"), "utf8")).toContain("slack-term/worker");
+    expect(readFileSync(join(dir, "src", "index.ts"), "utf8")).toContain("slack-hub/worker");
   });
 
   test("the report prints the token, the files and the steps", () => {
@@ -190,7 +190,7 @@ describe("relayHealth", () => {
     expect((await relayHealth("https://r", "t", reply(401, "unauthorized"))).out).toContain("does not match");
     expect((await relayHealth("https://r", "t", reply(500, "boom"))).out).toContain("HTTP 500 from https://r/health: boom");
     expect((await relayHealth("https://r", "t", reply(404, ""))).out).toBe("slack relay health: HTTP 404 from https://r/health");
-    expect((await relayHealth("https://r", "t", reply(200, "<html>"))).out).toContain("not a slack-term relay");
+    expect((await relayHealth("https://r", "t", reply(200, "<html>"))).out).toContain("not a slack-hub relay");
     const notOk = await relayHealth("https://r", "t", reply(200, JSON.stringify({ ok: false })));
     expect(notOk.code).toBe(1);
     const down = await relayHealth("https://r", "t", vi.fn(async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch);
@@ -201,7 +201,7 @@ describe("relayHealth", () => {
   });
 });
 
-describe("package export slack-term/worker", () => {
+describe("package export slack-hub/worker", () => {
   test("package.json: exports, files and an optional workers-types peer", () => {
     expect(rootPkg.exports["./worker"]).toBe("./worker/src/index.ts");
     expect(rootPkg.files).toContain("worker/src/");
@@ -209,17 +209,17 @@ describe("package export slack-term/worker", () => {
     expect(rootPkg.peerDependenciesMeta["@cloudflare/workers-types"]?.optional).toBe(true);
   });
 
-  test("resolves from a project that depends on slack-term", () => {
+  test("resolves from a project that depends on slack-hub", () => {
     const proj = join(dir, "proj");
     mkdirSync(join(proj, "node_modules"), { recursive: true });
-    writeFileSync(join(proj, "package.json"), JSON.stringify({ name: "proj", private: true, dependencies: { "slack-term": `file:${ROOT}` } }));
-    symlinkSync(ROOT, join(proj, "node_modules", "slack-term"), "dir");
+    writeFileSync(join(proj, "package.json"), JSON.stringify({ name: "proj", private: true, dependencies: { "slack-hub": `file:${ROOT}` } }));
+    symlinkSync(ROOT, join(proj, "node_modules", "slack-hub"), "dir");
     const req = createRequire(join(proj, "package.json"));
-    const resolved = req.resolve("slack-term/worker");
+    const resolved = req.resolve("slack-hub/worker");
     expect(resolved.endsWith(join("worker", "src", "index.ts"))).toBe(true);
-    expect(req.resolve("slack-term/package.json").endsWith("package.json")).toBe(true);
+    expect(req.resolve("slack-hub/package.json").endsWith("package.json")).toBe(true);
     // The deep path is NOT exposed: only the exports map is.
-    expect(() => req.resolve("slack-term/worker/src/hub.ts")).toThrow();
+    expect(() => req.resolve("slack-hub/worker/src/hub.ts")).toThrow();
   });
 
   test("the exported module has the default handler, Relay and Env", () => {

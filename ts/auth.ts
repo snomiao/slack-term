@@ -27,7 +27,7 @@ function slugify(s: string): string {
 function userManifest(): string {
   return JSON.stringify(
     {
-      display_information: { name: "slack-term" },
+      display_information: { name: "slack-hub" },
       oauth_config: { scopes: { user: USER_SCOPES } },
       settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
     },
@@ -39,8 +39,8 @@ function userManifest(): string {
 function botManifest(): string {
   return JSON.stringify(
     {
-      display_information: { name: "slack-term" },
-      features: { bot_user: { display_name: "slack-term", always_online: false } },
+      display_information: { name: "slack-hub" },
+      features: { bot_user: { display_name: "slack-hub", always_online: false } },
       oauth_config: { scopes: { bot: BOT_SCOPES } },
       settings: { org_deploy_enabled: false, socket_mode_enabled: false, token_rotation_enabled: false },
     },
@@ -82,13 +82,13 @@ async function saveToken(rl: Interface | null, token: string, nameOverride?: str
     console.log("");
     console.log("Where to save the token?");
     console.log("  1) ./.env.local                  (current directory)  [default]");
-    console.log("  2) ./.slack-term/.env.local       (current directory, slack-specific)");
-    console.log("  3) ~/.slack-term/.env.local       (global, available everywhere)");
+    console.log("  2) ./.slack-hub/.env.local       (current directory, slack-specific)");
+    console.log("  3) ~/.slack-hub/.env.local       (global, available everywhere)");
     console.log("  4) profiles.json                  (multi-workspace: slack auth use)");
     console.log("");
     const choice = await ask(rl, "Choice [1/2/3/4, Enter=1]: ");
-    if (choice === "2") filePath = join(process.cwd(), ".slack-term", ".env.local");
-    else if (choice === "3") filePath = join(homedir(), ".slack-term", ".env.local");
+    if (choice === "2") filePath = join(process.cwd(), ".slack-hub", ".env.local");
+    else if (choice === "3") filePath = join(homedir(), ".slack-hub", ".env.local");
     else if (choice === "4") filePath = null;
     else filePath = join(process.cwd(), ".env.local"); // 1 or Enter
   }
@@ -312,7 +312,7 @@ async function pickChromeCookieWindows(selected: { name: string; profile: Profil
   } catch (e: unknown) {
     console.error(`\nCould not extract the cookie automatically: ${e instanceof Error ? e.message : String(e)}`);
     console.error("Fallback (manual): Chrome > DevTools (F12) > Application > Cookies > https://app.slack.com > copy the `d` value,");
-    console.error("then set it via an env file:  SLACK_COOKIE=xoxd-...  (in .slack-term/.env.local)");
+    console.error("then set it via an env file:  SLACK_COOKIE=xoxd-...  (in .slack-hub/.env.local)");
     process.exit(1);
   }
 }
