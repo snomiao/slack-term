@@ -2,8 +2,11 @@
 
 This package is **deprecated**. The project is now published as
 [`slack-hub`](https://www.npmjs.com/package/slack-hub)
-([GitHub](https://github.com/snomiao/slack-hub)). Every release is still
-mirrored here under the old name, but new installs should use `slack-hub`.
+([GitHub](https://github.com/snomiao/slack-hub)). For a transition period every
+release is still mirrored here under the old name, so toolchains that depend
+on `slack-term` keep working, but this mirror will eventually stop. Installs stay
+quiet; the `slack` command prints a one-line deprecation notice on stderr
+(stdout is untouched; silence it with `SLACK_HUB_NO_RENAME_NOTICE=1`).
 
 ## Migrate
 

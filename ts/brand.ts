@@ -38,9 +38,13 @@ export function scopeDirIn(parent: string): string {
   return preferExisting(join(parent, SCOPE_DIR), join(parent, LEGACY_SCOPE_DIR));
 }
 
-/** Installed under the old npm name? CI also publishes each release as the
- *  deprecated `slack-term` package; tell an interactive user once per run. */
-export function renameNotice(pkgName: string, isTTY = Boolean(process.stderr.isTTY)): string | undefined {
-  if (pkgName !== LEGACY_NAME || !isTTY) return undefined;
-  return "slack: the slack-term npm package was renamed to slack-hub — run: npm uninstall -g slack-term && npm install -g slack-hub";
+/** Installed under the old npm name? CI still publishes each release as
+ *  `slack-term` (toolchains may depend on the name), but it is NOT npm-deprecated,
+ *  so installs stay quiet; instead the CLI says so on stderr, once per run.
+ *  stdout is untouched; SLACK_HUB_NO_RENAME_NOTICE=1 silences it. */
+export function renameNotice(pkgName: string, env: Record<string, string | undefined> = process.env): string | undefined {
+  if (pkgName !== LEGACY_NAME || /^(1|true|yes|on)$/i.test(hubEnv("NO_RENAME_NOTICE", env) ?? "")) return undefined;
+  return "slack: [deprecated] the slack-term npm package is now slack-hub and will stop being published. "
+    + "Switch: npm uninstall -g slack-term && npm install -g slack-hub (same `slack` command, settings carry over). "
+    + "Silence: SLACK_HUB_NO_RENAME_NOTICE=1";
 }
