@@ -1,12 +1,12 @@
 {
-  "name": "slack-term",
+  "name": "slack-hub",
   "version": "1.8.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/snomiao/slack-term.git"
+    "url": "https://github.com/snomiao/slack-hub.git"
   },
   "bugs": {
-    "url": "https://github.com/snomiao/slack-term/issues"
+    "url": "https://github.com/snomiao/slack-hub/issues"
   },
   "devDependencies": {
     "@semantic-release/commit-analyzer": "^13",
@@ -42,7 +42,7 @@
     "SKILL.md",
     "LICENSE"
   ],
-  "homepage": "https://github.com/snomiao/slack-term",
+  "homepage": "https://github.com/snomiao/slack-hub",
   "keywords": [
     "slack",
     "cli",

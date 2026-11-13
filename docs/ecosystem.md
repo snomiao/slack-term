@@ -28,7 +28,7 @@ A wider survey of terminal tools for Slack beyond the head-to-head in
 ## 3. jpbruinsslot/slack-term
 
 > Note: unrelated to this project despite the shared name — this repo publishes the
-> npm package `slack-term`; that one is a Go TUI installed from source.
+> npm package `slack-hub`; that one is a Go TUI installed from source.
 
 - **Language / runtime:** Go
 - **Platform:** macOS / Linux / Windows (+ Docker)
@@ -87,7 +87,7 @@ A wider survey of terminal tools for Slack beyond the head-to-head in
 
 | Tool                  | Read       | Send              | Search         | Archive           | Interactive     | Auth story                      |
 | --------------------- | ---------- | ----------------- | -------------- | ----------------- | --------------- | ------------------------------- |
-| `slack-term`          | yes        | yes (confirm-hash) | yes            | yes (`dump`)      | no (CLI)        | xoxp via env                    |
+| `slack-hub`          | yes        | yes (confirm-hash) | yes            | yes (`dump`)      | no (CLI)        | xoxp via env                    |
 | `slkcli`              | yes        | yes               | yes            | partial           | no (CLI)        | xoxc auto-extract (macOS only)  |
 | `slackapi/slack-cli`  | —          | —                 | —              | —                 | —               | app-dev only                    |
 | `rockymadden/slack-cli` | via API  | yes               | via API        | no                | no              | token env                       |
@@ -104,7 +104,7 @@ A wider survey of terminal tools for Slack beyond the head-to-head in
 - **active9 / rlister / paulhammond / nficano slackcat variants** — redundant with bcicen's Go implementation and less maintained.
 - **kfei/slack-cleaner, SlackTerminator, ruanbekker/slack-channel-cleaner** — superseded by `slack_cleaner2`.
 
-## What this implies for `slack-term`
+## What this implies for `slack-hub`
 
 The ecosystem splits into five camps:
 
@@ -112,7 +112,7 @@ The ecosystem splits into five camps:
 2. **Pipe shims** (`slackcat`) — our `send` partially covers this; stdin support would close the gap.
 3. **Full TUI chat clients** (`jpbruinsslot/slack-term`, `wee-slack`) — a different product; not our target.
 4. **Archival** (`slackdump`) — our `dump` subcommand overlaps; slackdump is deeper.
-5. **Scripted API wrapper** (rockymadden, `slack-term`, `slkcli`) — this is our camp.
+5. **Scripted API wrapper** (rockymadden, `slack-hub`, `slkcli`) — this is our camp.
 
 Within camp 5, our distinguishing bets are: **cross-platform**, **explicit
 xoxp auth**, and **confirm-hash on send**. The features in

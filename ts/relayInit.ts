@@ -1,7 +1,7 @@
 // `slack relay init` / `slack relay health`: set up and check the doorbell
 // relay without cloning this repo.
 //
-// The relay's code ships in the npm package as `slack-term/worker`
+// The relay's code ships in the npm package as `slack-hub/worker`
 // (worker/src/), so a deployable Worker is a two-line re-export plus a
 // wrangler.jsonc. `init` writes that folder — local files only, no network,
 // nothing that touches Slack — and prints a fresh RELAY_TOKEN with the next
@@ -17,8 +17,8 @@ import pkg from "../package.json" with { type: "json" };
 export const WRANGLER_VERSION = "4.105.0";
 /** worker/wrangler.jsonc's compatibility_date. */
 export const COMPATIBILITY_DATE = "2026-07-01";
-export const DEFAULT_DIR = "slack-term-relay";
-export const RELAY_DOCS_URL = "https://github.com/snomiao/slack-term/blob/main/worker/README.md";
+export const DEFAULT_DIR = "slack-hub-relay";
+export const RELAY_DOCS_URL = "https://github.com/snomiao/slack-hub/blob/main/worker/README.md";
 
 /** A Workers script name: lowercase letters, digits and dashes, 1–63 chars,
  *  no leading or trailing dash. */
@@ -35,25 +35,25 @@ export function workerNameFrom(dir: string): string {
 export type ScaffoldOptions = {
   /** Worker name; default: the directory's basename. */
   name?: string;
-  /** The `slack-term` dependency spec; default: `^` this CLI's version (a source
+  /** The `slack-hub` dependency spec; default: `^` this CLI's version (a source
    *  checkout carries a stale placeholder version; the range still resolves). */
-  slackTerm?: string;
+  slackHub?: string;
 };
 
 /** The scaffold's files, relative path → content. */
-export function relayFiles(name: string, opts: { slackTerm?: string } = {}): Record<string, string> {
+export function relayFiles(name: string, opts: { slackHub?: string } = {}): Record<string, string> {
   const packageJson = {
     name,
     private: true,
     type: "module",
     scripts: { deploy: "wrangler deploy", dev: "wrangler dev --local" },
-    dependencies: { "slack-term": opts.slackTerm ?? `^${pkg.version}` },
+    dependencies: { "slack-hub": opts.slackHub ?? `^${pkg.version}` },
     devDependencies: { wrangler: WRANGLER_VERSION },
     engines: { node: ">=22" },
   };
   return {
     "package.json": `${JSON.stringify(packageJson, null, 2)}\n`,
-    "wrangler.jsonc": `// slack-term relay: Slack Events API -> doorbells for \`slack stream\`.
+    "wrangler.jsonc": `// slack-hub relay: Slack Events API -> doorbells for \`slack stream\`.
 // Secrets (not in this file): wrangler secret put SLACK_SIGNING_SECRET / RELAY_TOKEN / SLACK_TEAM_ID (optional)
 {
   "$schema": "node_modules/wrangler/config-schema.json",
@@ -69,9 +69,9 @@ export function relayFiles(name: string, opts: { slackTerm?: string } = {}): Rec
   "observability": { "enabled": false }
 }
 `,
-    "src/index.ts": `// The relay lives in the slack-term package. Relay (the Durable Object class)
+    "src/index.ts": `// The relay lives in the slack-hub package. Relay (the Durable Object class)
 // must be exported from this main module for the RELAY binding to find it.
-export { default, Relay } from "slack-term/worker";
+export { default, Relay } from "slack-hub/worker";
 `,
     ".gitignore": "node_modules/\n.wrangler/\n.dev.vars*\n.env*\n",
     "README.md": readme(name),
@@ -109,9 +109,9 @@ export function nextSteps(name: string, token?: string): string {
 function readme(name: string): string {
   return `# ${name}
 
-A [slack-term](https://github.com/snomiao/slack-term) relay: a Cloudflare Worker
+A [slack-hub](https://github.com/snomiao/slack-hub) relay: a Cloudflare Worker
 that turns Slack's Events API into a resumable doorbell stream for
-\`slack stream\`. The code is the \`slack-term/worker\` export; this folder only
+\`slack stream\`. The code is the \`slack-hub/worker\` export; this folder only
 configures and deploys it. Created by \`slack relay init\`.
 
 ## Set up
@@ -123,7 +123,7 @@ where messages are posted.
 
 ## Update
 
-Bump \`slack-term\` in package.json, \`npm install\`, \`npx wrangler deploy\`.
+Bump \`slack-hub\` in package.json, \`npm install\`, \`npx wrangler deploy\`.
 Storage survives redeploys; clients reconnect and resume.
 
 Details (endpoints, privacy, protocol): ${RELAY_DOCS_URL}
@@ -145,7 +145,7 @@ export function initRelay(
   if (!validWorkerName(name)) {
     return { ok: false, error: `invalid worker name "${name}": use lowercase letters, digits and dashes (1-63 chars, no leading/trailing dash)` };
   }
-  const files = relayFiles(name, opts.slackTerm !== undefined ? { slackTerm: opts.slackTerm } : {});
+  const files = relayFiles(name, opts.slackHub !== undefined ? { slackHub: opts.slackHub } : {});
   const root = resolve(dir);
   const existing = Object.keys(files).filter((f) => existsSync(join(root, f)));
   if (existing.length && !opts.force) {
@@ -201,7 +201,7 @@ export async function relayHealth(
     try {
       json = JSON.parse(body) as typeof json;
     } catch {
-      return { code: 1, out: `slack relay health: not a slack-term relay (non-JSON reply from ${target})` };
+      return { code: 1, out: `slack relay health: not a slack-hub relay (non-JSON reply from ${target})` };
     }
     return { code: json.ok === true ? 0 : 1, out: JSON.stringify(json, null, 2) };
   } catch (e) {

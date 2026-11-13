@@ -34,7 +34,7 @@ function blockNewlines(blocks: unknown): number {
 
 describe("fixture builder: markdownToRichText — paragraphs keep their line breaks", () => {
   test("a multi-line message is one section whose text carries every \\n", () => {
-    const md = "[slack-term-nl] 换行测试\n第一行\n第二行\n\n第三行";
+    const md = "[slack-hub-nl] 换行测试\n第一行\n第二行\n\n第三行";
     expect(rich(md)).toEqual([{ type: "rich_text", elements: [SEC(T(md))] }]);
     expect(blockNewlines(rich(md))).toBe(4);
   });
@@ -152,7 +152,7 @@ const flatten = (md: string) => md.replace(/\n/g, " ");
 
 describe("restoreNewlines — old flattened messages read back with their breaks", () => {
   const samples = [
-    "[slack-term-nl] 换行测试\n第一行\n第二行\n\n第三行",
+    "[slack-hub-nl] 换行测试\n第一行\n第二行\n\n第三行",
     "intro\n\n- one\n- two\n\nafter",
     "1. a\n   - x\n   - y\n2. b",
     "*見出し*\n• 項目 `code`\n• <https://acme.slack.com/x|ラベル の 説明>\n\n<@U00000001> 確認お願いします",
@@ -176,12 +176,12 @@ describe("restoreNewlines — old flattened messages read back with their breaks
     expect(restoreNewlines(flatten(md), rich(md) as never)).toBe(md);
   });
   test("the live 2026-10-07 test DM: sent with rich_text blocks, stored flattened all the same", () => {
-    const stored = "[slack-term-nl] Test des retours à la ligne Ligne 1 : texte simple Ligne 2 : **gras** - élément un - élément deux";
+    const stored = "[slack-hub-nl] Test des retours à la ligne Ligne 1 : texte simple Ligne 2 : **gras** - élément un - élément deux";
     const blocks = [{ type: "rich_text", elements: [
-      SEC(T("[slack-term-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : "), T("gras", { bold: true })),
+      SEC(T("[slack-hub-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : "), T("gras", { bold: true })),
       { type: "rich_text_list", style: "bullet", indent: 0, elements: [SEC(T("élément un")), SEC(T("élément deux"))] },
     ] }];
-    expect(restoreNewlines(stored, blocks as never)).toBe("[slack-term-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : **gras**\n- élément un\n- élément deux");
+    expect(restoreNewlines(stored, blocks as never)).toBe("[slack-hub-nl] Test des retours à la ligne\nLigne 1 : texte simple\nLigne 2 : **gras**\n- élément un\n- élément deux");
   });
   test("an emoji before a break aligns whether the text holds `:name:` or the glyph", () => {
     const blocks = [{ type: "rich_text", elements: [SEC(T("完了 "), { type: "emoji", name: "white_check_mark", unicode: "2705" }, T("\n次へ"))] }];

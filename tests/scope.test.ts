@@ -1,4 +1,4 @@
-// .slack-term/ scope: discovery, init, aliases in settings(.local).yml, the
+// .slack-hub/ scope: discovery, init, aliases in settings(.local).yml, the
 // reply prefix rule and the wrong-thread check. Bun-only (Bun.YAML).
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -10,28 +10,28 @@ import {
 
 let root: string;
 let home: string;
-const prevHome = process.env.SLACK_TERM_HOME;
+const prevHome = process.env.SLACK_HUB_HOME;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "scope-"));
   home = join(root, "home");
-  process.env.SLACK_TERM_HOME = home;
+  process.env.SLACK_HUB_HOME = home;
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-  if (prevHome === undefined) delete process.env.SLACK_TERM_HOME;
-  else process.env.SLACK_TERM_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.SLACK_HUB_HOME;
+  else process.env.SLACK_HUB_HOME = prevHome;
 });
 
 describe("findScope", () => {
-  test("the nearest .slack-term/ walking up, like .git", () => {
+  test("the nearest .slack-hub/ walking up, like .git", () => {
     initScope(join(root, "repo"));
     mkdirSync(join(root, "repo", "a", "b"), { recursive: true });
-    expect(findScope(join(root, "repo", "a", "b"))).toEqual({ dir: join(root, "repo", ".slack-term"), global: false });
+    expect(findScope(join(root, "repo", "a", "b"))).toEqual({ dir: join(root, "repo", ".slack-hub"), global: false });
   });
   test("a nested one wins over the outer one", () => {
     initScope(join(root, "repo"));
     initScope(join(root, "repo", "tree", "design"));
-    expect(findScope(join(root, "repo", "tree", "design")).dir).toBe(join(root, "repo", "tree", "design", ".slack-term"));
+    expect(findScope(join(root, "repo", "tree", "design")).dir).toBe(join(root, "repo", "tree", "design", ".slack-hub"));
   });
   test("none above: the global dir", () => {
     mkdirSync(join(root, "bare"));

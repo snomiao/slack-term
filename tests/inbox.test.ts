@@ -1,4 +1,4 @@
-// .slack-term/ inbox/outbox, the fan-out, restrict and the registry. Bun-only.
+// .slack-hub/ inbox/outbox, the fan-out, restrict and the registry. Bun-only.
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,15 +7,15 @@ import { addOutbox, deliver, listInbox, listOutbox, markDone, overdue, recordFai
 import { findScope, initScope, isRestricted, listAliases, readSettings, registeredScopes, RestrictedError, setAlias, unsetAlias, whoSubscribes } from "../ts/scope.ts";
 
 let root: string;
-const prevHome = process.env.SLACK_TERM_HOME;
+const prevHome = process.env.SLACK_HUB_HOME;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "inbox-"));
-  process.env.SLACK_TERM_HOME = join(root, "global");
+  process.env.SLACK_HUB_HOME = join(root, "global");
 });
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
-  if (prevHome === undefined) delete process.env.SLACK_TERM_HOME;
-  else process.env.SLACK_TERM_HOME = prevHome;
+  if (prevHome === undefined) delete process.env.SLACK_HUB_HOME;
+  else process.env.SLACK_HUB_HOME = prevHome;
 });
 
 const ROOT_TS = "1700000000.000100";
@@ -35,7 +35,7 @@ describe("registry + who", () => {
     const a = lane("design");
     lane("other");
     setAlias(a, "board", { channel: "D00000001", thread_ts: ROOT_TS });
-    expect(registeredScopes().map((s) => s.dir).sort()).toEqual([a.dir, join(root, "tree", "other", ".slack-term")].sort());
+    expect(registeredScopes().map((s) => s.dir).sort()).toEqual([a.dir, join(root, "tree", "other", ".slack-hub")].sort());
     expect(whoSubscribes("D00000001", ROOT_TS).map((x) => [x.scope.dir, x.name])).toEqual([[a.dir, "board"]]);
     expect(whoSubscribes("D00000001", "1700000000.000900")).toEqual([]);
   });

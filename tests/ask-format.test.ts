@@ -532,14 +532,14 @@ describe("ask copy is translated and every language round-trips", () => {
 describe("askResolveLang picks the language the readers can read", () => {
   const sys = { LANG: "ja_JP.UTF-8" };
 
-  test("--lang beats everything, and SLACK_TERM_LANG beats the rest", () => {
+  test("--lang beats everything, and SLACK_HUB_LANG beats the rest", () => {
     expect(askResolveLang({ flag: "en", readerLocales: ["ja-JP"], content: ["日本語"] }, sys)).toEqual({ lang: "en", source: "flag" });
-    expect(askResolveLang({ readerLocales: ["ja-JP"] }, { ...sys, SLACK_TERM_LANG: "EN" })).toEqual({ lang: "en", source: "env" });
+    expect(askResolveLang({ readerLocales: ["ja-JP"] }, { ...sys, SLACK_HUB_LANG: "EN" })).toEqual({ lang: "en", source: "env" });
   });
 
   test("an explicit language we have no copy for is an error, not a silent fallback", () => {
     expect(askResolveLang({ flag: "fr" }, sys)).toBeNull();
-    expect(askResolveLang({}, { SLACK_TERM_LANG: "zz" })).toBeNull();
+    expect(askResolveLang({}, { SLACK_HUB_LANG: "zz" })).toBeNull();
   });
 
   test("the answerers' Slack locale beats the text and the machine", () => {

@@ -179,7 +179,7 @@ describe("ask --pending", { timeout: 90_000 }, () => {
   test("a LIVE asker is reported alive", async () => {
     // The test runner itself stands in for the live agent: it started before
     // the ask, and an unknown CLI name skips the process-name check.
-    await askLogged({ CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_TERM_AGENT_CLI: "test-agent" });
+    await askLogged({ CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_HUB_AGENT_CLI: "test-agent" });
     const r = await pending(slackHas(PRESSED_NO));
     expect(r.stdout).toContain(`pid ${process.pid} (alive)`);
   });
@@ -247,9 +247,9 @@ describe("ask --pending", { timeout: 90_000 }, () => {
     expect(r.stderr).toMatch(/Unknown argument|deliver/i);
   });
 
-  // Answers are pushed by slack-term itself, not a wrapper.
+  // Answers are pushed by slack-hub itself, not a wrapper.
   describe("--push", () => {
-    const LIVE = { CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_TERM_AGENT_CLI: "test-agent" };
+    const LIVE = { CLAUDE_PID: String(process.pid), AI_AGENT: "", SLACK_HUB_AGENT_CLI: "test-agent" };
     /** An `ay` stub: logs each call; `reply` is what it prints. */
     function stubAy(reply = "sent to pid"): Record<string, string> {
       const bin = join(tmpHome, "bin");

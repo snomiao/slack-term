@@ -216,10 +216,10 @@ describe("sender attribution (send/ask/edit)", { timeout: 60_000 }, () => {
     }
   });
 
-  test("SLACK_TERM_ATTRIBUTION=off sends no metadata and logs nothing", async () => {
+  test("SLACK_HUB_ATTRIBUTION=off sends no metadata and logs nothing", async () => {
     const m = await startMock({ inline: fixtures });
     try {
-      const off = { SLACK_TERM_ATTRIBUTION: "off" };
+      const off = { SLACK_HUB_ATTRIBUTION: "off" };
       expect((await confirmed(["send", "#chan", "hello", "--channel-id", CHAN], m.baseUrl, off)).exitCode).toBe(0);
       const post = m.requests.find((q) => q.method === "chat.postMessage")!;
       expect(JSON.parse(post.body).metadata).toBeUndefined();

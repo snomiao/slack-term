@@ -1,4 +1,4 @@
-// slack-term relay — a Cloudflare Worker that turns Slack's Events API into a
+// slack-hub relay — a Cloudflare Worker that turns Slack's Events API into a
 // resumable doorbell stream for `slack stream`.
 //
 //   Slack ──POST /slack/events──▶ Worker ──▶ Relay (Durable Object, SQLite)

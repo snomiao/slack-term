@@ -35,7 +35,7 @@ type RunResult = { exitCode: number; stdout: string; stderr: string };
 function run(args: string[], baseUrl: string, extraEnv: Record<string, string> = {}): Promise<RunResult> {
   const {
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
-    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_TERM_ASK_EXPLAIN: _e,
+    SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w, SLACK_HUB_ASK_EXPLAIN: _e,
     ...rest
   } = process.env as Record<string, string>;
   const env = { ...rest, HOME: tmpHome, SLACK_API_BASE: `${baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", ...extraEnv };
@@ -138,11 +138,11 @@ describe("ask --explain format", () => {
 });
 
 describe("ask --explain seeds (CLI)", { timeout: 60_000 }, () => {
-  test("--explain seeds ℹ️ after ❓ and the gate says so; SLACK_TERM_ASK_EXPLAIN=1 does the same; --no-explain wins", async () => {
+  test("--explain seeds ℹ️ after ❓ and the gate says so; SLACK_HUB_ASK_EXPLAIN=1 does the same; --no-explain wins", async () => {
     for (const [flags, env, want] of [
       [["--explain"], {}, true],
-      [[], { SLACK_TERM_ASK_EXPLAIN: "1" }, true],
-      [["--no-explain"], { SLACK_TERM_ASK_EXPLAIN: "1" }, false],
+      [[], { SLACK_HUB_ASK_EXPLAIN: "1" }, true],
+      [["--no-explain"], { SLACK_HUB_ASK_EXPLAIN: "1" }, false],
     ] as [string[], Record<string, string>, boolean][]) {
       const m = await startMock({ inline: { ...AUTH } });
       try {

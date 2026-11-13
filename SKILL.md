@@ -8,7 +8,7 @@ description: "Terminal Slack CLI — read news/mentions/DMs/channel history, ful
 A lightweight Slack CLI for quick workspace interaction from the terminal.
 Two implementations share one command surface (parity-tested):
 
-- **TypeScript** (bun-first), published as `slack-term` on npm.
+- **TypeScript** (bun-first), published as `slack-hub` on npm.
 - **Rust** native binary, installable via `cargo install`.
 
 Binary name: `slack` (also aliased as `sl` / invoked via `sc sl ...` in some setups).
@@ -29,12 +29,12 @@ agent uses to talk to humans. Design notes:
 TypeScript (recommended — any platform with Node 18+):
 
 ```sh
-npm install -g slack-term
-# or: bun add -g slack-term / pnpm add -g slack-term
+npm install -g slack-hub
+# or: bun add -g slack-hub / pnpm add -g slack-hub
 ```
 
 > Previously published as `@snomiao/slack`; that name is deprecated on npm and
-> no longer updated. Install `slack-term`.
+> no longer updated. Install `slack-hub`.
 
 Rust (native binary):
 
@@ -183,7 +183,7 @@ without losing clicks. A reaction is durable state anyone can read back later.
   The head marker stays `:question:` — only the pill moved. A free-text question has no
   other choice and still seeds ❓.
 - **ℹ️ is the "explain first" pill** — offered with `--explain` (or
-  `SLACK_TERM_ASK_EXPLAIN=1`; `--no-explain` overrides), listed under ➕ and seeded after
+  `SLACK_HUB_ASK_EXPLAIN=1`; `--no-explain` overrides), listed under ➕ and seeded after
   it. ➕ means "none fit, my answer follows"; ℹ️ means "I can't answer yet — explain".
   It **never answers or closes** the question: no ✅, the pills stay. `--wait`/`--waitFor`
   print who pressed it on stderr (`--json`: `explain: [user ids]`) and may post ONE thread
@@ -192,7 +192,7 @@ without losing clicks. A reaction is durable state anyone can read back later.
   `--explain-exit` stops with exit `7` (stdout empty; `--json` `status: "explain"`) on the
   run that posts that note, so a `--timeout 0` poller hears about it once. Only the
   question's audience counts; bots and the asker are ignored.
-- **The instructions are posted in `ja` or `en`.** `--lang` (or `SLACK_TERM_LANG`) decides;
+- **The instructions are posted in `ja` or `en`.** `--lang` (or `SLACK_HUB_LANG`) decides;
   otherwise the answerers' Slack locale when they all share one, else the language the
   question is written in, else the system locale, else `ja`. The confirm gate prints the
   choice and why (`Language: en (answerers' Slack locale; …)`). `--waitFor` reads either.
@@ -290,8 +290,8 @@ slack sent --kind ask --session <id-prefix>  # this session's questions
 slack sent --cwd . --json                    # everything posted from this repo, every field
 ```
 
-Read-only and token-free. `SLACK_TERM_ATTRIBUTION=off` disables both the log and the
-metadata; `SLACK_TERM_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
+Read-only and token-free. `SLACK_HUB_ATTRIBUTION=off` disables both the log and the
+metadata; `SLACK_HUB_AGENT_SESSION` / `_CLI` / `_PID` override what is detected.
 
 ### pinlog — a pinned board: HEAD = current state, thread = log
 

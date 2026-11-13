@@ -8,21 +8,22 @@
 // Token resolution order (no --workspace flag):
 //   1. process.env SLACK_TOKEN or SLACK_BOT_TOKEN
 //   2. process.env SLACK_MCP_XOXP_TOKEN (legacy, yields to profiles if any exist)
-//   3. Dir walk from cwd→$HOME: .slack-term/.env.local, then .env.local (modern env-file names only)
+//   3. Dir walk from cwd→$HOME: .slack-hub/.env.local, then .env.local (modern env-file names only)
 //      Note: cli.ts loadDotenvFiles() has already loaded cwd/.env.local into process.env (#1 catches
-//      that case), so the walk's extra value is finding .slack-term/ variants and parent-dir files.
-//   4. ~/.slack-term/.env.local (global slack-term config)
+//      that case), so the walk's extra value is finding .slack-hub/ variants and parent-dir files.
+//   4. ~/.slack-hub/.env.local (global slack-hub config)
 //   5. profiles.json via SLACK_WORKSPACE / lockfiles
 //   6. throw with auth help
 //
 //  --workspace flag skips #2-4 and goes straight to profiles.json.
 //
 // Note: lockfiles and profiles.json use .slack-cli/ (older name); new per-dir token storage
-// uses .slack-term/ (current project name). Both coexist intentionally.
+// uses .slack-hub/ (current project name; a legacy .slack-term/ is still read). Both coexist intentionally.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
+import { LEGACY_SCOPE_DIR, preferExisting, SCOPE_DIR } from "./brand.ts";
 
 export type Profile = {
   token: string;
@@ -115,14 +116,14 @@ function readEnvFile(filePath: string): Record<string, string> {
   }
 }
 
-/** Walk from startDir up to $HOME checking .slack-term/.env.local then .env.local.
+/** Walk from startDir up to $HOME checking .slack-hub/.env.local then .env.local.
  * Returns first value found for any of the given keys. */
 function walkDirEnv(startDir: string, keys: string[]): string | undefined {
   const homeDir = home();
   let dir = startDir;
 
   while (true) {
-    for (const subdir of [join(dir, ".slack-term", ".env.local"), join(dir, ".env.local")]) {
+    for (const subdir of [join(dir, SCOPE_DIR, ".env.local"), join(dir, LEGACY_SCOPE_DIR, ".env.local"), join(dir, ".env.local")]) {
       const vars = readEnvFile(subdir);
       for (const key of keys) {
         if (vars[key]) return vars[key];
@@ -134,8 +135,8 @@ function walkDirEnv(startDir: string, keys: string[]): string | undefined {
     dir = parent;
   }
 
-  // Global slack-term config — separate from the walk, checked after $HOME
-  const globalVars = readEnvFile(join(homeDir, ".slack-term", ".env.local"));
+  // Global slack-hub config — separate from the walk, checked after $HOME
+  const globalVars = readEnvFile(preferExisting(join(homeDir, SCOPE_DIR, ".env.local"), join(homeDir, LEGACY_SCOPE_DIR, ".env.local")));
   for (const key of keys) {
     if (globalVars[key]) return globalVars[key];
   }
@@ -333,7 +334,7 @@ export function resolveToken(workspaceFlag?: string): string {
     "    slack auth cookie         — attach the xoxd cookie from Chrome (macOS/Windows)\n" +
     "    slack auth firefox        — attach the xoxd cookie from Firefox (all platforms)\n" +
     "    slack auth token --token xoxp-...   — paste an existing token\n" +
-    "  Or set SLACK_TOKEN=xoxp-... in .slack-term/.env.local",
+    "  Or set SLACK_TOKEN=xoxp-... in .slack-hub/.env.local",
   );
 }
 

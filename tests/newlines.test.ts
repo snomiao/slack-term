@@ -25,7 +25,7 @@ const BOB = "U00000BOB";
 const CHAN = "C00000001";
 const DM = "D00000BOB";
 const TS = "1700000000.000100"; // the ts the mock's chat.postMessage returns
-const MULTI = "[slack-term-nl] 换行测试\n第一行\n第二行\n\n- 第三行\n- 第四行";
+const MULTI = "[slack-hub-nl] 换行测试\n第一行\n第二行\n\n- 第三行\n- 第四行";
 
 let tmpHome: string;
 beforeAll(() => { tmpHome = mkdtempSync(join(tmpdir(), "slack-nl-")); });
@@ -38,7 +38,7 @@ function run(args: string[], baseUrl: string, extraEnv: Record<string, string> =
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
     ...rest
   } = process.env as Record<string, string>;
-  const env = { ...rest, HOME: tmpHome, SLACK_API_BASE: `${baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", SLACK_TERM_ATTRIBUTION: "off", ...extraEnv };
+  const env = { ...rest, HOME: tmpHome, SLACK_API_BASE: `${baseUrl}/api`, SLACK_MCP_XOXP_TOKEN: "xoxp-fake", SLACK_HUB_ATTRIBUTION: "off", ...extraEnv };
   return new Promise((resolve, reject) => {
     const child = spawn("bun", ["run", TS_ENTRY, ...args], { cwd: tmpHome, env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";

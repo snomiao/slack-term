@@ -19,6 +19,7 @@ import { relaySubscriber, relayTransport } from "./relay.ts";
 import { acquirePushLock, askPushMessage, askPushTag, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
+import { hubEnv, namedDir } from "./brand.ts";
 
 import {
   ASK_KEYCAPS,
@@ -1335,7 +1336,7 @@ function parseTargetThread(s: string, permalinkThreads = true): { ref: string; t
     if (/^\d{10}\.\d{6}$/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: maybeTs };
     if (/^\d{4}-\d{2}-\d{2}T/.test(maybeTs)) return { ref: s.slice(0, colon), threadTs: isoToSlackTs(maybeTs) };
   }
-  // A bare name (no #, @ or :) that is an alias in the nearest .slack-term/.
+  // A bare name (no #, @ or :) that is an alias in the nearest .slack-hub/.
   const alias = lookupAlias(s);
   if (alias) return alias.thread_ts ? { ref: alias.channel, threadTs: alias.thread_ts } : { ref: alias.channel };
   return { ref: s };
@@ -1360,7 +1361,7 @@ async function resolveReplyTarget(
     } else {
       let p = parseTargetThread(dest);
       if (!p.threadTs && /^\d{10}\.\d{6}$/.test(dest)) {
-        if (!settings.channel) return { error: `a bare ts needs a channel: set \`channel\` in .slack-term/settings.yml, or pass #chan:${dest}` };
+        if (!settings.channel) return { error: `a bare ts needs a channel: set \`channel\` in .slack-hub/settings.yml, or pass #chan:${dest}` };
         p = { ref: settings.channel, threadTs: dest };
       }
       if (!p.threadTs) return { error: `"${dest}" is not a thread — reply only posts in threads. For a top-level post use \`slack send\`.` };
@@ -1473,7 +1474,7 @@ function selfLookup(token: string, cookie?: string): () => Promise<Self | null> 
 
 /** Who is sending, captured once per write: the Slack `metadata` to attach to
  *  the post, and `record` to append it to the local log once the ts is known.
- *  Both vanish under SLACK_TERM_ATTRIBUTION=off. */
+ *  Both vanish under SLACK_HUB_ATTRIBUTION=off. */
 function sentAttribution(kind: SentKind): {
   metadata?: MessageMetadata;
   record: (r: Omit<RecordSent, "kind" | "attribution">) => void;
@@ -2811,10 +2812,10 @@ const ASK_EXIT_EXPLAIN = 7;
 const ASK_EXPLAIN_NOTE_MAX_PAGES = 10;
 
 /** Whether a new question offers the ℹ️ explain pill when neither --explain nor
- *  --no-explain is given: `SLACK_TERM_ASK_EXPLAIN=1` turns it on for every ask
+ *  --no-explain is given: `SLACK_HUB_ASK_EXPLAIN=1` turns it on for every ask
  *  from a fleet, without every caller having to remember the flag. */
 function askExplainDefault(): boolean {
-  return /^(1|true|yes|on)$/i.test(process.env.SLACK_TERM_ASK_EXPLAIN ?? "");
+  return /^(1|true|yes|on)$/i.test(hubEnv("ASK_EXPLAIN") ?? "");
 }
 
 const ASK_MAX_CONSECUTIVE_ERRORS = 8;
@@ -3805,7 +3806,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
     : await Promise.all([...audience].map((id) => userLocale(mentionToken, id, args.mentionCookie)));
   const picked = askResolveLang({ flag: args.lang, readerLocales, content: [question, body, ...reactable, ...overflow] });
   if (!picked) {
-    console.error(`Error: unsupported language "${stripTerminalControls(args.lang ?? process.env.SLACK_TERM_LANG ?? "")}" — use one of: ${ASK_LANGS.join(", ")}`);
+    console.error(`Error: unsupported language "${stripTerminalControls(args.lang ?? hubEnv("LANG") ?? "")}" — use one of: ${ASK_LANGS.join(", ")}`);
     process.exit(ASK_EXIT_ERROR);
   }
   const lang = picked.lang;
@@ -3863,7 +3864,7 @@ async function cmdAsk(token: string, args: AskArgs): Promise<void> {
       `  Via:      ${threadOnly ? "reactions or thread replies" : "reactions or replies in this DM"}`,
       ...(explain ? [`  Explain:  ℹ️ pill offered — pressing it asks you to explain; it is never an answer`] : []),
       ...(args.voidAfter ? [`  Then void: ${stripTerminalControls(args.voidAfter.link)} (reason: ${stripTerminalControls(args.voidAfter.reason || "none")}) — replaced by this question`] : []),
-      `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_TERM_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
+      `  Language: ${lang} (${({ flag: "--lang", env: "SLACK_HUB_LANG", readers: "answerers' Slack locale", content: "the question's text", system: "system locale", default: "default" })[picked.source]}; override with --lang)`,
       `--------------------------------────────────`,
     ], recipientTz);
   }
@@ -4294,7 +4295,7 @@ async function askFindIdentity(row: SentRow, botToken: string | undefined, known
   let who: string | undefined;
   if ((await canRead(botToken)) === false) {
     for (const [name, id] of listIdentities()) {
-      if (id.kind !== "bot" || name === process.env.SLACK_TERM_IDENTITY) continue;
+      if (id.kind !== "bot" || name === hubEnv("IDENTITY")) continue;
       const env = { ...process.env };
       if ("error" in applyIdentity(name, env)) continue;
       if (await canRead(env.SLACK_BOT_TOKEN)) { who = name; break; }
@@ -4307,7 +4308,7 @@ async function askFindIdentity(row: SentRow, botToken: string | undefined, known
 /** The tokens a logged question is read with: those of the identity it was
  *  asked as, when that is not the one this run acts as. */
 function askRowTokens(row: SentRow, tokens: { user?: string; bot?: string; cookie?: string }): { user?: string; bot?: string; cookie?: string } | string {
-  if (!row.identity || row.identity === process.env.SLACK_TERM_IDENTITY) return tokens;
+  if (!row.identity || row.identity === hubEnv("IDENTITY")) return tokens;
   const env = { ...process.env };
   const r = applyIdentity(row.identity, env);
   if ("error" in r) return r.error;
@@ -4577,7 +4578,7 @@ async function askPushWatch(run: (only?: Set<string>) => Promise<unknown>, since
  *  question stays open, but that reply is not pushed again. An asker that is
  *  gone gets nothing: the answer stays on the list for a person. */
 function askPushAll(items: AskPendingItem[], selfArgs: string[], problems: string[]): void {
-  const release = acquirePushLock(join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "slack-term", "ask-push.lock"));
+  const release = acquirePushLock(join(namedDir(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state")), "ask-push.lock"));
   if (!release) {
     problems.push("another `ask --pending --push` pass is running: nothing pushed by this one");
     return;
@@ -4618,7 +4619,7 @@ function askPushAll(items: AskPendingItem[], selfArgs: string[], problems: strin
         markAskDelivered(r.channel, r.ts, it.answer, it.cursor ?? "");
       } else {
         const after = r.delivered_cursor ? [`--after=${r.delivered_cursor}`] : [];
-        const who = r.identity && r.identity !== process.env.SLACK_TERM_IDENTITY ? [`@${r.identity}`] : [];
+        const who = r.identity && r.identity !== hubEnv("IDENTITY") ? [`@${r.identity}`] : [];
         const c = spawnSync(process.execPath, [...process.argv.slice(1, 2), ...who, ...selfArgs, "ask", `--waitFor=${it.link}`, "--timeout", "0", ...(r.as_bot ? ["--as-bot"] : []), ...after],
           { encoding: "utf8", timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] });
         collected = c.status === 0;
@@ -5942,7 +5943,7 @@ async function main(): Promise<void> {
     "as-bot"?: boolean | undefined; broadcast?: boolean | undefined; mentions?: boolean | undefined;
     json?: boolean | undefined;
   };
-  /** The `edit` handler, shared with `tick`. In a .slack-term/ scope the
+  /** The `edit` handler, shared with `tick`. In a .slack-hub/ scope the
    *  lane's tag is kept; in a restricted one the message must sit in one of
    *  its subscriptions. */
   type EditCli = {
@@ -6693,9 +6694,9 @@ async function main(): Promise<void> {
     )
     .command(
       "init [dir]",
-      "Create .slack-term/ in a directory: aliases, settings, inbox/outbox (never committed)",
+      "Create .slack-hub/ in a directory: aliases, settings, inbox/outbox (never committed)",
       (y) => y
-        .positional("dir", { type: "string", default: ".", describe: "Directory to put .slack-term/ in" })
+        .positional("dir", { type: "string", default: ".", describe: "Directory to put .slack-hub/ in" })
         .option("prefix", { type: "string", describe: "Put in front of every `slack reply`, e.g. \"[design]\"" })
         .option("channel", { type: "string", describe: "Default channel (id)" })
         .option("as-bot", { type: "boolean", describe: "Reply as the bot by default" }),
@@ -6710,7 +6711,7 @@ async function main(): Promise<void> {
     )
     .command(
       "alias",
-      "Name channels and threads for this directory (the nearest .slack-term/)",
+      "Name channels and threads for this directory (the nearest .slack-hub/)",
       (y) => y
         .command(
           ["ls", "list"],
@@ -6724,7 +6725,7 @@ async function main(): Promise<void> {
               return;
             }
             for (const a of all) console.log(`${a.name}\t${a.channel}\t${a.thread_ts ?? "-"}\t${a.file}${a.note ? `\t${a.note}` : ""}`);
-            if (!all.length) console.error(`no aliases in ${scope.dir}${scope.global ? " (no .slack-term/ above here: `slack init` makes one)" : ""}`);
+            if (!all.length) console.error(`no aliases in ${scope.dir}${scope.global ? " (no .slack-hub/ above here: `slack init` makes one)" : ""}`);
           },
         )
         .command(
@@ -6735,7 +6736,7 @@ async function main(): Promise<void> {
             .positional("target", { type: "string", demandOption: true })
             .option("note", { type: "string", describe: "Free text shown by `alias ls`" })
             .option("shared", { type: "boolean", default: false, describe: "Write settings.yml (the allowlist owner's file) instead of settings.local.yml" })
-            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory instead of the cwd's (with --shared: a lane's dir)" }),
+            .option("dir", { type: "string", describe: "Use the .slack-hub/ above this directory instead of the cwd's (with --shared: a lane's dir)" }),
           async (argv) => {
             const token = tok(argv as W);
             const cookie = ck(argv as W);
@@ -6769,7 +6770,7 @@ async function main(): Promise<void> {
           (yy) => yy
             .positional("name", { type: "string", demandOption: true })
             .option("shared", { type: "boolean", default: false, describe: "Allow removing one defined in settings.yml" })
-            .option("dir", { type: "string", describe: "Use the .slack-term/ above this directory" }),
+            .option("dir", { type: "string", describe: "Use the .slack-hub/ above this directory" }),
           (argv) => {
             const scope = findScope(argv.dir);
             let r;
@@ -6786,7 +6787,7 @@ async function main(): Promise<void> {
         )
         .command(
           "who <channel> <ts>",
-          "Which registered .slack-term/ dirs subscribe this thread (or message): dir, alias",
+          "Which registered .slack-hub/ dirs subscribe this thread (or message): dir, alias",
           (yy) => yy
             .positional("channel", { type: "string", demandOption: true, describe: "Channel id" })
             .positional("ts", { type: "string", demandOption: true, describe: "Thread root ts (a reply's own ts is not its thread)" })
@@ -6804,7 +6805,7 @@ async function main(): Promise<void> {
           (yy) => yy
             .positional("tsv", { type: "string", demandOption: true })
             .option("channel", { type: "string", demandOption: true, describe: "The channel every thread is in (for a DM: the DM id)" })
-            .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-term/, made if missing); repeatable" }),
+            .option("lane-dir", { type: "array", string: true, demandOption: true, describe: "<lane>=<dir> (a directory holding .slack-hub/, made if missing); repeatable" }),
           (argv) => {
             const dirs = new Map<string, string>();
             for (const kv of argv["lane-dir"] ?? []) {
@@ -6884,7 +6885,7 @@ async function main(): Promise<void> {
     )
     .command(
       "inbox",
-      "This directory's .slack-term/inbox/: messages routed here by `slack stream --inbox`",
+      "This directory's .slack-hub/inbox/: messages routed here by `slack stream --inbox`",
       (y) => y
         .command(
           ["ls", "list"],
@@ -6979,7 +6980,7 @@ async function main(): Promise<void> {
     )
     .command(
       "outbox",
-      "This directory's .slack-term/outbox/: replies queued as files, sent by `outbox flush`",
+      "This directory's .slack-hub/outbox/: replies queued as files, sent by `outbox flush`",
       (y) => y
         .command(
           "add <dest> <message>",
@@ -7083,7 +7084,7 @@ async function main(): Promise<void> {
         .option("code", { type: "string", describe: "Safety hash to confirm the ask" })
         .option("allow-url-adjacent", { type: "boolean", default: false, describe: "Warn instead of refusing ambiguous bare URL boundaries" })
         .option("body", { type: "string", describe: "Extra context shown under the question" })
-        .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_TERM_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
+        .option("lang", { type: "string", choices: [...ASK_LANGS], describe: "Language of the instructions in the posted body. Default: $SLACK_HUB_LANG, else the answerers' Slack locale, else the question's own language, else the system locale, else ja" })
         .option("wait", { type: "boolean", default: false, describe: "Block until answered; print ONLY the answer on stdout. Exit 0 = answered, 2 = nobody replied, 3 = transport failure, 4 = a reply matched several choices (stdout empty), 5 = a free-text reply that picked none of the choices (the reply is on stdout; NOT a decision — the question stays open), 6 = the question was voided (`slack ask void`) — stop waiting. 7 = only with --explain-exit: ℹ️ pressed, explain and collect again (the question stays open)." })
         .option("waitFor", { type: "string", describe: "Collect the answer to a question already posted: pass its permalink. Nothing is posted (except, on an --explain question someone pressed ℹ️ on, one thread note per question). Same stdout/exit contract as --wait; --timeout 0 checks once and exits 2 if still open." })
         .option("after", { type: "string", describe: "With --waitFor: the cursor — everything at or before this ts was already delivered. Text replies there are neither answers nor notes again (pass the `cursor` a previous --json result gave you, or the reply ts an exit 5 printed). Reactions still count." })
@@ -7103,7 +7104,7 @@ async function main(): Promise<void> {
         .option("limit", { type: "number", default: 50, describe: "With --ls: how many recent asks to check" })
         .option("reason", { type: "string", describe: "With --void: why it is void (written into the message)" })
         .option("superseded-by", { type: "string", describe: "With --void: permalink of the question that replaces it" })
-        .option("explain", { type: "boolean", describe: "Also offer an ℹ️ 'explain' pill (seeded after ➕): pressing it asks YOU to explain the question in its thread and is never an answer — the question stays open. --wait/--waitFor report it on stderr (and as `explain` in --json), and post one thread note per question. Default: $SLACK_TERM_ASK_EXPLAIN=1 turns it on; --no-explain turns it off." })
+        .option("explain", { type: "boolean", describe: "Also offer an ℹ️ 'explain' pill (seeded after ➕): pressing it asks YOU to explain the question in its thread and is never an answer — the question stays open. --wait/--waitFor report it on stderr (and as `explain` in --json), and post one thread note per question. Default: $SLACK_HUB_ASK_EXPLAIN=1 turns it on; --no-explain turns it off." })
         .option("explain-exit", { type: "boolean", default: false, describe: "With --wait / --waitFor: exit 7 (stdout empty; --json status \"explain\") when someone presses ℹ️ — once per question, on the run that posts the thread note. The question stays open: explain, then collect again." })
         .option("json", { type: "boolean", default: false, describe: "With --pending: one JSON object per answered question (sender, answer, collect command). With --wait / --waitFor: print ONE JSON object on stdout — {status, answer, how, who, notes:[{ts,user,text,permalink}], cursor, permalink} — instead of the bare answer. `notes` are the audience's replies that are not the answer (thread replies; plain replies too in a 1:1 DM). Exit codes unchanged." })
         .option("timeout", { type: "number", default: 3600, describe: "Overall limit for --wait / --waitFor, in seconds (0 with --waitFor = check once)" })
@@ -8659,12 +8660,12 @@ async function main(): Promise<void> {
             .positional("dir", { type: "string", default: DEFAULT_DIR, describe: "Folder to create" })
             .option("name", { type: "string", describe: "Worker name (default: the folder's name)" })
             .option("force", { type: "boolean", default: false, describe: "Overwrite files that already exist" })
-            .option("slack-term", { type: "string", describe: "slack-term dependency spec (default: this CLI's version), e.g. latest or file:../slack-term" }),
+            .option("slack-hub", { type: "string", describe: "slack-hub dependency spec (default: this CLI's version), e.g. latest or file:../slack-hub" }),
           (argv) => {
             const r = initRelay(argv.dir, {
               force: argv.force,
               ...(argv.name !== undefined ? { name: argv.name } : {}),
-              ...(argv["slack-term"] !== undefined ? { slackTerm: argv["slack-term"] } : {}),
+              ...(argv["slack-hub"] !== undefined ? { slackHub: argv["slack-hub"] } : {}),
             });
             if (!r.ok) {
               console.error(`slack relay init: ${r.error}`);
@@ -8703,11 +8704,11 @@ async function main(): Promise<void> {
         .option("thread-window", { type: "string", default: "3d", describe: "Watch replies in threads whose parent is at most this old" })
         .option("thread-scan", { type: "string", default: "3m", describe: "Polling: re-read each channel's whole --thread-window this often (cycles in between read only what is new)" })
         .option("calls-per-min", { type: "number", default: 40, describe: "Polling: pace conversations.history/replies to this many calls per minute (0 = unpaced)" })
-        .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-term/stream/)" })
+        .option("state", { type: "string", describe: "Cursor file (default: one per identity+grep+channels under $XDG_STATE_HOME/slack-hub/stream/)" })
         .option("as-user", { type: "boolean", default: false, describe: "Stream as the user identity (sees the user's DMs) instead of the bot" })
         .option("relay", { type: "boolean", default: true, describe: "Use the doorbell relay (`slack relay init`) when SLACK_RELAY_URL and SLACK_RELAY_TOKEN are set; --no-relay polls only" })
         .option("reconcile", { type: "string", default: "5m", describe: "While the relay is connected, poll this rarely as a safety net" })
-        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-term/ that subscribes its thread (redacted, text-only)" })
+        .option("inbox", { type: "boolean", default: false, describe: "Also write each match into the inbox/ of every .slack-hub/ that subscribes its thread (redacted, text-only)" })
         .option("reactions", { type: "boolean", default: false, describe: "Relay only: also print reaction_added bells as {type: \"reaction\", channel, ts, user} (the emoji: reactions.get)" }),
       async (argv) => {
         let re: RegExp;
@@ -8798,7 +8799,7 @@ async function main(): Promise<void> {
             ...(argv["replies-to"]?.length ? [[...argv["replies-to"].map(String)].sort()] : [])]))
           .digest("hex").slice(0, 16);
         const stateHome = process.env.XDG_STATE_HOME || join(homedir(), ".local", "state");
-        const statePath = argv.state ?? join(stateHome, "slack-term", "stream", `${key}.json`);
+        const statePath = argv.state ?? join(namedDir(stateHome), "stream", `${key}.json`);
         console.error(`slack stream: as ${asUser ? "user" : "bot"} @${me.user} (${me.userId}); state ${statePath}`);
         // The relay rings for what the Slack app's bot can see, so it only
         // stands in for polling when streaming as that bot.

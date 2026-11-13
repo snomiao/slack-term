@@ -16,12 +16,13 @@
 // Everything here is fail-soft. A message that was posted must never be
 // reported as failed because the bookkeeping about it failed.
 //
-// Opt out with SLACK_TERM_ATTRIBUTION=off (no log, no metadata).
+// Opt out with SLACK_HUB_ATTRIBUTION=off (no log, no metadata).
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { hubEnv } from "./brand.ts";
 
 export type SentKind = "send" | "ask" | "edit" | "poll";
 
@@ -80,7 +81,7 @@ export interface SentRow {
 }
 
 export function attributionEnabled(): boolean {
-  return !/^(0|off|false|no)$/i.test(process.env.SLACK_TERM_ATTRIBUTION ?? "");
+  return !/^(0|off|false|no)$/i.test(hubEnv("ATTRIBUTION") ?? "");
 }
 
 // --- attribution -------------------------------------------------------------
@@ -133,15 +134,15 @@ function positiveInt(s: string | undefined): number | undefined {
  *  (`claude-code_<version>_agent`). Other CLIs are recognised by the process
  *  name of an ancestor; their session ids are not read because their variable
  *  names were not verified. A wrapper that knows better sets the overrides:
- *  SLACK_TERM_AGENT_CLI, SLACK_TERM_AGENT_SESSION, SLACK_TERM_AGENT_PID. */
+ *  SLACK_HUB_AGENT_CLI, SLACK_HUB_AGENT_SESSION, SLACK_HUB_AGENT_PID. */
 export function captureAttribution(env: NodeJS.ProcessEnv = process.env): Attribution {
   const a: Attribution = { pid: process.pid, host: safeHostname(), cwd: process.cwd() };
 
-  let cli = env.SLACK_TERM_AGENT_CLI || undefined;
+  let cli = hubEnv("AGENT_CLI", env) || undefined;
   if (!cli && env.AI_AGENT) cli = env.AI_AGENT.split("_")[0] || undefined;
   if (!cli && env.CLAUDECODE === "1") cli = "claude-code";
 
-  let agentPid = positiveInt(env.SLACK_TERM_AGENT_PID) ?? positiveInt(env.CLAUDE_PID);
+  let agentPid = positiveInt(hubEnv("AGENT_PID", env)) ?? positiveInt(env.CLAUDE_PID);
   if (!agentPid || !cli) {
     const anc = findAgentAncestor();
     if (anc) {
@@ -152,7 +153,7 @@ export function captureAttribution(env: NodeJS.ProcessEnv = process.env): Attrib
   if (cli) a.cli = cli;
   if (agentPid) a.agentPid = agentPid;
 
-  const session = env.SLACK_TERM_AGENT_SESSION || env.CLAUDE_CODE_SESSION_ID;
+  const session = hubEnv("AGENT_SESSION", env) || env.CLAUDE_CODE_SESSION_ID;
   if (session) a.sessionId = session;
 
   const branch = gitBranch(a.cwd);
@@ -198,7 +199,8 @@ interface Stmt { run(...p: unknown[]): unknown; all(...p: unknown[]): unknown[];
 interface Db { exec(sql: string): void; prepare(sql: string): Stmt; close(): void; }
 
 export function sentDbPath(): string {
-  if (process.env.SLACK_TERM_SENT_DB) return process.env.SLACK_TERM_SENT_DB;
+  const db = hubEnv("SENT_DB");
+  if (db) return db;
   return join(process.env.HOME || homedir(), ".config", "slack-cli", "sent.sqlite");
 }
 
@@ -311,7 +313,7 @@ export function recordSent(r: RecordSent): boolean {
     ).run(
       r.kind, r.team ?? null, r.channel, r.target ?? null, r.ts, r.threadTs ?? null, r.permalink ?? null, r.text,
       Date.now(), a.pid, a.agentPid ?? null, a.host || null, a.cwd, a.gitBranch ?? null, a.cli ?? null, a.sessionId ?? null,
-      r.asBot ? 1 : 0, process.env.SLACK_TERM_IDENTITY || null,
+      r.asBot ? 1 : 0, hubEnv("IDENTITY") || null,
     );
     return true;
   } catch (e: unknown) {

@@ -41,7 +41,7 @@ function run(args: string[], baseUrl: string, extraEnv: Record<string, string> =
     SLACK_MCP_XOXP_TOKEN: _t, SLACK_TOKEN: _s, SLACK_BOT_TOKEN: _b, HOME: _h,
     SLACK_COOKIE: _c, SLACK_MCP_XOXD_COOKIE: _d, SLACK_WORKSPACE: _w,
     // Run as a person at a terminal unless a test says it is an agent.
-    AY_AGENT_ID: _a, AGENT_YES_PID: _p, CLAUDECODE: _cc, SLACK_TERM_HOME: _g,
+    AY_AGENT_ID: _a, AGENT_YES_PID: _p, CLAUDECODE: _cc, SLACK_HUB_HOME: _g,
     ...rest
   } = process.env as Record<string, string>;
   const env = {
@@ -863,7 +863,7 @@ describe("ask: asking yourself (CLI)", { timeout: 60_000 }, () => {
     const g = join(tmpHome, "agent-global");
     mkdirSync(g, { recursive: true });
     writeFileSync(join(g, "settings.yml"), "identities:\n  alice:\n    kind: user\n    env: SLACK_MCP_XOXP_TOKEN\n");
-    return { AY_AGENT_ID: "x", SLACK_TERM_HOME: g };
+    return { AY_AGENT_ID: "x", SLACK_HUB_HOME: g };
   };
   const selfDm: InlineFixtures = {
     ...AUTH,
@@ -1842,7 +1842,7 @@ describe("ask --edit / --reask / --ls (CLI)", { timeout: 120_000 }, () => {
 
   test("--ls lists what I asked with its live state; --stale prints the gated --void command", async () => {
     const db = join(tmpHome, `ls-${Date.now()}.sqlite`);
-    const env = { SLACK_TERM_SENT_DB: db };
+    const env = { SLACK_HUB_SENT_DB: db };
     const q = askBuildText(`<@${BOB}> 出してよい?`, "", ["A", "B"], [], true);
     const ask = await startMock({ inline: { ...AUTH, "users.info__user=U00000BOB": { ok: true, user: { id: BOB, name: "bob", profile: { display_name: "bob" } } } } });
     try {

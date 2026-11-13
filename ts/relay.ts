@@ -1,4 +1,4 @@
-// Client for the slack-term relay (worker/): a Cloudflare Worker that receives
+// Client for the slack-hub relay (worker/): a Cloudflare Worker that receives
 // Slack's Events API and serves "doorbells" — {channel, ts, thread_ts}, never
 // message text — as a resumable stream. `slack stream` uses it to scan the one
 // channel a bell names within a second of the post, instead of waiting for its

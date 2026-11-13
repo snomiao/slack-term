@@ -1,5 +1,5 @@
 {
-  "name": "slack-term-relay",
+  "name": "slack-hub-relay",
   "private": true,
   "type": "module",
   "scripts": {
