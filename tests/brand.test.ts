@@ -24,9 +24,10 @@ describe("brand", () => {
     expect(scopeDirIn(d)).toBe(join(d, ".slack-hub"));
   });
 
-  test("renameNotice: only under the old package name, only on a TTY", () => {
-    expect(renameNotice("slack-term", true)).toContain("npm install -g slack-hub");
-    expect(renameNotice("slack-term", false)).toBeUndefined();
-    expect(renameNotice("slack-hub", true)).toBeUndefined();
+  test("renameNotice: only under the old package name, silenced by env", () => {
+    expect(renameNotice("slack-term", {})).toContain("npm install -g slack-hub");
+    expect(renameNotice("slack-term", { SLACK_HUB_NO_RENAME_NOTICE: "1" })).toBeUndefined();
+    expect(renameNotice("slack-term", { SLACK_TERM_NO_RENAME_NOTICE: "1" })).toBeUndefined();
+    expect(renameNotice("slack-hub", {})).toBeUndefined();
   });
 });
