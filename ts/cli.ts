@@ -19,7 +19,8 @@ import { relaySubscriber, relayTransport } from "./relay.ts";
 import { acquirePushLock, askPushMessage, askPushTag, laneAgent, liveAgents, notifyAgent } from "./askPush.ts";
 import { DEFAULT_DIR, initRelay, initReport, relayHealth } from "./relayInit.ts";
 import { agentCommands } from "./agent.ts";
-import { hubEnv, namedDir } from "./brand.ts";
+import { hubEnv, namedDir, renameNotice } from "./brand.ts";
+import pkgJson from "../package.json" with { type: "json" };
 
 import {
   ASK_KEYCAPS,
@@ -5930,6 +5931,8 @@ async function main(): Promise<void> {
   // Before any output: Bun drops console writes that meet a full pipe (see stdout.ts).
   installSyncConsole();
   loadDotenvFiles();
+  const notice = renameNotice(pkgJson.name);
+  if (notice) console.error(notice);
 
   type W = { workspace?: string };
   const tok = (a: W) => resolveToken(a.workspace);

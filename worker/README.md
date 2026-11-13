@@ -45,7 +45,7 @@ all (an older relay, a proxy that strips upgrades, a runtime without
 | Path | Auth | What |
 |---|---|---|
 | `POST /slack/events` | Slack signing secret (`X-Slack-Signature`, ±5 min) | Answers `url_verification`; stores one bell per `message` / `app_mention` event. Acks with a single SQLite insert, well inside Slack's 3 s. Retries collapse on `(channel, ts)`. |
-| `GET /ws?after=<seq>&epoch=<e>` | Subprotocols `slack-term-relay.v1` **and** `bearer.<base64url($RELAY_TOKEN)>` (or `Authorization: Bearer`) | WebSocket (below). Rejected with 401 before the upgrade is accepted. |
+| `GET /ws?after=<seq>&epoch=<e>` | Subprotocols `slack-hub-relay.v1` (or the pre-rename `slack-term-relay.v1`) **and** `bearer.<base64url($RELAY_TOKEN)>` (or `Authorization: Bearer`) | WebSocket (below). Rejected with 401 before the upgrade is accepted. |
 | `GET /stream?after=<seq>` | `Authorization: Bearer $RELAY_TOKEN` | SSE (kept for older clients). First an `event: hello` frame `{seq, gap, retention_sec}`, then the backlog after `seq`, then live `event: bell` frames (`id:` = seq). A keepalive comment goes out every 25 s. `Last-Event-ID` works as well as `?after`. Pass `&epoch=` from the last hello: the epoch names the relay's storage, so a client resuming against a reset relay is told `gap: true` and gets everything kept, even once the new numbers have passed its old seq. If `after` is omitted, the stream starts from now. `gap: true` means some bells after `after` are gone (expired, or the relay was reset): everything still kept is replayed, and the client should also catch up by polling. |
 | `GET /health` | Bearer | `{epoch, latest, oldest, clients, websocket_clients, sse_clients, retention_sec}` |
 
@@ -55,11 +55,11 @@ At most 16 clients (both kinds) at once; more get 503.
 
 **Auth.** The token is never put in the URL (query strings end up in logs).
 Node's built-in `WebSocket` cannot send an `Authorization` header, so the client
-offers two subprotocols — `Sec-WebSocket-Protocol: slack-term-relay.v1,
+offers three subprotocols — `Sec-WebSocket-Protocol: slack-hub-relay.v1, slack-term-relay.v1,
 bearer.<base64url(token)>` (base64url because subprotocols must be HTTP tokens;
 the same scheme Kubernetes uses) — and the Worker compares the bearer one in
 constant time before the request reaches the Durable Object. The server
-selects only `slack-term-relay.v1`, never echoing the token.
+selects only `slack-hub-relay.v1` (or `slack-term-relay.v1` for an old client), never echoing the token.
 
 **Messages** are JSON text, one per frame:
 

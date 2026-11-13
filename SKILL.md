@@ -281,7 +281,7 @@ hands over (exit 5) is not reported again, but a pill pressed after it is.
 
 Every `send`/`ask`/`poll`/`edit` is logged locally (`~/.config/slack-cli/sent.sqlite`)
 with its sender: agent pid, cwd, git branch, agent CLI and session id. The same
-attribution is attached as Slack message `metadata` (event_type `slack_term_sent`) —
+attribution is attached as Slack message `metadata` (event_type `slack_hub_sent`) —
 invisible in the client, readable through the API from any machine.
 
 ```bash
